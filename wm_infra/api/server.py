@@ -22,7 +22,7 @@ from typing import Optional
 import torch
 import numpy as np
 
-from wm_infra.config import EngineConfig, DynamicsConfig, TokenizerConfig
+from wm_infra.config import EngineConfig, DynamicsConfig, TokenizerConfig, load_config
 from wm_infra.core.engine import AsyncWorldModelEngine, RolloutJob
 from wm_infra.models.dynamics import LatentDynamicsModel
 from wm_infra.tokenizer.video_tokenizer import VideoTokenizer
@@ -183,7 +183,7 @@ def main():
     """Entry point for `wm-serve` CLI command."""
     import uvicorn
 
-    config = EngineConfig()
+    config = load_config()
     app = create_app(config)
     uvicorn.run(
         app,
