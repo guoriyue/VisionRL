@@ -63,10 +63,11 @@ class RolloutResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    """Server health check."""
+    """Server health check with readiness and liveness semantics."""
 
     status: str = "ok"
     model_loaded: bool = False
+    engine_running: bool = False
     active_rollouts: int = 0
     memory_used_gb: float = 0.0
 

@@ -116,9 +116,16 @@ def create_app(config: Optional[EngineConfig] = None):
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health():
+        """Liveness + readiness probe.
+
+        Returns 200 if the process is alive (liveness).
+        Check ``model_loaded`` and ``engine_running`` for readiness.
+        """
+        ready = _engine is not None and _engine.is_running
         return HealthResponse(
-            status="ok",
+            status="ready" if ready else "not_ready",
             model_loaded=_engine is not None,
+            engine_running=_engine.is_running if _engine else False,
             active_rollouts=_engine.engine.state_manager.num_active if _engine else 0,
             memory_used_gb=_engine.engine.state_manager.memory_used_gb if _engine else 0.0,
         )
