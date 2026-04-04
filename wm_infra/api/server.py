@@ -99,8 +99,9 @@ def create_app(config: Optional[EngineConfig] = None):
         logger.info("Initializing world model engine...")
         _engine = _create_async_engine(config)
         _engine.start()
+        device_str = config.device.value if hasattr(config.device, 'value') else str(config.device)
         logger.info(
-            f"Engine ready: device={config.device.value}, "
+            f"Engine ready: device={device_str}, "
             f"dynamics={sum(p.numel() for p in _engine.engine.dynamics_model.parameters())} params"
         )
         yield
