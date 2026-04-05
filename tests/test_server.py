@@ -72,7 +72,7 @@ async def _wait_for_terminal_sample(client: httpx.AsyncClient, sample_id: str, t
         resp = await client.get(f"/v1/samples/{sample_id}")
         assert resp.status_code == 200
         last = resp.json()
-        if last["status"] in {"succeeded", "failed"}:
+        if last["status"] in {"succeeded", "failed", "accepted"}:
             return last
         await asyncio.sleep(0.05)
     raise AssertionError(f"sample {sample_id} did not reach terminal state; last={last}")
@@ -280,11 +280,13 @@ class TestSamples:
         assert resp.json()["status"] == "queued"
 
         final = await _wait_for_terminal_sample(client, sample_id)
-        assert final["status"] == "succeeded"
+        assert final["status"] == "accepted"
         assert final["runtime"]["runner"] == "stub"
         assert final["runtime"]["elapsed_ms"] >= 0
         kinds = {a["kind"] for a in final["artifacts"]}
-        assert {"video", "log", "metadata"}.issubset(kinds)
+        assert "video" not in kinds
+        assert {"log", "metadata"}.issubset(kinds)
+        assert final["metadata"]["stubbed"] is True
 
     @pytest.mark.asyncio
     async def test_create_wan_video_requires_prompt_for_t2v(self, client):
@@ -370,11 +372,14 @@ class TestArtifacts:
         })
         sample_id = resp.json()["sample_id"]
         data = await _wait_for_terminal_sample(client, sample_id)
-        assert data["status"] == "succeeded"
+        assert data["status"] == "accepted"
 
         art_resp = await client.get(f"/v1/samples/{sample_id}/artifacts")
         assert art_resp.status_code == 200
-        assert art_resp.json()["count"] >= 3
+        artifact_kinds = {artifact["kind"] for artifact in art_resp.json()["artifacts"]}
+        assert {"log", "metadata"}.issubset(artifact_kinds)
+        assert "video" not in artifact_kinds
+        assert art_resp.json()["count"] == len(art_resp.json()["artifacts"])
 
     @pytest.mark.asyncio
     async def test_get_artifact_metadata(self, client):
@@ -389,7 +394,7 @@ class TestArtifacts:
         sample_id = resp.json()["sample_id"]
 
         data = await _wait_for_terminal_sample(client, sample_id)
-        assert data["status"] == "succeeded"
+        assert data["status"] == "accepted"
 
         # Fetch log artifact metadata
         log_artifact_id = quote(f"{sample_id}:log", safe="")
