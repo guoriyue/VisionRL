@@ -1,4 +1,8 @@
-"""Request/Response protocol for world model rollout API."""
+"""Request/response protocol for the low-level rollout runtime API.
+
+This module is intentionally narrower than the higher-level temporal sample
+production API exposed through ``ProduceSampleRequest``.
+"""
 
 from __future__ import annotations
 

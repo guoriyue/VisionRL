@@ -1,1 +1,1 @@
-"""Video tokenizer for world model inference."""
+"""Tokenization utilities for temporal model pipelines."""

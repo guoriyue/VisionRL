@@ -4,15 +4,17 @@ This document translates product strategy into concrete repository work.
 
 ## Current state
 
-The repo already has a credible runtime skeleton:
+The repo already has a credible temporal runtime skeleton:
 - latent rollout API
 - engine
 - scheduler
 - state manager
+- Wan backend path
+- Genie backend path
 - kernels / ops / layers layout
 - benchmark harness
 
-That is useful, but it is still runtime-only.
+That is useful, but the repo still needs cleaner product framing and sharper separation between runtime substrate and backend-facing control-plane APIs.
 
 ## What the repo must become
 
@@ -59,8 +61,8 @@ Add first-class models for:
 - training export specs
 
 ### 2. Reframe API surface
-Current API is rollout-centric.
-That is fine for the runtime, but not sufficient for production.
+Current low-level API is rollout-centric.
+That is fine for the runtime substrate, but the production-facing API should center temporal sample production across concrete backends such as Wan and Genie.
 
 Add a higher-level request shape around:
 - `task_type`

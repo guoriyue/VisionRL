@@ -1,4 +1,4 @@
-"""Triton-native GPU kernels for world model inference.
+"""Triton-native GPU kernels for wm-infra runtime components.
 
 Reused from moemoekit with updated imports. These are the lowest-level
 building blocks — @triton.jit functions operating on raw pointers.

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "wm-infra"
 version = "0.1.0"
-description = "Serving and control-plane infrastructure for video generation and world-model workloads"
+description = "Temporal model serving and control-plane infrastructure for video sample production"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}

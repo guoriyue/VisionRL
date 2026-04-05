@@ -1,4 +1,4 @@
-"""Configuration for world model inference engine.
+"""Configuration for wm-infra temporal serving and control-plane runtime.
 
 Supports layered config loading: defaults → YAML file → env vars → CLI args.
 Use ``load_config()`` to merge all layers into a single ``EngineConfig``.
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from dataclasses import dataclass, field, fields, asdict
+from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
@@ -23,6 +23,7 @@ class SchedulerPolicy(str, Enum):
     FCFS = "fcfs"  # first-come first-serve
     SJF = "sjf"  # shortest-job-first (fewest remaining steps)
     DEADLINE = "deadline"  # earliest-deadline-first
+    MEMORY_AWARE = "memory_aware"  # prefer lighter frame/resolution jobs first
 
 
 @dataclass
@@ -72,6 +73,7 @@ class SchedulerConfig:
     max_waiting_time_ms: float = 50.0
     policy: SchedulerPolicy = SchedulerPolicy.SJF
     max_concurrent_rollouts: int = 64
+    max_batch_resource_units: Optional[float] = None
 
 
 @dataclass
@@ -85,6 +87,32 @@ class ServerConfig:
 
 
 @dataclass
+class ControlPlaneConfig:
+    """Control-plane persistence configuration."""
+
+    manifest_store_root: Optional[str] = None
+    wan_output_root: Optional[str] = None
+    wan_shell_runner: Optional[str] = None
+    wan_shell_runner_timeout_s: Optional[int] = None
+    wan_repo_dir: Optional[str] = None
+    wan_conda_env: Optional[str] = None
+    conda_sh_path: Optional[str] = None
+    wan_max_queue_size: int = 64
+    wan_max_concurrent_jobs: int = 1
+    wan_admission_max_units: Optional[float] = None
+    wan_admission_max_vram_gb: Optional[float] = 32.0
+    # Genie backend
+    genie_output_root: Optional[str] = None
+    genie_model_name: Optional[str] = None
+    genie_device: Optional[str] = None
+    genie_num_prompt_frames: int = 8
+    genie_maskgit_steps: int = 2
+    genie_temperature: float = 0.0
+    genie_max_queue_size: int = 64
+    genie_max_concurrent_jobs: int = 1
+
+
+@dataclass
 class EngineConfig:
     """Top-level engine configuration."""
 
@@ -95,6 +123,7 @@ class EngineConfig:
     state_cache: StateCacheConfig = field(default_factory=StateCacheConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    controlplane: ControlPlaneConfig = field(default_factory=ControlPlaneConfig)
     model_path: Optional[str] = None
     seed: int = 42
 
@@ -127,13 +156,24 @@ def _env_overrides() -> dict:
     """Read WM_* environment variables into a nested dict.
 
     Mapping (all prefixed with WM_):
-        WM_DEVICE=cpu            → {"device": "cpu"}
-        WM_DTYPE=bfloat16        → {"dtype": "bfloat16"}
-        WM_MODEL_PATH=/path      ��� {"model_path": "/path"}
-        WM_PORT=9000             → {"server": {"port": 9000}}
-        WM_HOST=127.0.0.1        → {"server": {"host": "127.0.0.1"}}
-        WM_MAX_BATCH_SIZE=16     → {"scheduler": {"max_batch_size": 16}}
-        WM_SEED=123              → {"seed": 123}
+        WM_DEVICE=cpu                  → {"device": "cpu"}
+        WM_DTYPE=bfloat16              → {"dtype": "bfloat16"}
+        WM_MODEL_PATH=/path            → {"model_path": "/path"}
+        WM_PORT=9000                   → {"server": {"port": 9000}}
+        WM_HOST=127.0.0.1              → {"server": {"host": "127.0.0.1"}}
+        WM_MAX_BATCH_SIZE=16           → {"scheduler": {"max_batch_size": 16}}
+        WM_MANIFEST_STORE_ROOT=/data   → {"controlplane": {"manifest_store_root": "/data"}}
+        WM_WAN_OUTPUT_ROOT=/data/wan   → {"controlplane": {"wan_output_root": "/data/wan"}}
+        WM_WAN_SHELL_RUNNER=...        → {"controlplane": {"wan_shell_runner": "..."}}
+        WM_WAN_SHELL_RUNNER_TIMEOUT_S=600 → {"controlplane": {"wan_shell_runner_timeout_s": 600}}
+        WM_WAN_REPO_DIR=/path/to/Wan2.2 → {"controlplane": {"wan_repo_dir": "/path/to/Wan2.2"}}
+        WM_WAN_CONDA_ENV=kosen         → {"controlplane": {"wan_conda_env": "kosen"}}
+        WM_CONDA_SH_PATH=/path/conda.sh → {"controlplane": {"conda_sh_path": "/path/conda.sh"}}
+        WM_WAN_MAX_QUEUE_SIZE=32       → {"controlplane": {"wan_max_queue_size": 32}}
+        WM_WAN_MAX_CONCURRENT_JOBS=1   → {"controlplane": {"wan_max_concurrent_jobs": 1}}
+        WM_WAN_ADMISSION_MAX_UNITS=16  → {"controlplane": {"wan_admission_max_units": 16.0}}
+        WM_WAN_ADMISSION_MAX_VRAM_GB=32 → {"controlplane": {"wan_admission_max_vram_gb": 32.0}}
+        WM_SEED=123                    → {"seed": 123}
     """
     overrides: dict[str, Any] = {}
     env_map: dict[str, tuple[list[str], type]] = {
@@ -145,6 +185,25 @@ def _env_overrides() -> dict:
         "WM_HOST": (["server", "host"], str),
         "WM_MAX_BATCH_SIZE": (["scheduler", "max_batch_size"], int),
         "WM_MAX_CONCURRENT_ROLLOUTS": (["scheduler", "max_concurrent_rollouts"], int),
+        "WM_MANIFEST_STORE_ROOT": (["controlplane", "manifest_store_root"], str),
+        "WM_WAN_OUTPUT_ROOT": (["controlplane", "wan_output_root"], str),
+        "WM_WAN_SHELL_RUNNER": (["controlplane", "wan_shell_runner"], str),
+        "WM_WAN_SHELL_RUNNER_TIMEOUT_S": (["controlplane", "wan_shell_runner_timeout_s"], int),
+        "WM_WAN_REPO_DIR": (["controlplane", "wan_repo_dir"], str),
+        "WM_WAN_CONDA_ENV": (["controlplane", "wan_conda_env"], str),
+        "WM_CONDA_SH_PATH": (["controlplane", "conda_sh_path"], str),
+        "WM_WAN_MAX_QUEUE_SIZE": (["controlplane", "wan_max_queue_size"], int),
+        "WM_WAN_MAX_CONCURRENT_JOBS": (["controlplane", "wan_max_concurrent_jobs"], int),
+        "WM_WAN_ADMISSION_MAX_UNITS": (["controlplane", "wan_admission_max_units"], float),
+        "WM_WAN_ADMISSION_MAX_VRAM_GB": (["controlplane", "wan_admission_max_vram_gb"], float),
+        "WM_GENIE_OUTPUT_ROOT": (["controlplane", "genie_output_root"], str),
+        "WM_GENIE_MODEL_NAME": (["controlplane", "genie_model_name"], str),
+        "WM_GENIE_DEVICE": (["controlplane", "genie_device"], str),
+        "WM_GENIE_NUM_PROMPT_FRAMES": (["controlplane", "genie_num_prompt_frames"], int),
+        "WM_GENIE_MASKGIT_STEPS": (["controlplane", "genie_maskgit_steps"], int),
+        "WM_GENIE_TEMPERATURE": (["controlplane", "genie_temperature"], float),
+        "WM_GENIE_MAX_QUEUE_SIZE": (["controlplane", "genie_max_queue_size"], int),
+        "WM_GENIE_MAX_CONCURRENT_JOBS": (["controlplane", "genie_max_concurrent_jobs"], int),
     }
 
     for env_key, (path, typ) in env_map.items():
@@ -162,18 +221,16 @@ def _env_overrides() -> dict:
 
 def _dict_to_config(d: dict) -> EngineConfig:
     """Convert a flat/nested dict into an EngineConfig dataclass."""
-    # Handle device enum
     if "device" in d and isinstance(d["device"], str):
         d["device"] = DeviceType(d["device"])
 
-    # Build sub-configs
     tok_d = d.pop("tokenizer", {})
     dyn_d = d.pop("dynamics", {})
     sc_d = d.pop("state_cache", {})
     sched_d = d.pop("scheduler", {})
     serv_d = d.pop("server", {})
+    ctrl_d = d.pop("controlplane", {})
 
-    # Handle scheduler policy enum
     if "policy" in sched_d and isinstance(sched_d["policy"], str):
         sched_d["policy"] = SchedulerPolicy(sched_d["policy"])
 
@@ -183,6 +240,7 @@ def _dict_to_config(d: dict) -> EngineConfig:
         state_cache=StateCacheConfig(**sc_d) if sc_d else StateCacheConfig(),
         scheduler=SchedulerConfig(**sched_d) if sched_d else SchedulerConfig(),
         server=ServerConfig(**serv_d) if serv_d else ServerConfig(),
+        controlplane=ControlPlaneConfig(**ctrl_d) if ctrl_d else ControlPlaneConfig(),
         **d,
     )
 
@@ -191,7 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Build CLI argument parser for wm-serve."""
     parser = argparse.ArgumentParser(
         prog="wm-serve",
-        description="World Model Inference Server",
+        description="Temporal model serving and control-plane server",
     )
     parser.add_argument("--config", type=str, default=None, help="Path to YAML config file")
     parser.add_argument("--model-path", type=str, default=None, help="Path to model weights")
@@ -214,9 +272,7 @@ def load_config(
         cli_args: CLI argument list (None = use sys.argv)
         config_path: Explicit YAML path (overrides --config CLI arg)
     """
-    # 1. Start with defaults
     merged: dict[str, Any] = asdict(EngineConfig())
-    # Convert enum values back to strings for merging
     merged["device"] = merged["device"].value if hasattr(merged["device"], "value") else merged["device"]
     merged["scheduler"]["policy"] = (
         merged["scheduler"]["policy"].value
@@ -224,22 +280,18 @@ def load_config(
         else merged["scheduler"]["policy"]
     )
 
-    # 2. Parse CLI (need config path first)
     parser = build_parser()
     args = parser.parse_args(cli_args if cli_args is not None else [])
 
-    # 3. YAML overlay
     yaml_path = config_path or args.config
     if yaml_path and Path(yaml_path).exists():
         yaml_d = _load_yaml(yaml_path)
         merged = _deep_merge(merged, yaml_d)
 
-    # 4. Env var overlay
     env_d = _env_overrides()
     if env_d:
         merged = _deep_merge(merged, env_d)
 
-    # 5. CLI arg overlay (only non-None values)
     cli_overrides: dict[str, Any] = {}
     if args.device is not None:
         cli_overrides["device"] = args.device

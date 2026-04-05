@@ -1,159 +1,204 @@
 # wm-infra
 
-Serving and control-plane infrastructure for video generation and world-model workloads.
+Temporal model serving and control-plane infrastructure for video sample production.
 
-`wm-infra` is **not** trying to be a general-purpose replacement for vLLM.
-The target is narrower and more valuable:
+`wm-infra` is not a generic inference stack.
+It is a repo for **temporal model infra**: running, tracking, and extending systems that produce time-based outputs such as video generations and world-model rollouts.
 
-> **Build the best serving stack for video-data production** — then grow it into a full data loop with lineage, evaluation, and training exports.
+Today, the real implemented paths are:
+- **Wan video generation** via the `wan-video` backend
+- **Genie temporal rollouts** via the `genie-rollout` backend
+- the legacy low-level **rollout engine** API for internal/runtime bring-up
 
-That means the repo is optimized for:
-- long-running video generation jobs
-- rollout- and diffusion-style workloads
-- sample-level metadata and artifact tracking
-- quality control and failure analysis
-- experiment tracking and training export
+That distinction matters. The repo should read like a temporal infra system with concrete backend paths, not like a broad "serve any model" project.
 
 ## Product thesis
 
-Most infra stops at "run the model".
-That is not enough for video teams.
+Most model infra stops at request/response execution.
+That is not enough for temporal workloads.
 
-Real users need to:
-- generate large volumes of video samples
-- compare prompts / configs / backends
-- filter bad outputs automatically
-- review edge cases with humans
-- trace every sample back to its origin
-- export accepted data into training / eval pipelines
+Real video and world-model teams need to:
+- launch long-running jobs
+- expose backend-specific execution knobs cleanly
+- persist artifacts and per-sample metadata
+- trace outputs back to prompts, configs, and source state
+- inspect failures and quality issues
+- export accepted samples into later eval/training loops
 
-So the product is:
+So the product direction is:
 
-> **a serving-first Video DataOps platform**
+> **a serving-first temporal sample-production stack**
 
-The serving layer is the wedge.
-The defensibility comes from:
-- video-native scheduling
-- sample lineage
-- failure taxonomy
-- evaluation loops
-- training/export interfaces
+The serving layer is the entry point.
+The durable value is in the control plane around samples, artifacts, lineage, evaluation hooks, and future export paths.
 
-## Strategic positioning
+## What this repo is
 
-### What we are
-- A serving runtime for world-model and video-generation workloads
-- A control plane for producing, tracking, evaluating, and exporting samples
-- A system for turning generation into reproducible data production
+- A runtime + control plane for **temporal sample production**
+- A schema-first API for producing and tracking video/world-model outputs
+- A backend-oriented codebase that can grow around real temporal model families
 
-### What we are not
+## What this repo is not
+
 - Not a generic omni-model inference framework
-- Not a 3DGS / NeRF reconstruction engine
-- Not "another vLLM" competing on broad model coverage alone
+- Not a chatbot-serving stack
+- Not a claim that `wm-infra` already beats vLLM/sglang on broad runtime maturity
+- Not a random collection of kernels with a vague product story
 
-## Where we can beat vLLM
+## Implemented backend paths
 
-Not by being more general.
-By being more **video-native**.
+### 1. Wan video (`wan-video`)
+Implemented and wired through `POST /v1/samples`.
 
-### Better than generic inference infra at:
-- long-job scheduling for video generation
-- sample-level lineage and reproducibility
-- artifact-aware execution
-- generation → QC → review → export pipelines
-- failure-mode classification and debugging
-- training-data production workflows
+Current capabilities:
+- task types: `text_to_video`, `image_to_video`, `video_to_video`
+- async job submission + queue-backed execution
+- persisted sample manifests and artifacts
+- first-class `wan_config` with video execution knobs
+- runner modes:
+  - `stub`
+  - `shell`
+  - `official` (local Wan repo + conda env)
 
-## Architecture layers
+Important reality:
+- this is the clearest current path for **video generation serving** in the repo
+- the control plane is already shaped around Wan's real operational constraints: frame count, resolution, steps, and low-VRAM/offload mode
 
-### 1. Runtime layer
-Responsible for executing model workloads.
-Examples:
-- latent rollout models
-- diffusion / DiT video models
-- image-to-video pipelines
-- post-processing stages
+### 2. Genie rollout (`genie-rollout`)
+Implemented and wired through `POST /v1/samples`.
 
-Current code in this repo mostly lives here.
+Current capabilities:
+- temporal rollout-style sample production
+- real or stub runner modes
+- stateful temporal references (`episode_id`, rollout/state handles)
+- persisted tokens/runtime artifacts
+- first-class `genie_config` for rollout/tokenizer execution knobs
 
-### 2. Control plane
-Responsible for coordinating production workflows.
-Needs to own:
-- experiments
-- jobs
-- sample manifests
-- artifact metadata
-- backend selection
-- cost / latency accounting
+Important reality:
+- this is the clearest current path for **world-model / temporal rollout serving** in the repo
+- it is not yet a generic tokenized-video platform; it is specifically aligned with the current Genie path
 
-### 3. Evaluation layer
-Responsible for deciding if outputs are usable.
-Needs to own:
-- automatic QC
-- failure tags
-- pairwise ranking
-- human review queues
-- acceptance policies
+### 3. Legacy rollout engine (`rollout-engine`)
+Still present and useful, but lower-level.
 
-### 4. Export / training layer
-Responsible for closing the loop.
-Needs to own:
-- training manifest export
-- benchmark set export
-- scorer / reranker datasets
-- accepted-sample datasets
+Purpose:
+- runtime bring-up
+- scheduler/state-manager testing
+- benchmark harness support
+- low-level rollout API experimentation
 
-## Roadmap
+This path should be treated as the runtime substrate, not the main product narrative.
 
-### Phase 0 — Current repo
-- World-model rollout engine
-- scheduler / state cache concepts
-- FastAPI server skeleton
-- benchmark harness
+## Architecture
 
-### Phase 1 — Serving-first MVP
-- unify job schema around `produce_sample`
-- add backend abstraction for video pipelines
-- persist sample manifests and artifacts
-- expose experiment IDs and sample IDs
-- basic QC hooks and failure tags
+`wm-infra` is easiest to extend when you keep a strict separation between runtime execution and production metadata.
 
-### Phase 2 — Data loop
-- review queues
-- pairwise comparison
-- auto-scoring interfaces
-- acceptance / rejection policies
-- training export manifests
+### Runtime layer
+Responsible for actually executing temporal model workloads.
 
-### Phase 3 — Model improvement loop
-- scorer / reranker training
-- routing / config optimization
-- LoRA / adapter export pipelines
-- active hard-case mining
+Examples in this repo:
+- `wan-video`
+- `genie-rollout`
+- low-level rollout engine
+
+### Control plane
+Responsible for describing and tracking what was requested and produced.
+
+Examples in this repo:
+- `ProduceSampleRequest`
+- `SampleRecord`
+- artifact manifests
+- experiment references
+- temporal lineage entities
+
+### Evaluation/export hooks
+Still early, but the schema space is already reserved.
+
+This repo should grow toward:
+- QC/failure taxonomy
+- review signals
+- acceptance decisions
+- exportable manifests for downstream training/eval
+
+## API surfaces
+
+### Higher-level temporal sample API
+This is the main product-facing surface.
+
+- `POST /v1/samples`
+- `GET /v1/samples`
+- `GET /v1/samples/{sample_id}`
+- artifact metadata/content endpoints
+- `GET /v1/backends`
+- queue status endpoints
+
+This is where backend-specific temporal workloads should land.
+
+### Low-level rollout API
+This is still available:
+- `POST /v1/rollout`
+- `GET /v1/rollout/{job_id}`
+
+Useful for engine work, but not the primary framing for the repo.
 
 ## Repo layout
 
 ```text
 wm_infra/
-  api/            HTTP surface
+  api/            HTTP surface for temporal sample production and rollout bring-up
+  backends/       concrete temporal backend adapters (Wan, Genie, rollout-engine)
+  controlplane/   sample schemas, manifests, temporal lineage, resource estimates
   core/           runtime engine, scheduler, state handling
-  controlplane/   sample schemas, manifests, experiment abstractions
   models/         model interfaces and registry
-  tokenizer/      video tokenization
+  tokenizer/      token/video tokenizer code
   ops/            backend ops / kernels
   kernels/        Triton kernels
   layers/         neural network building blocks
 benchmarks/       microbenchmarks and runtime tests
-docs/             product, architecture, and roadmap docs
-tests/            unit tests
+docs/             strategy, profiling, and architecture notes
+tests/            unit and integration tests
 ```
 
-## Immediate priorities
+## Configuration model
 
-1. Keep the runtime clean and measurable
-2. Add a real control-plane schema instead of ad hoc request objects
-3. Treat samples, artifacts, and lineage as first-class entities
-4. Prepare the repo for evaluation and training export without bloating the core runtime
+The config should mirror the actual product shape:
+- core runtime config
+- server config
+- control-plane storage config
+- backend-specific config for Wan and Genie queue/runner behavior
+
+Current environment variables include:
+- `WM_MANIFEST_STORE_ROOT`
+- `WM_WAN_OUTPUT_ROOT`
+- `WM_WAN_SHELL_RUNNER`
+- `WM_WAN_REPO_DIR`
+- `WM_WAN_CONDA_ENV`
+- `WM_WAN_MAX_QUEUE_SIZE`
+- `WM_WAN_MAX_CONCURRENT_JOBS`
+- `WM_GENIE_OUTPUT_ROOT`
+- `WM_GENIE_MODEL_NAME`
+- `WM_GENIE_DEVICE`
+- `WM_GENIE_NUM_PROMPT_FRAMES`
+- `WM_GENIE_MASKGIT_STEPS`
+- `WM_GENIE_TEMPERATURE`
+- `WM_GENIE_MAX_QUEUE_SIZE`
+- `WM_GENIE_MAX_CONCURRENT_JOBS`
+
+## Why the memory-aware framing exists
+
+The verified Wan2.2 baseline on a 32GB RTX 5090 showed something important:
+- frame count, resolution, and step count materially affect whether a run fits and how long it takes
+- low-VRAM/offload behavior is not incidental metadata; it is part of request semantics and scheduling
+
+That is why `wm-infra` makes these fields first-class in request/config models instead of burying them in opaque metadata blobs.
+
+## Near-term repo priorities
+
+1. Keep Wan and Genie paths explicit and honest
+2. Keep the control plane schema-first
+3. Avoid vague generic-inference messaging
+4. Make backend onboarding easier by separating runtime code from sample/control-plane code
+5. Extend evaluation/export interfaces without bloating core runtime modules
 
 ## Development
 
@@ -163,14 +208,44 @@ pytest
 wm-serve
 ```
 
-## Startup framing
+Defaults:
+- sample manifests: `${TMPDIR:-/tmp}/wm_infra`
+- Wan outputs: `${TMPDIR:-/tmp}/wm_infra_wan`
+- Genie outputs: `${TMPDIR:-/tmp}/wm_infra_genie`
 
-If this becomes a company, the pitch is not:
+For `POST /v1/samples`:
+- rollout-style execution parameters belong in `task_config`
+- Wan-specific parameters belong in `wan_config`
+- Genie-specific parameters belong in `genie_config`
+- some legacy metadata backfilling still exists for compatibility, but new callers should use first-class config objects
 
-> we serve video models
+## Benchmarking and comparison tooling
 
-It is:
+Practical measurement tooling now exists for temporal/video workloads:
+- `benchmarks/bench_rollout.py` for rollout microbenchmarks
+- `benchmarks/bench_samples_api.py` for `POST /v1/samples` submit latency, queue latency, and terminal latency
+- `benchmarks/compare_runs.py` for strict comparison between structured result files
+- `wm_infra/benchmarking.py` for shared latency summaries and workload comparability checks
 
-> we turn video generation into a reproducible, scalable, quality-controlled data factory.
+Example:
 
-That distinction matters.
+```bash
+python benchmarks/bench_samples_api.py --in-process --workload wan --iterations 5
+python benchmarks/compare_runs.py run_a.json run_b.json
+```
+
+Important constraint:
+- the repo can now produce honest benchmark artifacts and compare them
+- it does **not** pretend that vLLM or sglang support the same temporal/video workloads unless they actually do in a like-for-like setup
+
+## Supporting docs
+
+- `docs/STARTUP_STRATEGY.md`
+- `docs/REPO_ROADMAP.md`
+- `docs/WAN22_BASELINE.md`
+- `docs/WAN22_PROFILING_PLAN.md`
+- `docs/WAN_SERVING_SCAFFOLD.md`
+
+## One-line pitch
+
+> `wm-infra` turns temporal model execution into a reproducible sample-production system.

@@ -186,15 +186,35 @@ class TestRolloutScheduler:
 
     def test_sjf_ordering(self):
         from wm_infra.config import SchedulerConfig, SchedulerPolicy
-        scheduler = RolloutScheduler(SchedulerConfig(
-            max_batch_size=1, policy=SchedulerPolicy.SJF,
-        ))
+        scheduler = RolloutScheduler(SchedulerConfig(max_batch_size=1, policy=SchedulerPolicy.SJF))
 
         scheduler.submit(RolloutRequest(request_id="long", num_steps=100))
         scheduler.submit(RolloutRequest(request_id="short", num_steps=2))
 
         batch = scheduler.schedule_batch()
-        assert batch.request_ids[0] == "short"  # shorter job first
+        assert batch.request_ids[0] == "short"
+
+    def test_memory_aware_policy_prefers_lighter_video_requests(self):
+        from wm_infra.config import SchedulerConfig, SchedulerPolicy
+        scheduler = RolloutScheduler(SchedulerConfig(max_batch_size=1, policy=SchedulerPolicy.MEMORY_AWARE))
+
+        scheduler.submit(RolloutRequest(request_id="heavy", num_steps=8, frame_count=33, width=832, height=480))
+        scheduler.submit(RolloutRequest(request_id="light", num_steps=4, frame_count=9, width=832, height=480))
+
+        batch = scheduler.schedule_batch()
+        assert batch.request_ids[0] == "light"
+
+    def test_batch_resource_budget_skips_overcommit(self):
+        from wm_infra.config import SchedulerConfig, SchedulerPolicy
+        scheduler = RolloutScheduler(SchedulerConfig(max_batch_size=4, max_batch_resource_units=20.0, policy=SchedulerPolicy.MEMORY_AWARE))
+
+        scheduler.submit(RolloutRequest(request_id="small", num_steps=2, frame_count=9, width=320, height=240))
+        scheduler.submit(RolloutRequest(request_id="medium", num_steps=4, frame_count=9, width=832, height=480))
+        scheduler.submit(RolloutRequest(request_id="large", num_steps=8, frame_count=33, width=832, height=480))
+
+        batch = scheduler.schedule_batch()
+        assert "small" in batch.request_ids
+        assert "large" not in batch.request_ids
 
 
 class TestWorldModelEngine:

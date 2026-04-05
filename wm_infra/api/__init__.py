@@ -1,1 +1,1 @@
-"""API server for world model inference."""
+"""HTTP API surfaces for wm-infra temporal serving."""

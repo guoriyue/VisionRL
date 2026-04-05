@@ -1,7 +1,7 @@
-"""wm-infra: serving and control-plane infrastructure for video generation.
+"""wm-infra: temporal model serving and control-plane infrastructure.
 
-The runtime layer handles execution.
-The control-plane layer handles samples, artifacts, evaluation, and exports.
+The runtime layer handles execution for concrete temporal backends such as Wan and Genie.
+The control-plane layer handles samples, artifacts, lineage, evaluation hooks, and exports.
 """
 
 __version__ = "0.1.0"
