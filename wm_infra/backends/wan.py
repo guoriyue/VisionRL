@@ -1,7 +1,7 @@
 """Wan-family video backend with async job queue and official runner support.
 
 This backend supports three execution modes:
-- **stub**: No runner configured — materializes request/log/output paths only.
+- **stub**: No runner configured — materializes request/log paths only.
 - **shell**: A shell command template is executed (WM_WAN_SHELL_RUNNER).
 - **official**: Builds and executes the real Wan2.2 generate.py command using
   the local repo path and conda env from WAN22_BASELINE.md.
@@ -331,7 +331,7 @@ class WanVideoBackend(ProduceSampleBackend):
             ],
             "started_at": started_at,
         }
-        status = SampleStatus.SUCCEEDED
+        status = SampleStatus.ACCEPTED if mode == "stub" else SampleStatus.SUCCEEDED
         metadata: dict[str, Any] = {
             "evaluation_policy": request.evaluation_policy,
             "priority": request.priority,
@@ -451,13 +451,6 @@ class WanVideoBackend(ProduceSampleBackend):
 
         artifacts = [
             self._artifact_record(
-                artifact_id=f"{sample_id}:video",
-                kind=ArtifactKind.VIDEO,
-                path=video_path,
-                mime_type="video/mp4",
-                metadata={"stubbed": mode == "stub"},
-            ),
-            self._artifact_record(
                 artifact_id=f"{sample_id}:log",
                 kind=ArtifactKind.LOG,
                 path=log_path,
@@ -478,6 +471,17 @@ class WanVideoBackend(ProduceSampleBackend):
                 metadata={"role": "runtime"},
             ),
         ]
+        if video_path.exists():
+            artifacts.insert(
+                0,
+                self._artifact_record(
+                    artifact_id=f"{sample_id}:video",
+                    kind=ArtifactKind.VIDEO,
+                    path=video_path,
+                    mime_type="video/mp4",
+                    metadata={"stubbed": mode == "stub"},
+                ),
+            )
         if failure_path.exists():
             artifacts.append(
                 self._artifact_record(
