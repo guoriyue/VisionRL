@@ -7,13 +7,15 @@ forcing temporal state into loose sample metadata.
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
+import tempfile
 from enum import Enum
 from pathlib import Path
 from typing import Any, Generic, Optional, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 
 class TemporalStatus(str, Enum):
@@ -187,18 +189,50 @@ class _EntityStore(Generic[T]):
     def _path(self, entity_id: str) -> Path:
         return self.root / f"{entity_id}.json"
 
+    def _atomic_write_text(self, path: Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
+    def _read_record(self, path: Path) -> T | None:
+        try:
+            payload = path.read_text(encoding="utf-8")
+            return self.model_cls.model_validate_json(payload)
+        except (OSError, ValidationError, json.JSONDecodeError):
+            return None
+
     def put(self, record: T) -> T:
-        self._path(getattr(record, self.id_field)).write_text(json.dumps(record.model_dump(mode="json"), indent=2, sort_keys=True))
+        self._atomic_write_text(
+            self._path(getattr(record, self.id_field)),
+            json.dumps(record.model_dump(mode="json"), indent=2, sort_keys=True),
+        )
         return record
 
     def get(self, entity_id: str) -> T | None:
         path = self._path(entity_id)
         if not path.exists():
             return None
-        return self.model_cls.model_validate_json(path.read_text())
+        return self._read_record(path)
 
     def list(self) -> list[T]:
-        return [self.model_cls.model_validate_json(path.read_text()) for path in sorted(self.root.glob("*.json"))]
+        records: list[T] = []
+        for path in sorted(self.root.glob("*.json")):
+            record = self._read_record(path)
+            if record is not None:
+                records.append(record)
+        return records
 
 
 class TemporalStore:
