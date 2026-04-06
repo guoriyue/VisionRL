@@ -100,7 +100,7 @@ class WorldModelEngine:
 
         # State management
         self.state_manager = LatentStateManager(
-            max_concurrent=config.state_cache.max_batch_size,
+            max_concurrent=config.scheduler.max_concurrent_rollouts,
             max_memory_gb=config.state_cache.pool_size_gb,
             device=self.device,
         )
@@ -136,8 +136,18 @@ class WorldModelEngine:
 
         # 1. Admit pending jobs and encode initial states
         admitted = self.scheduler.admit()
-        for job_id in admitted:
-            self._initialize_rollout(job_id)
+        admitted_set = set(admitted)
+        prepared_initial_states = {
+            job_id: self._prepare_initial_state(job_id)
+            for job_id in admitted
+        }
+        if prepared_initial_states:
+            self.state_manager.ensure_capacity_for_tensors(
+                list(prepared_initial_states.values()),
+                protected_ids=admitted_set,
+            )
+        for job_id, initial_state in prepared_initial_states.items():
+            self._initialize_rollout(job_id, initial_state, protected_ids=admitted_set)
 
         # 2. Schedule a batch
         batch = self.scheduler.schedule_batch()
@@ -176,10 +186,13 @@ class WorldModelEngine:
     def execution_stats_snapshot(self) -> dict[str, Any]:
         return self._execution_stats.snapshot()
 
+    def reset_execution_stats(self) -> None:
+        self._execution_stats = ExecutionStats(mode=self.execution_mode)
+
     # ─── Internal ───
 
-    def _initialize_rollout(self, job_id: str) -> None:
-        """Encode initial observation and create rollout state."""
+    def _prepare_initial_state(self, job_id: str) -> torch.Tensor:
+        """Encode or materialize the initial state for one rollout."""
         job = self._jobs[job_id]
 
         if job.initial_latent is not None:
@@ -197,8 +210,12 @@ class WorldModelEngine:
 
         if initial_state.ndim == 2:
             initial_state = initial_state.unsqueeze(0)  # [1, N, D]
+        return initial_state
 
-        self.state_manager.create(job_id, initial_state, max_steps=job.num_steps)
+    def _initialize_rollout(self, job_id: str, initial_state: torch.Tensor, *, protected_ids: set[str] | None = None) -> None:
+        """Create rollout state after the initial tensor has been prepared."""
+        job = self._jobs[job_id]
+        self.state_manager.create(job_id, initial_state, max_steps=job.num_steps, protected_ids=protected_ids)
 
     def _execute_batch(self, batch: ScheduledBatch) -> list[str]:
         """Execute one prediction step for a batch of rollouts."""
@@ -276,6 +293,8 @@ class WorldModelEngine:
     def _execute_batch_legacy(self, batch: ScheduledBatch) -> list[str]:
         """Legacy per-job execution path kept for benchmarking."""
         completed = []
+        protected_ids = set(batch.request_ids)
+        transition_updates: list[tuple[str, int, torch.Tensor, torch.Tensor]] = []
 
         for i, job_id in enumerate(batch.request_ids):
             step_idx = batch.step_indices[i]
@@ -298,14 +317,27 @@ class WorldModelEngine:
             # Predict next state
             next_state = self.dynamics_model.predict_next(current_state, action)
             self._record_transition_chunk(1, batch.size)
+            transition_updates.append((job_id, step_idx, action.squeeze(0), next_state.squeeze(0)))
 
-            # Update state
-            self.state_manager.append_step(job_id, action.squeeze(0), next_state.squeeze(0))
+        tensors_to_track = []
+        for _, _, action, next_state in transition_updates:
+            tensors_to_track.extend([action, next_state])
+        if tensors_to_track:
+            self.state_manager.ensure_capacity_for_tensors(tensors_to_track, protected_ids=protected_ids)
+
+        for job_id, step_idx, action, next_state in transition_updates:
+            job = self._jobs[job_id]
+            self.state_manager.append_step(
+                job_id,
+                action,
+                next_state,
+                protected_ids=protected_ids,
+            )
 
             # Per-step callback for streaming
             if job.step_callback is not None:
                 try:
-                    job.step_callback(job_id, step_idx, next_state.squeeze(0))
+                    job.step_callback(job_id, step_idx, next_state)
                 except Exception:
                     logger.exception("Step callback failed for job %s step %d", job_id, step_idx)
 
@@ -319,24 +351,39 @@ class WorldModelEngine:
     def _execute_batch_chunked(self, batch: ScheduledBatch) -> list[str]:
         """Chunked execution path that batches homogeneous transition work."""
         completed: list[str] = []
+        protected_ids = set(batch.request_ids)
+        transition_updates: list[tuple[ExecutionEntity, torch.Tensor, torch.Tensor]] = []
         for chunk in self._build_transition_chunks(batch):
             self._record_transition_chunk(chunk.size, batch.size)
             next_states = self.dynamics_model.predict_next(chunk.latent_batch, chunk.action_batch)
-
             for entity, next_state, action in zip(chunk.entities, next_states, chunk.action_batch):
-                job_id = entity.rollout_id
-                job = self._jobs[job_id]
-                self.state_manager.append_step(job_id, action, next_state)
+                transition_updates.append((entity, action, next_state))
 
-                if job.step_callback is not None:
-                    try:
-                        job.step_callback(job_id, entity.step_idx, next_state)
-                    except Exception:
-                        logger.exception("Step callback failed for job %s step %d", job_id, entity.step_idx)
+        tensors_to_track = []
+        for _, action, next_state in transition_updates:
+            tensors_to_track.extend([action, next_state])
+        if tensors_to_track:
+            self.state_manager.ensure_capacity_for_tensors(tensors_to_track, protected_ids=protected_ids)
 
-                if self.scheduler.step_completed(job_id):
-                    self.scheduler.complete(job_id)
-                    completed.append(job_id)
+        for entity, action, next_state in transition_updates:
+            job_id = entity.rollout_id
+            job = self._jobs[job_id]
+            self.state_manager.append_step(
+                job_id,
+                action,
+                next_state,
+                protected_ids=protected_ids,
+            )
+
+            if job.step_callback is not None:
+                try:
+                    job.step_callback(job_id, entity.step_idx, next_state)
+                except Exception:
+                    logger.exception("Step callback failed for job %s step %d", job_id, entity.step_idx)
+
+            if self.scheduler.step_completed(job_id):
+                self.scheduler.complete(job_id)
+                completed.append(job_id)
 
         return completed
 

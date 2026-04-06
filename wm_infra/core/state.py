@@ -163,11 +163,23 @@ class LatentStateManager:
             oldest_id, _ = min(evictable, key=lambda item: item[1].last_accessed)
             self.remove(oldest_id)
 
+    def ensure_capacity_for_tensors(
+        self,
+        tensors: list[torch.Tensor],
+        *,
+        protected_ids: set[str] | None = None,
+    ) -> None:
+        """Validate that the given tensors can be tracked without evicting protected rollouts."""
+        required_bytes = self._required_physical_bytes(tensors)
+        self._ensure_capacity(required_bytes, protected_ids=protected_ids)
+
     def create(
         self,
         rollout_id: str,
         initial_state: torch.Tensor,
         max_steps: int,
+        *,
+        protected_ids: set[str] | None = None,
     ) -> RolloutState:
         """Create a new rollout state with initial latent state.
 
@@ -183,11 +195,15 @@ class LatentStateManager:
             raise ValueError(f"Rollout {rollout_id} already exists")
 
         if self.num_active >= self.max_concurrent:
-            self._evict_lru()
+            self._evict_lru(protected_ids=protected_ids)
+        if self.num_active >= self.max_concurrent:
+            raise MemoryError(
+                f"Concurrent rollout budget exceeded: limit {self.max_concurrent} active rollouts"
+            )
 
         initial_state = initial_state.to(self.device)
         initial_bytes = self._required_physical_bytes([initial_state])
-        self._ensure_capacity(initial_bytes)
+        self._ensure_capacity(initial_bytes, protected_ids=protected_ids)
 
         now = time.monotonic()
         state = RolloutState(
@@ -207,6 +223,8 @@ class LatentStateManager:
         rollout_id: str,
         action: torch.Tensor,
         predicted_state: torch.Tensor,
+        *,
+        protected_ids: set[str] | None = None,
     ) -> RolloutState:
         """Append a prediction step to an active rollout.
 
@@ -222,7 +240,9 @@ class LatentStateManager:
         action = action.to(self.device)
         predicted_state = predicted_state.to(self.device)
         required_bytes = self._required_physical_bytes([action, predicted_state])
-        self._ensure_capacity(required_bytes, protected_ids={rollout_id})
+        protected = set(protected_ids or set())
+        protected.add(rollout_id)
+        self._ensure_capacity(required_bytes, protected_ids=protected)
         state.actions.append(action)
         state.latent_states.append(predicted_state)
         state.current_step += 1

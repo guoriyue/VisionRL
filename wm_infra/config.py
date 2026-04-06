@@ -54,6 +54,80 @@ class DynamicsConfig:
 
 
 @dataclass
+class MoEConfig:
+    """Configuration for Mixture-of-Experts feed-forward layers."""
+
+    num_experts: int = 8
+    top_k: int = 2
+    hidden_dim: int = 4096
+    intermediate_dim: int = 14336
+    weight_dtype: str = "float16"
+    max_experts_in_gpu: Optional[int] = None
+    has_shared_experts: bool = False
+    shared_expert_intermediate_dim: Optional[int] = None
+    use_shared_expert_gate: bool = False
+    use_expert_bias: bool = False
+    expert_bias_lr: float = 0.001
+    aux_loss_weight: float = 0.01
+    renormalize: bool = True
+    use_stream_overlap: bool = False
+
+
+@dataclass
+class TransformerConfig:
+    """Configuration for transformer attention + FFN blocks."""
+
+    hidden_dim: int = 4096
+    num_heads: int = 32
+    num_kv_heads: int = 8
+    head_dim: int = 128
+    max_seq_len: int = 4096
+    rope_theta: float = 10000.0
+    rms_norm_eps: float = 1e-5
+    moe: MoEConfig = field(default_factory=MoEConfig)
+    attention_type: str = "mha"
+    attention_backend: str = "auto"
+    compile_attention: bool = False
+    qkv_bias: bool = False
+    q_lora_rank: Optional[int] = None
+    kv_lora_rank: int = 512
+    qk_nope_head_dim: int = 128
+    qk_rope_head_dim: int = 64
+    qk_head_dim: Optional[int] = None
+    v_head_dim: int = 128
+    speculative_top_k: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if self.num_kv_heads <= 0:
+            self.num_kv_heads = self.num_heads
+        if self.qk_head_dim is None:
+            self.qk_head_dim = self.qk_nope_head_dim + self.qk_rope_head_dim
+        if self.moe.hidden_dim != self.hidden_dim:
+            self.moe.hidden_dim = self.hidden_dim
+
+
+@dataclass
+class ModelConfig:
+    """Configuration for full decoder-only transformer models."""
+
+    vocab_size: int = 32000
+    hidden_dim: int = 4096
+    num_layers: int = 32
+    block: TransformerConfig = field(default_factory=TransformerConfig)
+    moe_layer_indices: list[int] = field(default_factory=list)
+    intermediate_dim_dense: Optional[int] = None
+    tie_word_embeddings: bool = False
+
+    def __post_init__(self) -> None:
+        if self.block.hidden_dim != self.hidden_dim:
+            self.block.hidden_dim = self.hidden_dim
+            if self.block.moe.hidden_dim != self.hidden_dim:
+                self.block.moe.hidden_dim = self.hidden_dim
+        if self.intermediate_dim_dense is None:
+            self.intermediate_dim_dense = self.block.moe.intermediate_dim
+
+
+@dataclass
 class StateCacheConfig:
     """Latent state cache configuration."""
 

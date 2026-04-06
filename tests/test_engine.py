@@ -250,6 +250,53 @@ class TestRolloutScheduler:
 
 
 class TestWorldModelEngine:
+    def test_state_capacity_uses_rollout_concurrency_not_batch_size(self):
+        config = _small_config()
+        config.device = "cpu"
+        config.state_cache.max_batch_size = 1
+        config.scheduler.max_concurrent_rollouts = 2
+        dynamics = LatentDynamicsModel(config.dynamics)
+        engine = WorldModelEngine(config, dynamics, tokenizer=None, execution_mode="chunked")
+
+        for i in range(2):
+            engine.submit_job(RolloutJob(
+                job_id=f"concurrency_job{i}",
+                initial_latent=torch.randn(16, 6),
+                actions=torch.randn(1, 8),
+                num_steps=1,
+                return_frames=False,
+                return_latents=True,
+            ))
+
+        results = engine.run_until_done()
+
+        assert len(results) == 2
+        assert {result.job_id for result in results} == {"concurrency_job0", "concurrency_job1"}
+
+    def test_batch_peers_are_not_evicted_under_memory_pressure(self):
+        config = _small_config()
+        config.device = "cpu"
+        config.scheduler.max_concurrent_rollouts = 3
+        config.state_cache.max_batch_size = 3
+        config.state_cache.pool_size_gb = 0.0000016
+        dynamics = LatentDynamicsModel(config.dynamics)
+        engine = WorldModelEngine(config, dynamics, tokenizer=None, execution_mode="chunked")
+
+        for i in range(3):
+            engine.submit_job(RolloutJob(
+                job_id=f"peer_job{i}",
+                initial_latent=torch.randn(16, 6),
+                actions=torch.randn(2, 8),
+                num_steps=2,
+                return_frames=False,
+                return_latents=True,
+            ))
+
+        with pytest.raises(MemoryError, match="Latent state budget exceeded"):
+            engine.step()
+
+        assert set(engine.state_manager._states) == {"peer_job0", "peer_job1", "peer_job2"}
+
     def test_chunked_execution_forms_real_multi_entity_chunks(self):
         config = _small_config()
         config.device = "cpu"

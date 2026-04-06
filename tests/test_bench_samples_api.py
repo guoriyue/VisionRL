@@ -117,3 +117,40 @@ def test_parse_args_accepts_execution_mode(monkeypatch):
     monkeypatch.setattr("sys.argv", ["bench_samples_api.py", "--in-process", "--execution-mode", "legacy"])
     args = bench.parse_args()
     assert args.execution_mode == "legacy"
+
+
+def test_observed_runtime_fields_in_process():
+    bench = _load_benchmark_module()
+
+    execution_fields, workload_fields = bench._observed_runtime_fields(
+        in_process=True,
+        resolved_device="cuda",
+        requested_device="cuda",
+        requested_execution_mode="chunked",
+    )
+
+    assert execution_fields["device"] == "cuda"
+    assert execution_fields["runtime_execution_mode"] == "chunked"
+    assert execution_fields["requested_device"] == "cuda"
+    assert execution_fields["requested_runtime_execution_mode"] == "chunked"
+    assert workload_fields == {
+        "execution_device": "cuda",
+        "runtime_execution_mode": "chunked",
+    }
+
+
+def test_observed_runtime_fields_remote_omit_unverified_server_runtime():
+    bench = _load_benchmark_module()
+
+    execution_fields, workload_fields = bench._observed_runtime_fields(
+        in_process=False,
+        resolved_device="cpu",
+        requested_device="cpu",
+        requested_execution_mode="legacy",
+    )
+
+    assert execution_fields == {
+        "requested_device": "cpu",
+        "requested_runtime_execution_mode": "legacy",
+    }
+    assert workload_fields == {}

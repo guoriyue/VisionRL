@@ -243,6 +243,20 @@ def _load_payload(args: argparse.Namespace) -> dict[str, Any]:
     return DEFAULT_ROLLOUT_PAYLOAD
 
 
+def _observed_runtime_fields(*, in_process: bool, resolved_device: str, requested_device: str, requested_execution_mode: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    execution_fields: dict[str, Any] = {
+        "requested_device": requested_device,
+        "requested_runtime_execution_mode": requested_execution_mode,
+    }
+    workload_fields: dict[str, Any] = {}
+    if in_process:
+        execution_fields["device"] = resolved_device
+        execution_fields["runtime_execution_mode"] = requested_execution_mode
+        workload_fields["execution_device"] = resolved_device
+        workload_fields["runtime_execution_mode"] = requested_execution_mode
+    return execution_fields, workload_fields
+
+
 async def _main_async() -> None:
     args = parse_args()
     device = args.device
@@ -259,6 +273,12 @@ async def _main_async() -> None:
     task_cfg = payload.get("wan_config") or payload.get("task_config") or {}
     genie_cfg = payload.get("genie_config") or {}
     summary = run_summary_from_samples(samples)
+    execution_fields, workload_runtime_fields = _observed_runtime_fields(
+        in_process=args.in_process,
+        resolved_device=device,
+        requested_device=args.device,
+        requested_execution_mode=args.execution_mode,
+    )
     result = {
         "schema_version": 1,
         "recorded_at": utc_timestamp(),
@@ -273,13 +293,12 @@ async def _main_async() -> None:
             "iterations": args.iterations,
             "concurrency": args.concurrency,
             "timeout_s": args.timeout_s,
-            "device": device,
-            "execution_mode": args.execution_mode,
             "gpu_sample_interval_ms": args.gpu_sample_interval_ms,
             "base_url": args.base_url,
             "in_process": args.in_process,
             "workload": args.workload,
             "payload_file": args.payload_file,
+            **execution_fields,
         },
         "workload": {
             "workload_kind": "sample_api",
@@ -293,8 +312,7 @@ async def _main_async() -> None:
             "height": task_cfg.get("height") or payload.get("sample_spec", {}).get("height"),
             "num_steps": task_cfg.get("num_steps"),
             "input_modality": payload.get("task_type"),
-            "execution_device": device,
-            "runtime_execution_mode": args.execution_mode,
+            **workload_runtime_fields,
         },
         "request_payload": payload,
         "summary": summary,

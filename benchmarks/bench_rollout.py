@@ -56,10 +56,10 @@ def run_benchmark(
     print("-" * 60)
 
     # Warmup
-    for _ in range(warmup_runs):
+    for warmup_idx in range(warmup_runs):
         for i in range(batch_size):
             engine.submit_job(RolloutJob(
-                job_id=f"warmup_{_}_{i}",
+                job_id=f"warmup_{warmup_idx}_{i}",
                 initial_latent=torch.randn(num_tokens, latent_dim),
                 actions=torch.randn(num_steps, action_dim),
                 num_steps=num_steps,
@@ -67,6 +67,7 @@ def run_benchmark(
                 return_latents=True,
             ))
         engine.run_until_done()
+    engine.reset_execution_stats()
 
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
@@ -108,7 +109,8 @@ def run_benchmark(
     avg_latency = sum(latencies) / len(latencies)
     total_steps = batch_size * num_steps
     print(f"Average: {avg_latency:.3f}s | {total_steps / avg_latency:.1f} steps/s | {avg_latency * 1000 / total_steps:.2f} ms/step")
-    print(f"Execution stats: {engine.execution_stats_snapshot()}")
+    execution_stats = engine.execution_stats_snapshot()
+    print(f"Execution stats: {execution_stats}")
 
     gpu_summary = gpu_sampler.summary()
     print(format_gpu_summary(gpu_summary))
@@ -116,6 +118,17 @@ def run_benchmark(
     if device == "cuda":
         peak_mem = torch.cuda.max_memory_allocated() / (1024**3)
         print(f"Peak GPU memory: {peak_mem:.2f} GB")
+    else:
+        peak_mem = None
+
+    return {
+        "avg_latency_s": avg_latency,
+        "avg_steps_per_sec": total_steps / avg_latency,
+        "avg_step_ms": avg_latency * 1000 / total_steps,
+        "execution_stats": execution_stats,
+        "gpu_summary": gpu_summary,
+        "peak_mem_gb": peak_mem,
+    }
 
 
 def main():
