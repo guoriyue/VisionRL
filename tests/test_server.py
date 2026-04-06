@@ -56,6 +56,7 @@ async def client(tmp_path):
     from asgi_lifespan import LifespanManager
 
     config = _test_config()
+    config.controlplane.cosmos_output_root = str(tmp_path / "cosmos")
     config.controlplane.wan_output_root = str(tmp_path / "wan")
     temporal_store = TemporalStore(tmp_path / "temporal")
     registry = BackendRegistry()
@@ -129,8 +130,11 @@ class TestBackends:
         resp = await client.get("/v1/backends")
         assert resp.status_code == 200
         backends = {backend["name"]: backend for backend in resp.json()["backends"]}
+        assert "cosmos-predict" in backends
         assert "rollout-engine" in backends
         assert "wan-video" in backends
+        assert backends["cosmos-predict"]["runner_mode"] == "stub"
+        assert backends["cosmos-predict"]["async_queue"] is True
         assert backends["wan-video"]["shell_runner_configured"] is False
         assert backends["wan-video"]["runner_mode"] == "stub"
         assert backends["wan-video"]["async_queue"] is True
@@ -238,9 +242,27 @@ class TestSamples:
             },
         })
         assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_create_cosmos_sample_queues_and_completes(self, client):
+        resp = await client.post("/v1/samples", json={
+            "task_type": "text_to_video",
+            "backend": "cosmos-predict",
+            "model": "cosmos-predict1-7b-text2world",
+            "sample_spec": {
+                "prompt": "A warehouse robot navigating around boxes.",
+                "width": 1024,
+                "height": 640,
+            },
+            "task_config": {"num_steps": 12, "frame_count": 16, "width": 1024, "height": 640},
+            "cosmos_config": {"variant": "predict1_text2world", "model_size": "7B", "frames_per_second": 16},
+        })
+        assert resp.status_code == 200
         data = resp.json()
-        assert data["runtime"]["steps_completed"] == 2
-        assert data["task_config"]["num_steps"] == 2
+        assert data["status"] == "queued"
+        terminal = await _wait_for_terminal_sample(client, data["sample_id"])
+        assert terminal["status"] == "succeeded"
+        assert terminal["runtime"]["runner_mode"] == "stub"
 
     @pytest.mark.asyncio
     async def test_create_sample_persists_under_experiment_directory(self, client, tmp_path):
@@ -610,6 +632,33 @@ class TestTemporalControlPlane:
         assert backends["genie-rollout"]["runner_mode"] == "stub"
         assert backends["genie-rollout"]["async_queue"] is True
         assert "model" in backends["genie-rollout"]
+
+    @pytest.mark.asyncio
+    async def test_default_genie_backend_uses_controlplane_batching_config(self, tmp_path):
+        from asgi_lifespan import LifespanManager
+
+        config = _test_config()
+        config.controlplane.manifest_store_root = str(tmp_path / "manifests")
+        config.controlplane.genie_output_root = str(tmp_path / "genie")
+        config.controlplane.wan_output_root = str(tmp_path / "wan")
+        config.controlplane.cosmos_output_root = str(tmp_path / "cosmos")
+        config.controlplane.genie_max_batch_size = 3
+        config.controlplane.genie_batch_wait_ms = 9.0
+
+        temporal_store = TemporalStore(tmp_path / "temporal")
+        app = create_app(
+            config,
+            sample_store=SampleManifestStore(tmp_path / "manifests"),
+            temporal_store=temporal_store,
+        )
+
+        async with LifespanManager(app):
+            backend = app.state.backend_registry.get("genie-rollout")
+            assert backend is not None
+            assert backend._transition_batcher.max_batch_size == 3
+            assert backend._transition_batcher.batch_wait_ms == 9.0
+            assert app.state.genie_job_queue is not None
+            assert app.state.genie_job_queue.snapshot()["max_batch_size"] == 2
 
     @pytest.mark.asyncio
     async def test_genie_rollout_accepts_inline_raw_tokens(self, client):

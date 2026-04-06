@@ -7,7 +7,7 @@ metadata, and it can score both rollout-style and Wan-style video requests.
 
 from __future__ import annotations
 
-from wm_infra.controlplane.schemas import ResourceEstimate, RolloutTaskConfig, VideoMemoryProfile, WanTaskConfig
+from wm_infra.controlplane.schemas import CosmosTaskConfig, ResourceEstimate, RolloutTaskConfig, VideoMemoryProfile, WanTaskConfig
 from wm_infra.core.scheduler import DEFAULT_RESOURCE_UNITS_PER_GB, RolloutRequest
 
 _BASELINE_FRAMES = 9
@@ -74,4 +74,34 @@ def estimate_wan_request(wan_config: WanTaskConfig | None) -> ResourceEstimate:
     return estimate
 
 
-__all__ = ["estimate_rollout_request", "estimate_wan_request"]
+def estimate_cosmos_request(
+    task_config: RolloutTaskConfig | None,
+    cosmos_config: CosmosTaskConfig | None,
+) -> ResourceEstimate:
+    task_config = task_config or RolloutTaskConfig()
+    cosmos_config = cosmos_config or CosmosTaskConfig()
+    estimate = estimate_rollout_request(task_config)
+
+    size_factor = {
+        "2B": 0.6,
+        "7B": 1.0,
+        "14B": 1.7,
+    }.get(cosmos_config.model_size.upper(), 1.0)
+    if cosmos_config.variant.value.endswith("text2world"):
+        variant_factor = 0.85
+        bottleneck = "text_to_world_generation"
+    else:
+        variant_factor = 1.1
+        bottleneck = "video_conditioned_world_generation"
+
+    estimate.estimated_units = round(estimate.estimated_units * size_factor * variant_factor, 3)
+    if estimate.estimated_vram_gb is not None:
+        estimate.estimated_vram_gb = round(estimate.estimated_vram_gb * size_factor * variant_factor, 2)
+    estimate.bottleneck = bottleneck
+    estimate.notes.append(
+        "Cosmos estimate scales rollout pressure by Cosmos variant and model_size to reflect world-generation cost."
+    )
+    return estimate
+
+
+__all__ = ["estimate_cosmos_request", "estimate_rollout_request", "estimate_wan_request"]

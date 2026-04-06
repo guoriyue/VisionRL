@@ -119,6 +119,14 @@ def test_parse_args_accepts_execution_mode(monkeypatch):
     assert args.execution_mode == "legacy"
 
 
+def test_load_payload_supports_cosmos(monkeypatch):
+    bench = _load_benchmark_module()
+    monkeypatch.setattr("sys.argv", ["bench_samples_api.py", "--in-process", "--workload", "cosmos"])
+    args = bench.parse_args()
+    payload = bench._load_payload(args)
+    assert payload["backend"] == "cosmos-predict"
+
+
 def test_observed_runtime_fields_in_process():
     bench = _load_benchmark_module()
 

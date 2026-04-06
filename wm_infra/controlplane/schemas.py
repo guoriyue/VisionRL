@@ -59,6 +59,14 @@ class TokenizerKind(str, Enum):
     RAW = "raw"  # pre-tokenized, no decode available
 
 
+class CosmosVariant(str, Enum):
+    """Cosmos world-generation family variants."""
+
+    PREDICT1_TEXT2WORLD = "predict1_text2world"
+    PREDICT1_VIDEO2WORLD = "predict1_video2world"
+    PREDICT2_VIDEO2WORLD = "predict2_video2world"
+
+
 class FailureTag(str, Enum):
     IDENTITY_DRIFT = "identity_drift"
     TEMPORAL_FLICKER = "temporal_flicker"
@@ -156,6 +164,21 @@ class GenieTaskConfig(BaseModel):
     input_tokens_b64: Optional[str] = Field(default=None, description="Base64-encoded numpy array of prompt tokens (T,H,W) uint32")
 
 
+class CosmosTaskConfig(BaseModel):
+    """Cosmos-family world generation config for NIM or local shell runners."""
+
+    variant: CosmosVariant = Field(
+        default=CosmosVariant.PREDICT1_VIDEO2WORLD,
+        description="Cosmos pipeline variant to execute",
+    )
+    model_size: str = Field(default="7B", description="Model size or variant label, e.g. 2B, 7B, 14B")
+    guidance_scale: float = Field(default=7.0, ge=0, description="Guidance scale when supported by the runner")
+    checkpoint_every_n_frames: int = Field(default=0, ge=0, description="Reserved for future chunked continuation scheduling")
+    frames_per_second: int = Field(default=16, ge=1, description="Output video FPS")
+    negative_prompt: Optional[str] = Field(default=None, description="Optional backend-specific negative prompt override")
+    seed: Optional[int] = Field(default=None, description="Optional backend-specific seed override")
+
+
 class ResourceEstimate(BaseModel):
     estimated_units: float = Field(..., ge=0, description="Relative resource score for admission/scheduling")
     estimated_vram_gb: Optional[float] = Field(default=None, ge=0)
@@ -239,6 +262,13 @@ class ProduceSampleRequest(BaseModel):
         description=(
             "Genie-family world model config. Used when backend is genie-rollout. "
             "Controls tokenizer kind, checkpointing, and raw token input."
+        ),
+    )
+    cosmos_config: Optional[CosmosTaskConfig] = Field(
+        default=None,
+        description=(
+            "Cosmos-family world generation config. Used when backend is cosmos-predict. "
+            "Controls the Cosmos variant, FPS, guidance, and runner-specific options."
         ),
     )
     return_artifacts: list[ArtifactKind] = Field(default_factory=lambda: [ArtifactKind.VIDEO])
@@ -346,6 +376,7 @@ class SampleRecord(BaseModel):
     task_config: Optional[RolloutTaskConfig] = None
     wan_config: Optional[WanTaskConfig] = None
     genie_config: Optional[GenieTaskConfig] = None
+    cosmos_config: Optional[CosmosTaskConfig] = None
     resource_estimate: Optional[ResourceEstimate] = None
     artifacts: list[ArtifactRecord] = Field(default_factory=list)
     evaluations: list[EvaluationRecord] = Field(default_factory=list)
