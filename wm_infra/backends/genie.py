@@ -1,7 +1,6 @@
 """State-aware rollout backend for Genie (STMaskGIT) temporal episodes."""
 
 from __future__ import annotations
-
 import base64
 import hashlib
 import io
@@ -1849,24 +1848,25 @@ class GenieRolloutBackend(ProduceSampleBackend):
                 )
             )
 
-            ctx["rollout"].output_state_handle_id = output_state.state_handle_id
-            ctx["rollout"].status = TemporalStatus.SUCCEEDED if status == SampleStatus.SUCCEEDED else TemporalStatus.FAILED
-            ctx["rollout"].started_at = ctx["rollout"].started_at or ctx["started_at"]
-            ctx["rollout"].completed_at = completed_at
-            ctx["rollout"].checkpoint_ids = list(
-                dict.fromkeys([*ctx["rollout"].checkpoint_ids, *[cp.checkpoint_id for cp in ctx["intermediate_checkpoints"]], checkpoint.checkpoint_id])
+            rollout = ctx["rollout"]
+            rollout.output_state_handle_id = output_state.state_handle_id
+            rollout.status = TemporalStatus.SUCCEEDED if status == SampleStatus.SUCCEEDED else TemporalStatus.FAILED
+            rollout.started_at = rollout.started_at or ctx["started_at"]
+            rollout.completed_at = completed_at
+            rollout.checkpoint_ids = list(
+                dict.fromkeys([*rollout.checkpoint_ids, *[cp.checkpoint_id for cp in ctx["intermediate_checkpoints"]], checkpoint.checkpoint_id])
             )
-            ctx["rollout"].artifact_ids = [artifact.artifact_id for artifact in artifacts]
-            ctx["rollout"].metadata["checkpoint_id"] = checkpoint.checkpoint_id
-            ctx["rollout"].metadata["checkpoint_path"] = str(ctx["checkpoint_path"])
-            ctx["rollout"].metadata["recovery_path"] = str(ctx["recovery_path"])
-            ctx["rollout"].metadata["stage_graph"] = GENIE_STAGE_GRAPH
-            ctx["rollout"].metadata["stage_timings_ms"] = ctx["stage_timings_ms"]
-            ctx["rollout"].metadata["stage_history"] = ctx["stage_history"]
-            ctx["rollout"].metadata["stage_profile"] = stage_profile
-            ctx["rollout"].metadata["benchmark_profile"] = benchmark_profile
-            ctx["rollout"].metadata["scheduler"] = scheduler_profile
-            ctx["rollout"].metrics = {
+            rollout.artifact_ids = [artifact.artifact_id for artifact in artifacts]
+            rollout.metadata["checkpoint_id"] = checkpoint.checkpoint_id
+            rollout.metadata["checkpoint_path"] = str(ctx["checkpoint_path"])
+            rollout.metadata["recovery_path"] = str(ctx["recovery_path"])
+            rollout.metadata["stage_graph"] = GENIE_STAGE_GRAPH
+            rollout.metadata["stage_timings_ms"] = ctx["stage_timings_ms"]
+            rollout.metadata["stage_history"] = ctx["stage_history"]
+            rollout.metadata["stage_profile"] = stage_profile
+            rollout.metadata["benchmark_profile"] = benchmark_profile
+            rollout.metadata["scheduler"] = scheduler_profile
+            rollout.metrics = {
                 "steps": float(ctx["step_count"]),
                 "estimated_units": ctx["estimate"].estimated_units,
                 "frames_generated": float(run_result.frames_generated),
@@ -1874,8 +1874,8 @@ class GenieRolloutBackend(ProduceSampleBackend):
                 "elapsed_s": run_result.elapsed_s,
                 "runner_load_ms": ctx["stage_timings_ms"]["runner_load_ms"],
                 "state_token_prep_ms": ctx["stage_timings_ms"]["state_token_prep_ms"],
-                "runner_exec_ms": ctx["stage_timings_ms"].get("runner_exec_ms", 0.0),
-                "transition_ms": ctx["stage_timings_ms"].get("transition_ms", 0.0),
+                "runner_exec_ms": ctx["stage_timings_ms"]["runner_exec_ms"],
+                "transition_ms": ctx["stage_timings_ms"]["transition_ms"],
                 "checkpoint_ms": ctx["stage_timings_ms"].get("checkpoint_ms", 0.0),
                 "artifact_persist_ms": ctx["stage_timings_ms"]["artifact_persist_ms"],
                 "temporal_persist_ms": ctx["stage_timings_ms"]["temporal_persist_ms"],
@@ -1886,16 +1886,17 @@ class GenieRolloutBackend(ProduceSampleBackend):
                 "max_cross_request_batch_size": float(scheduler_profile["max_observed_batch_size"]),
                 "total_elapsed_ms": ctx["stage_timings_ms"]["total_elapsed_ms"],
             }
-            self.temporal_store.update_rollout(ctx["rollout"])
+            self.temporal_store.update_rollout(rollout)
 
             temporal_refs = TemporalRefs(
                 episode_id=ctx["episode"].episode_id,
-                rollout_id=ctx["rollout"].rollout_id,
+                rollout_id=rollout.rollout_id,
                 branch_id=ctx["temporal"].branch_id,
                 checkpoint_id=checkpoint.checkpoint_id,
                 state_handle_id=output_state.state_handle_id,
                 parent_state_handle_id=ctx["temporal"].state_handle_id,
             )
+
             records.append(
                 SampleRecord(
                     sample_id=ctx["sample_id"],

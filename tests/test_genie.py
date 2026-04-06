@@ -454,6 +454,7 @@ class TestGenieRolloutBackend:
             assert record.runtime["scheduler"]["transition_entities"] == 1
             assert record.runtime["scheduler"]["batched_across_requests"] is True
             assert record.runtime["scheduler"]["max_observed_batch_size"] == 2
+            assert record.runtime["scheduler"]["cross_request_batcher"] is None
             assert record.runtime["benchmark_profile"]["max_observed_batch_size"] == 2
             assert record.runtime["benchmark_profile"]["chunk_count"] == 1
             assert record.runtime["stage_profile"]["completed_stages"] == [
