@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import io
 import json
 import time
 import uuid
@@ -17,7 +19,9 @@ from wm_infra.controlplane import (
     ArtifactKind,
     ArtifactRecord,
     CheckpointCreate,
+    GenieTaskConfig,
     ProduceSampleRequest,
+    RolloutTaskConfig,
     RolloutCreate,
     SampleRecord,
     SampleStatus,
@@ -29,6 +33,7 @@ from wm_infra.controlplane import (
     TemporalStore,
     TokenInputSource,
     TokenizerFamily,
+    TokenizerKind,
     estimate_rollout_request,
 )
 
@@ -107,9 +112,67 @@ class GenieRolloutBackend(ProduceSampleBackend):
             metadata=payload,
         )
 
+    def _effective_task_config(self, request: ProduceSampleRequest) -> RolloutTaskConfig:
+        task_config = request.task_config.model_copy(deep=True) if request.task_config is not None else RolloutTaskConfig()
+        genie_config = request.genie_config
+        if genie_config is not None:
+            task_config.frame_count = genie_config.num_frames
+        return task_config
+
+    def _effective_genie_config(self, request: ProduceSampleRequest, task_config: RolloutTaskConfig) -> GenieTaskConfig:
+        genie_config = request.genie_config.model_copy(deep=True) if request.genie_config is not None else GenieTaskConfig()
+        if request.genie_config is None:
+            genie_config.num_frames = task_config.frame_count or genie_config.num_frames
+        return genie_config
+
+    def _resolve_genie_config_tokens(
+        self,
+        genie_config: GenieTaskConfig,
+        sample_dir: Path,
+    ) -> tuple[np.ndarray, dict[str, Any], list[ArtifactRecord]]:
+        try:
+            encoded = base64.b64decode(genie_config.input_tokens_b64.encode("utf-8"))
+        except Exception as exc:
+            raise ValueError("genie_config.input_tokens_b64 must be valid base64") from exc
+
+        try:
+            raw = np.load(io.BytesIO(encoded), allow_pickle=False).astype(np.uint32)
+        except Exception as exc:
+            raise ValueError("genie_config.input_tokens_b64 must decode to a .npy uint32 tensor") from exc
+
+        if raw.ndim != 3:
+            raise ValueError("genie_config.input_tokens_b64 must decode to a 3D [T,H,W] uint32 tensor")
+
+        input_path = sample_dir / "input_tokens.npy"
+        np.save(str(input_path), raw)
+        artifact = self._artifact_record(
+            artifact_id=f"{sample_dir.name}:input-tokens",
+            kind=ArtifactKind.LATENT,
+            path=input_path,
+            mime_type="application/octet-stream",
+            metadata={
+                "role": "input_tokens",
+                "format": "numpy",
+                "shape": list(raw.shape),
+                "dtype": "uint32",
+                "source": "genie_config_b64",
+                "tokenizer_kind": genie_config.tokenizer_kind.value,
+            },
+        )
+        scaffold = {
+            "token_input_mode": "genie_config_b64",
+            "resolved_shape": list(raw.shape),
+            "resolved_path": str(input_path),
+            "tokenizer_kind": genie_config.tokenizer_kind.value,
+        }
+        return raw, scaffold, [artifact]
+
     def _resolve_input_tokens(self, request: ProduceSampleRequest, sample_dir: Path) -> tuple[np.ndarray | None, dict[str, Any], list[ArtifactRecord]]:
         token_input = request.token_input
         if token_input is None:
+            genie_config = request.genie_config
+            if genie_config is not None and genie_config.input_tokens_b64:
+                return self._resolve_genie_config_tokens(genie_config, sample_dir)
             return None, {"token_input_mode": "none"}, []
 
         scaffold = {
@@ -175,6 +238,64 @@ class GenieRolloutBackend(ProduceSampleBackend):
         )
         return raw, scaffold, artifacts
 
+    def _validate_real_mode_request(
+        self,
+        *,
+        request: ProduceSampleRequest,
+        genie_config: GenieTaskConfig,
+        input_tokens: np.ndarray | None,
+    ) -> None:
+        model = self.runner._model
+        if model is None:
+            raise ValueError("Genie real mode requested but model is not loaded")
+
+        max_frames = int(model.config.T)
+        expected_hw = (int(model.h), int(model.w))
+        max_token_id = int(model.config.image_vocab_size) - 1
+
+        if genie_config.tokenizer_kind != TokenizerKind.GENIE_STMASKGIT:
+            raise ValueError(
+                "Genie real mode currently only supports genie_config.tokenizer_kind=genie_stmaskgit"
+            )
+
+        if genie_config.num_frames > max_frames:
+            raise ValueError(
+                f"Genie real mode only supports num_frames <= {max_frames}; got {genie_config.num_frames}"
+            )
+
+        if genie_config.num_prompt_frames >= genie_config.num_frames:
+            raise ValueError(
+                "Genie real mode requires num_prompt_frames < num_frames"
+            )
+
+        if request.token_input is not None and request.token_input.tokenizer_family != TokenizerFamily.RAW:
+            raise ValueError(
+                "Genie real mode currently only supports token_input.tokenizer_family=raw; tokenizer_family=magvit2 remains scaffold-only"
+            )
+
+        if input_tokens is None:
+            return
+
+        if input_tokens.ndim != 3:
+            raise ValueError("Genie real mode token input must resolve to a 3D [T,H,W] tensor")
+
+        if tuple(input_tokens.shape[1:]) != expected_hw:
+            raise ValueError(
+                f"Genie real mode token input must have spatial shape [T,{expected_hw[0]},{expected_hw[1]}], got {list(input_tokens.shape)}"
+            )
+
+        if input_tokens.shape[0] > max_frames:
+            raise ValueError(
+                f"Genie real mode token input only supports T <= {max_frames}; got {input_tokens.shape[0]}"
+            )
+
+        max_seen = int(input_tokens.max())
+        min_seen = int(input_tokens.min())
+        if min_seen < 0 or max_seen > max_token_id:
+            raise ValueError(
+                f"Genie real mode token ids must be in [0,{max_token_id}], got [{min_seen},{max_seen}]"
+            )
+
     async def execute_job(self, request: ProduceSampleRequest, sample_id: str) -> SampleRecord:
         if request.task_type not in {TaskType.GENIE_ROLLOUT, TaskType.WORLD_MODEL_ROLLOUT}:
             raise ValueError(f"Backend {self.backend_name} only supports rollout-style temporal tasks")
@@ -189,10 +310,11 @@ class GenieRolloutBackend(ProduceSampleBackend):
 
         self.ensure_runner_loaded()
 
-        task_config = request.task_config
+        task_config = self._effective_task_config(request)
+        genie_config = self._effective_genie_config(request, task_config)
         estimate = estimate_rollout_request(task_config)
         step_count = task_config.num_steps if task_config is not None else 1
-        num_frames = task_config.frame_count if task_config and task_config.frame_count is not None else 16
+        num_frames = genie_config.num_frames
 
         sample_dir = self._sample_dir(sample_id)
         request_path = sample_dir / "request.json"
@@ -202,6 +324,12 @@ class GenieRolloutBackend(ProduceSampleBackend):
         recovery_path = sample_dir / "recovery.json"
 
         input_tokens, token_input_runtime, input_artifacts = self._resolve_input_tokens(request, sample_dir)
+        if self.runner_mode == "real":
+            self._validate_real_mode_request(
+                request=request,
+                genie_config=genie_config,
+                input_tokens=input_tokens,
+            )
 
         request_payload = {
             "sample_id": sample_id,
@@ -213,6 +341,7 @@ class GenieRolloutBackend(ProduceSampleBackend):
             "temporal": temporal.model_dump(mode="json") if temporal else None,
             "token_input": request.token_input.model_dump(mode="json") if request.token_input else None,
             "task_config": task_config.model_dump(mode="json") if task_config else None,
+            "genie_config": genie_config.model_dump(mode="json"),
             "runner_mode": self._runner.mode,
         }
         request_path.write_text(json.dumps(request_payload, indent=2, sort_keys=True))
@@ -234,6 +363,7 @@ class GenieRolloutBackend(ProduceSampleBackend):
                     "prompt": request.sample_spec.prompt,
                     "controls": request.sample_spec.controls,
                     "token_input": token_input_runtime,
+                    "genie_config": genie_config.model_dump(mode="json"),
                 },
             ),
             status=TemporalStatus.ACTIVE,
@@ -246,6 +376,9 @@ class GenieRolloutBackend(ProduceSampleBackend):
             seed=seed,
             num_frames=num_frames,
             input_tokens=input_tokens,
+            num_prompt_frames=genie_config.num_prompt_frames,
+            maskgit_steps=genie_config.maskgit_steps,
+            temperature=genie_config.temperature,
         )
         mode = run_result.mode
         request_payload["runner_mode"] = mode
@@ -269,6 +402,10 @@ class GenieRolloutBackend(ProduceSampleBackend):
             f"Genie runner mode: {mode}",
             f"Model: {run_result.model_name}",
             f"Device: {run_result.device}",
+            f"Requested frames: {genie_config.num_frames}",
+            f"Prompt frames: {genie_config.num_prompt_frames}",
+            f"MaskGIT steps: {genie_config.maskgit_steps}",
+            f"Temperature: {genie_config.temperature}",
             f"Frames generated: {run_result.frames_generated}/{run_result.total_frames}",
             f"Tokens generated: {run_result.tokens_generated}",
             f"Elapsed: {run_result.elapsed_s:.3f}s",
@@ -301,6 +438,7 @@ class GenieRolloutBackend(ProduceSampleBackend):
                     "frames_generated": run_result.frames_generated,
                     "sample_id": sample_id,
                     "token_input": token_input_runtime,
+                    "genie_config": genie_config.model_dump(mode="json"),
                 },
             )
         )
@@ -320,6 +458,7 @@ class GenieRolloutBackend(ProduceSampleBackend):
             "runner_mode": mode,
             "status": status.value,
             "token_input": token_input_runtime,
+            "genie_config": genie_config.model_dump(mode="json"),
             "timestamps": {"started_at": started_at, "completed_at": completed_at},
         }
         checkpoint_path.write_text(json.dumps(checkpoint_payload, indent=2, sort_keys=True))
@@ -343,6 +482,7 @@ class GenieRolloutBackend(ProduceSampleBackend):
                     "checkpoint_path": str(checkpoint_path),
                     "recovery_path": str(recovery_path),
                     "sample_id": sample_id,
+                    "genie_config": genie_config.model_dump(mode="json"),
                 },
             )
         )
@@ -480,6 +620,7 @@ class GenieRolloutBackend(ProduceSampleBackend):
             "tokens_path": run_result.tokens_path,
             "state_path": run_result.state_path,
             "token_input": token_input_runtime,
+            "genie_config": genie_config.model_dump(mode="json"),
             "status_history": [
                 {"status": SampleStatus.QUEUED.value, "timestamp": started_at},
                 {"status": SampleStatus.RUNNING.value, "timestamp": started_at},
@@ -517,6 +658,7 @@ class GenieRolloutBackend(ProduceSampleBackend):
             temporal=temporal_refs,
             token_input=request.token_input,
             task_config=task_config,
+            genie_config=genie_config,
             resource_estimate=estimate,
             artifacts=artifacts,
             runtime=runtime,
@@ -528,6 +670,7 @@ class GenieRolloutBackend(ProduceSampleBackend):
                 "fallback_from": run_result.extra.get("fallback_from"),
                 "stubbed": mode == "stub",
                 "async": False,
+                "genie_config_applied": True,
                 "notes": (
                     f"Genie rollout executed via {mode} runner. "
                     f"{run_result.frames_generated} frames generated, {run_result.tokens_generated} tokens produced."
@@ -546,7 +689,9 @@ class GenieRolloutBackend(ProduceSampleBackend):
         if temporal is None or not temporal.episode_id:
             raise ValueError("genie-rollout requests require temporal.episode_id")
         sample_id = str(uuid.uuid4())
-        estimate = estimate_rollout_request(request.task_config)
+        task_config = self._effective_task_config(request)
+        genie_config = self._effective_genie_config(request, task_config)
+        estimate = estimate_rollout_request(task_config)
         self._job_queue.submit(sample_id, request)
         queued_at = time.time()
         return SampleRecord(
@@ -560,12 +705,14 @@ class GenieRolloutBackend(ProduceSampleBackend):
             sample_spec=request.sample_spec,
             temporal=request.temporal,
             token_input=request.token_input,
-            task_config=request.task_config,
+            task_config=task_config,
+            genie_config=genie_config,
             resource_estimate=estimate,
             runtime={
-                "runner": self.runner_mode,
+                "runner": f"genie-{self.runner_mode}",
                 "runner_mode": self.runner_mode,
                 "async": True,
+                "genie_config": genie_config.model_dump(mode="json"),
                 "status_history": [{"status": SampleStatus.QUEUED.value, "timestamp": queued_at}],
                 "queued_at": queued_at,
             },
@@ -575,5 +722,6 @@ class GenieRolloutBackend(ProduceSampleBackend):
                 "labels": request.labels,
                 "runner_mode": self.runner_mode,
                 "async": True,
+                "genie_config_applied": True,
             },
         )

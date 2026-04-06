@@ -14,8 +14,10 @@ import pytest
 import pytest_asyncio
 
 from wm_infra.api.server import create_app
+from wm_infra.backends import BackendRegistry, GenieRolloutBackend
+from wm_infra.backends.genie_runner import GenieRunner
 from wm_infra.config import ControlPlaneConfig, DynamicsConfig, EngineConfig, StateCacheConfig, TokenizerConfig
-from wm_infra.controlplane import ArtifactKind, SampleManifestStore
+from wm_infra.controlplane import ArtifactKind, SampleManifestStore, TemporalStore
 
 
 def _test_config() -> EngineConfig:
@@ -55,7 +57,24 @@ async def client(tmp_path):
 
     config = _test_config()
     config.controlplane.wan_output_root = str(tmp_path / "wan")
-    app = create_app(config, sample_store=SampleManifestStore(tmp_path))
+    temporal_store = TemporalStore(tmp_path / "temporal")
+    registry = BackendRegistry()
+    genie_runner = GenieRunner()
+    genie_runner._mode = "stub"
+    genie_runner.load = lambda: "stub"  # type: ignore[method-assign]
+    registry.register(
+        GenieRolloutBackend(
+            temporal_store,
+            output_root=tmp_path / "genie",
+            runner=genie_runner,
+        )
+    )
+    app = create_app(
+        config,
+        sample_store=SampleManifestStore(tmp_path),
+        backend_registry=registry,
+        temporal_store=temporal_store,
+    )
 
     async with LifespanManager(app) as manager:
         async with httpx.AsyncClient(
@@ -472,17 +491,24 @@ class TestTemporalControlPlane:
                 "branch_id": branch["branch_id"],
                 "state_handle_id": state["state_handle_id"],
             },
-            "task_config": {"num_steps": 3, "frame_count": 9, "width": 832, "height": 480},
+            "task_config": {"num_steps": 3, "width": 832, "height": 480},
+            "genie_config": {"num_frames": 9, "num_prompt_frames": 4, "maskgit_steps": 3, "temperature": 0.1},
             "return_artifacts": ["metadata"],
         })
         assert sample_resp.status_code == 200
         queued = sample_resp.json()
         assert queued["status"] == "queued"
         assert queued["runtime"]["async"] is True
+        assert queued["genie_config"]["num_frames"] == 9
+        assert queued["task_config"]["frame_count"] == 9
         sample = await _wait_for_terminal_sample(client, queued["sample_id"])
         assert sample["status"] == "succeeded"
         assert sample["runtime"]["runner"] == "genie-stub"
         assert sample["runtime"]["runner_mode"] == "stub"
+        assert sample["genie_config"]["num_frames"] == 9
+        assert sample["genie_config"]["num_prompt_frames"] == 4
+        assert sample["runtime"]["genie_config"]["maskgit_steps"] == 3
+        assert sample["runtime"]["genie_config"]["temperature"] == 0.1
         assert sample["temporal"]["episode_id"] == episode["episode_id"]
         assert sample["temporal"]["rollout_id"] is not None
         assert sample["temporal"]["checkpoint_id"] is not None

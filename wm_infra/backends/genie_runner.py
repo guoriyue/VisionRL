@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
+import torch
 
 logger = logging.getLogger("wm_infra.genie_runner")
 
@@ -142,12 +143,13 @@ class GenieRunner:
             return self._mode
 
         try:
-            import torch
             from genie.st_mask_git import STMaskGIT
 
             logger.info("Loading Genie model from %s …", self.model_name_or_path)
             t0 = time.monotonic()
             model = STMaskGIT.from_pretrained(self.model_name_or_path)
+            if str(self.device).startswith("cuda"):
+                model = model.half()
             model = model.to(self.device)
             model.eval()
             elapsed = time.monotonic() - t0
@@ -178,6 +180,9 @@ class GenieRunner:
         seed: int = 42,
         num_frames: int = 16,
         input_tokens: Optional[np.ndarray] = None,
+        num_prompt_frames: Optional[int] = None,
+        maskgit_steps: Optional[int] = None,
+        temperature: Optional[float] = None,
     ) -> GenieRunResult:
         """Run generation and persist artifacts to *output_dir*.
 
@@ -197,24 +202,23 @@ class GenieRunner:
         """
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        prompt_frames = self.num_prompt_frames if num_prompt_frames is None else num_prompt_frames
+        steps = self.maskgit_steps if maskgit_steps is None else maskgit_steps
+        temp = self.temperature if temperature is None else temperature
+
         if self._mode == "real" and self._model is not None:
-            result = self._run_real(output_dir, prompt, seed, num_frames, input_tokens)
-            if result.error:
-                logger.warning(
-                    "Genie real-mode execution failed; falling back to stub mode: %s",
-                    result.error,
-                )
-                self._mode = "stub"
-                fallback = self._run_stub(output_dir, prompt, seed, num_frames, input_tokens)
-                fallback.extra.update(
-                    {
-                        "fallback_from": "real",
-                        "fallback_error": result.error,
-                    }
-                )
-                return fallback
+            result = self._run_real(
+                output_dir,
+                prompt,
+                seed,
+                num_frames,
+                input_tokens,
+                prompt_frames,
+                steps,
+                temp,
+            )
             return result
-        return self._run_stub(output_dir, prompt, seed, num_frames, input_tokens)
+        return self._run_stub(output_dir, prompt, seed, num_frames, input_tokens, prompt_frames, steps, temp)
 
     # ------------------------------------------------------------------
     # Real execution
@@ -227,27 +231,71 @@ class GenieRunner:
         seed: int,
         num_frames: int,
         input_tokens: Optional[np.ndarray],
+        num_prompt_frames: int,
+        maskgit_steps: int,
+        temperature: float,
     ) -> GenieRunResult:
         import torch
 
         model = self._model
         assert model is not None
 
-        T = min(num_frames, model.config.T)
+        requested_T = max(num_frames, 1)
+        T = model.config.T
         h, w = model.h, model.w
         mask_id = model.mask_token_id
+
+        if requested_T > T:
+            error = f"Requested num_frames={requested_T} exceeds Genie model context T={T}"
+            state_path = output_dir / "state.json"
+            state_path.write_text(json.dumps({
+                "mode": "real",
+                "model": self.model_name_or_path,
+                "device": self.device,
+                "seed": seed,
+                "prompt": prompt,
+                "num_prompt_frames": min(max(num_prompt_frames, 0), requested_T - 1),
+                "total_frames": requested_T,
+                "frames_generated": 0,
+                "spatial": [h, w],
+                "vocab_size": model.config.image_vocab_size,
+                "maskgit_steps": maskgit_steps,
+                "temperature": temperature,
+                "elapsed_s": 0.0,
+                "error": error,
+            }, indent=2, sort_keys=True))
+            return GenieRunResult(
+                mode="real",
+                tokens_generated=0,
+                frames_generated=0,
+                prompt_frames=min(max(num_prompt_frames, 0), requested_T - 1),
+                total_frames=requested_T,
+                spatial_h=h,
+                spatial_w=w,
+                vocab_size=model.config.image_vocab_size,
+                elapsed_s=0.0,
+                model_name=self.model_name_or_path,
+                device=self.device,
+                state_path=str(state_path),
+                error=error,
+            )
 
         torch.manual_seed(seed)
 
         # Build prompt tensor -------------------------------------------
+        prompt_THW = torch.full((1, T, h, w), mask_id, dtype=torch.long, device=self.device)
         if input_tokens is not None:
             prompt_np = np.asarray(input_tokens, dtype=np.int64)
             if prompt_np.ndim == 1:
-                # Flat (T*H*W,) → reshape
-                prompt_np = prompt_np[: T * h * w].reshape(T, h, w)
-            elif prompt_np.ndim == 3:
-                prompt_np = prompt_np[:T]
-            prompt_THW = torch.from_numpy(prompt_np).unsqueeze(0).to(self.device)
+                prompt_np = prompt_np[: requested_T * h * w].reshape(requested_T, h, w)
+            if prompt_np.ndim != 3:
+                raise ValueError("Genie real-mode input_tokens must resolve to a 3D [T,H,W] token tensor")
+            if prompt_np.shape[1:] != (h, w):
+                raise ValueError(
+                    f"Genie real-mode input_tokens must have spatial shape {(h, w)}, got {tuple(prompt_np.shape[1:])}"
+                )
+            available_prompt_frames = min(prompt_np.shape[0], requested_T)
+            prompt_THW[:, :available_prompt_frames] = torch.from_numpy(prompt_np[:available_prompt_frames]).unsqueeze(0).to(self.device)
         else:
             # Derive synthetic prompt tokens from seed
             rng = np.random.RandomState(seed)
@@ -255,7 +303,9 @@ class GenieRunner:
             prompt_THW = torch.from_numpy(prompt_np).unsqueeze(0).to(self.device)
 
         # Mask future frames
-        num_prompt = min(self.num_prompt_frames, T - 1)
+        num_prompt = min(max(num_prompt_frames, 0), requested_T - 1)
+        if input_tokens is not None:
+            num_prompt = min(num_prompt, prompt_np.shape[0])
         prompt_THW[:, num_prompt:] = mask_id
 
         t0 = time.monotonic()
@@ -264,12 +314,12 @@ class GenieRunner:
 
         try:
             with torch.no_grad():
-                for t_idx in range(num_prompt, T):
+                for t_idx in range(num_prompt, requested_T):
                     samples_HW, _logits = model.maskgit_generate(
                         prompt_THW,
                         out_t=t_idx,
-                        maskgit_steps=self.maskgit_steps,
-                        temperature=self.temperature,
+                        maskgit_steps=maskgit_steps,
+                        temperature=temperature,
                     )
                     prompt_THW[:, t_idx] = samples_HW
                     frames_generated += 1
@@ -280,7 +330,7 @@ class GenieRunner:
         elapsed = time.monotonic() - t0
 
         # Persist tokens ------------------------------------------------
-        out_tokens = prompt_THW[0].cpu().numpy().astype(np.uint32)
+        out_tokens = prompt_THW[0, :requested_T].cpu().numpy().astype(np.uint32)
         tokens_path = output_dir / "tokens.npy"
         np.save(str(tokens_path), out_tokens)
 
@@ -291,12 +341,13 @@ class GenieRunner:
             "seed": seed,
             "prompt": prompt,
             "num_prompt_frames": num_prompt,
-            "total_frames": T,
+            "total_frames": requested_T,
             "frames_generated": frames_generated,
             "spatial": [h, w],
             "vocab_size": model.config.image_vocab_size,
-            "maskgit_steps": self.maskgit_steps,
-            "temperature": self.temperature,
+            "maskgit_steps": maskgit_steps,
+            "temperature": temperature,
+            "dtype": str(next(model.parameters()).dtype).replace("torch.", ""),
             "elapsed_s": round(elapsed, 4),
             "error": error,
         }
@@ -308,7 +359,7 @@ class GenieRunner:
             tokens_generated=frames_generated * h * w,
             frames_generated=frames_generated,
             prompt_frames=num_prompt,
-            total_frames=T,
+            total_frames=requested_T,
             spatial_h=h,
             spatial_w=w,
             vocab_size=model.config.image_vocab_size,
@@ -331,6 +382,9 @@ class GenieRunner:
         seed: int,
         num_frames: int,
         input_tokens: Optional[np.ndarray],
+        num_prompt_frames: int,
+        maskgit_steps: int,
+        temperature: float,
     ) -> GenieRunResult:
         T, h, w = min(num_frames, 16), 16, 16
         vocab_size = 262144
@@ -340,7 +394,16 @@ class GenieRunner:
         rng = np.random.RandomState(combined_seed % (2**31))
         tokens = rng.randint(0, vocab_size, size=(T, h, w)).astype(np.uint32)
 
-        num_prompt = min(self.num_prompt_frames, T - 1)
+        num_prompt = min(max(num_prompt_frames, 0), T - 1)
+        if input_tokens is not None:
+            prompt_np = np.asarray(input_tokens, dtype=np.uint32)
+            if prompt_np.ndim == 1:
+                prompt_np = prompt_np[: T * h * w].reshape(T, h, w)
+            elif prompt_np.ndim == 3:
+                prompt_np = prompt_np[:T]
+            prompt_frames = min(prompt_np.shape[0], num_prompt)
+            if prompt_frames > 0:
+                tokens[:prompt_frames] = prompt_np[:prompt_frames]
         frames_generated = T - num_prompt
 
         t0 = time.monotonic()
@@ -359,8 +422,8 @@ class GenieRunner:
             "frames_generated": frames_generated,
             "spatial": [h, w],
             "vocab_size": vocab_size,
-            "maskgit_steps": self.maskgit_steps,
-            "temperature": self.temperature,
+            "maskgit_steps": maskgit_steps,
+            "temperature": temperature,
             "elapsed_s": 0.0,
             "error": None,
             "note": "Stub mode — synthetic tokens generated from prompt hash, no real model execution.",

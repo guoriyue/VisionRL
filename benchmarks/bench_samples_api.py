@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -109,7 +110,46 @@ async def _run_iteration(client: httpx.AsyncClient, request_payload: dict[str, A
     return result
 
 
+async def _prepare_request_payload(client: httpx.AsyncClient, request_payload: dict[str, Any]) -> dict[str, Any]:
+    payload = copy.deepcopy(request_payload)
+    if payload.get("backend") != "genie-rollout":
+        return payload
+
+    temporal = payload.get("temporal") or {}
+    if temporal.get("episode_id") and temporal.get("branch_id") and temporal.get("state_handle_id"):
+        return payload
+
+    episode_resp = await client.post("/v1/episodes", json={"title": "Benchmark Genie Episode"})
+    episode_resp.raise_for_status()
+    episode = episode_resp.json()
+
+    branch_resp = await client.post("/v1/branches", json={"episode_id": episode["episode_id"], "name": "main"})
+    branch_resp.raise_for_status()
+    branch = branch_resp.json()
+
+    state_resp = await client.post(
+        "/v1/state-handles",
+        json={
+            "episode_id": episode["episode_id"],
+            "branch_id": branch["branch_id"],
+            "kind": "latent",
+            "dtype": "float16",
+            "shape": [16, 6],
+        },
+    )
+    state_resp.raise_for_status()
+    state = state_resp.json()
+
+    payload["temporal"] = {
+        "episode_id": episode["episode_id"],
+        "branch_id": branch["branch_id"],
+        "state_handle_id": state["state_handle_id"],
+    }
+    return payload
+
+
 async def _run_client(client: httpx.AsyncClient, request_payload: dict[str, Any], iterations: int, timeout_s: float, concurrency: int) -> list[dict[str, Any]]:
+    request_payload = await _prepare_request_payload(client, request_payload)
     semaphore = asyncio.Semaphore(concurrency)
 
     async def _wrapped(i: int) -> dict[str, Any]:
@@ -142,12 +182,22 @@ DEFAULT_WAN_PAYLOAD = {
     "wan_config": {"num_steps": 4, "frame_count": 9, "width": 832, "height": 480, "memory_profile": "low_vram"},
 }
 
-DEFAULT_GENIE_PAYLOAD = {
+DEFAULT_ROLLOUT_PAYLOAD = {
     "task_type": "world_model_rollout",
     "backend": "rollout-engine",
     "model": "latent_dynamics",
     "sample_spec": {"prompt": "predict the next robot movement", "width": 256, "height": 256},
     "task_config": {"num_steps": 4, "frame_count": 9, "width": 256, "height": 256},
+}
+
+DEFAULT_GENIE_PAYLOAD = {
+    "task_type": "genie_rollout",
+    "backend": "genie-rollout",
+    "model": "genie-local",
+    "sample_spec": {"prompt": "roll forward in time", "width": 256, "height": 256},
+    "task_config": {"num_steps": 4, "width": 256, "height": 256},
+    "genie_config": {"num_frames": 9, "num_prompt_frames": 4, "maskgit_steps": 3, "temperature": 0.0},
+    "return_artifacts": ["metadata"],
 }
 
 
@@ -156,7 +206,7 @@ def parse_args() -> argparse.Namespace:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--base-url", help="Live wm-infra server base URL, e.g. http://127.0.0.1:8000")
     mode.add_argument("--in-process", action="store_true", help="Run against an in-process ASGI app")
-    parser.add_argument("--workload", choices=["wan", "rollout"], default="wan")
+    parser.add_argument("--workload", choices=["wan", "rollout", "genie"], default="wan")
     parser.add_argument("--payload-file", help="Optional JSON payload for POST /v1/samples")
     parser.add_argument("--iterations", type=int, default=5)
     parser.add_argument("--concurrency", type=int, default=1)
@@ -172,7 +222,11 @@ def _load_payload(args: argparse.Namespace) -> dict[str, Any]:
     if args.payload_file:
         import json
         return json.loads(Path(args.payload_file).read_text())
-    return DEFAULT_WAN_PAYLOAD if args.workload == "wan" else DEFAULT_GENIE_PAYLOAD
+    if args.workload == "wan":
+        return DEFAULT_WAN_PAYLOAD
+    if args.workload == "genie":
+        return DEFAULT_GENIE_PAYLOAD
+    return DEFAULT_ROLLOUT_PAYLOAD
 
 
 async def _main_async() -> None:
@@ -186,6 +240,7 @@ async def _main_async() -> None:
         execution_mode = "remote"
 
     task_cfg = payload.get("wan_config") or payload.get("task_config") or {}
+    genie_cfg = payload.get("genie_config") or {}
     summary = run_summary_from_samples(samples)
     result = {
         "schema_version": 1,
@@ -213,7 +268,7 @@ async def _main_async() -> None:
             "model": payload.get("model"),
             "num_prompts": 1,
             "prompt_shape": "single",
-            "frame_count": task_cfg.get("frame_count"),
+            "frame_count": task_cfg.get("frame_count") or genie_cfg.get("num_frames"),
             "width": task_cfg.get("width") or payload.get("sample_spec", {}).get("width"),
             "height": task_cfg.get("height") or payload.get("sample_spec", {}).get("height"),
             "num_steps": task_cfg.get("num_steps"),

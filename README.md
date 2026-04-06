@@ -73,10 +73,12 @@ Current capabilities:
 - stateful temporal references (`episode_id`, rollout/state handles)
 - persisted tokens/runtime artifacts
 - first-class `genie_config` for rollout/tokenizer execution knobs
+- explicit real-mode contract validation for Genie token windows and tokenizer compatibility
 
 Important reality:
 - this is the clearest current path for **world-model / temporal rollout serving** in the repo
 - it is not yet a generic tokenized-video platform; it is specifically aligned with the current Genie path
+- real Genie execution currently expects STMaskGIT-compatible token inputs and validates them explicitly
 
 ### 3. Legacy rollout engine (`rollout-engine`)
 Still present and useful, but lower-level.
