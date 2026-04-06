@@ -28,6 +28,7 @@ This document is a backend-specific refinement of the broader execution directio
 - `docs/GENIE_ECS_BASELINE.md`
 - `docs/GENIE_ECS_BATCHING_POLICY.md`
 - `docs/GENIE_ECS_RUNTIME_PROFILE.md`
+- `docs/GENIE_ECS_GATES.md`
 
 ## Why this redesign exists
 

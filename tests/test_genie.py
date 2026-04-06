@@ -473,6 +473,67 @@ class TestGenieRolloutBackend:
             assert rollout.metadata["benchmark_profile"] == record.runtime["benchmark_profile"]
 
     @pytest.mark.asyncio
+    async def test_single_and_batched_execution_preserve_semantics(self, tmp_path):
+        backend, temporal_store = self._make_backend(tmp_path)
+        episode, branch, state = self._make_episode_and_state(temporal_store)
+
+        def make_request(prompt: str) -> ProduceSampleRequest:
+            return ProduceSampleRequest(
+                task_type=TaskType.GENIE_ROLLOUT,
+                backend="genie-rollout",
+                model="genie-local",
+                sample_spec=SampleSpec(prompt=prompt),
+                temporal=TemporalRefs(
+                    episode_id=episode.episode_id,
+                    branch_id=branch.branch_id,
+                    state_handle_id=state.state_handle_id,
+                ),
+                task_config=RolloutTaskConfig(num_steps=4),
+                genie_config=GenieTaskConfig(
+                    num_frames=16,
+                    num_prompt_frames=4,
+                    checkpoint_every_n_frames=4,
+                ),
+            )
+
+        single = await backend.execute_job(make_request("single"), "sample-single")
+        batched = await backend.execute_job_batch(
+            [
+                (make_request("batched-a"), "sample-batched-a"),
+                (make_request("batched-b"), "sample-batched-b"),
+            ]
+        )
+
+        assert len(batched) == 2
+        reference = batched[0]
+        assert single.status == reference.status == SampleStatus.SUCCEEDED
+        assert single.runtime["stage_graph"] == reference.runtime["stage_graph"]
+        assert single.runtime["benchmark_profile"].keys() == reference.runtime["benchmark_profile"].keys()
+        assert set(a.kind for a in single.artifacts) == set(a.kind for a in reference.artifacts)
+        assert {a.artifact_id.rsplit(":", 1)[-1] for a in single.artifacts} == {
+            a.artifact_id.rsplit(":", 1)[-1] for a in reference.artifacts
+        }
+        assert len(single.runtime["checkpoint_deltas"]) == len(reference.runtime["checkpoint_deltas"])
+        assert single.temporal.episode_id == reference.temporal.episode_id == episode.episode_id
+        assert single.temporal.branch_id == reference.temporal.branch_id == branch.branch_id
+        assert single.temporal.parent_state_handle_id == reference.temporal.parent_state_handle_id == state.state_handle_id
+        assert single.temporal.rollout_id is not None
+        assert reference.temporal.rollout_id is not None
+        assert single.temporal.checkpoint_id is not None
+        assert reference.temporal.checkpoint_id is not None
+        assert single.temporal.state_handle_id is not None
+        assert reference.temporal.state_handle_id is not None
+
+        for record in [single, *batched]:
+            rollout = temporal_store.rollouts.get(record.temporal.rollout_id)
+            assert rollout is not None
+            assert rollout.output_state_handle_id == record.temporal.state_handle_id
+            assert record.temporal.checkpoint_id in rollout.checkpoint_ids
+            assert any(artifact.artifact_id.endswith(":tokens") for artifact in record.artifacts)
+            assert any(artifact.artifact_id.endswith(":checkpoint") for artifact in record.artifacts)
+            assert any(artifact.artifact_id.endswith(":recovery") for artifact in record.artifacts)
+
+    @pytest.mark.asyncio
     async def test_genie_config_drives_execution_and_round_trips(self, tmp_path):
         backend, temporal_store = self._make_backend(tmp_path)
         episode, branch, state = self._make_episode_and_state(temporal_store)

@@ -404,6 +404,102 @@ def comparison_report(current: dict[str, Any], baseline: dict[str, Any]) -> dict
     return report
 
 
+def benchmark_gate_report(
+    current: dict[str, Any],
+    baseline: dict[str, Any],
+    *,
+    max_terminal_mean_ratio: float,
+    max_terminal_p95_ratio: float,
+    required_success_rate: float = 1.0,
+) -> dict[str, Any]:
+    """Validate one benchmark artifact against an explicit latency/success gate."""
+
+    report = comparison_report(current, baseline)
+    gate: dict[str, Any] = {
+        "comparable": report["comparable"],
+        "mismatches": report["mismatches"],
+        "required_success_rate": required_success_rate,
+        "max_terminal_mean_ratio": max_terminal_mean_ratio,
+        "max_terminal_p95_ratio": max_terminal_p95_ratio,
+        "pass": False,
+        "reasons": [],
+    }
+    if not report["comparable"]:
+        gate["reasons"].append("benchmark artifacts are not comparable")
+        return gate
+
+    metrics = report.get("metrics", {})
+    terminal_mean = metrics.get("terminal_mean_ms")
+    terminal_p95 = metrics.get("terminal_p95_ms")
+    success_rate = metrics.get("success_rate")
+    if terminal_mean is None or terminal_p95 is None or success_rate is None:
+        gate["reasons"].append("benchmark artifact is missing terminal latency or success metrics")
+        return gate
+
+    terminal_mean_ratio = float(terminal_mean["current"]) / max(float(terminal_mean["baseline"]), 1e-12)
+    terminal_p95_ratio = float(terminal_p95["current"]) / max(float(terminal_p95["baseline"]), 1e-12)
+    current_success_rate = float(success_rate["current"])
+
+    gate.update(
+        {
+            "success_rate": current_success_rate,
+            "success_rate_pass": current_success_rate >= required_success_rate,
+            "terminal_mean_ratio": terminal_mean_ratio,
+            "terminal_mean_pass": terminal_mean_ratio <= max_terminal_mean_ratio,
+            "terminal_p95_ratio": terminal_p95_ratio,
+            "terminal_p95_pass": terminal_p95_ratio <= max_terminal_p95_ratio,
+        }
+    )
+    if not gate["success_rate_pass"]:
+        gate["reasons"].append(
+            f"success_rate {current_success_rate:.4f} is below required {required_success_rate:.4f}"
+        )
+    if not gate["terminal_mean_pass"]:
+        gate["reasons"].append(
+            f"terminal_mean_ratio {terminal_mean_ratio:.4f} exceeds {max_terminal_mean_ratio:.4f}"
+        )
+    if not gate["terminal_p95_pass"]:
+        gate["reasons"].append(
+            f"terminal_p95_ratio {terminal_p95_ratio:.4f} exceeds {max_terminal_p95_ratio:.4f}"
+        )
+    gate["pass"] = (
+        gate["success_rate_pass"]
+        and gate["terminal_mean_pass"]
+        and gate["terminal_p95_pass"]
+    )
+    return gate
+
+
+def genie_cleanup_gate_report(
+    *,
+    default_baseline: dict[str, Any],
+    default_batched: dict[str, Any],
+    heavy_off: dict[str, Any],
+    heavy_on: dict[str, Any],
+) -> dict[str, Any]:
+    """Evaluate the benchmark-backed cleanup gate for Genie ECS."""
+
+    default_gate = benchmark_gate_report(
+        default_batched,
+        default_baseline,
+        max_terminal_mean_ratio=1.05,
+        max_terminal_p95_ratio=1.10,
+        required_success_rate=1.0,
+    )
+    heavy_gate = benchmark_gate_report(
+        heavy_on,
+        heavy_off,
+        max_terminal_mean_ratio=1.05,
+        max_terminal_p95_ratio=1.10,
+        required_success_rate=1.0,
+    )
+    return {
+        "default": default_gate,
+        "heavy": heavy_gate,
+        "overall_pass": default_gate["pass"] and heavy_gate["pass"],
+    }
+
+
 def run_summary_from_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
     total = len(samples)
     succeeded = sum(1 for item in samples if item.get("status") == "succeeded")

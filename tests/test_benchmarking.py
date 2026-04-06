@@ -1,7 +1,8 @@
 import subprocess
+from pathlib import Path
 
 from wm_infra import benchmarking as bench
-from wm_infra.benchmarking import capture_runtime_context, comparable_run_pair, comparison_report, format_gpu_summary, percentile, run_summary_from_samples, summarize_gpu_samples, summarize_latency_ms
+from wm_infra.benchmarking import benchmark_gate_report, capture_runtime_context, comparable_run_pair, comparison_report, format_gpu_summary, genie_cleanup_gate_report, load_json, percentile, run_summary_from_samples, summarize_gpu_samples, summarize_latency_ms
 
 
 def test_percentile_interpolates():
@@ -121,6 +122,75 @@ def test_comparison_report_embeds_metric_deltas():
     assert report["metrics"]["submit_mean_ms"]["delta"] == 4.0
     assert report["metrics"]["terminal_mean_ms"]["delta"] == -10.0
     assert report["metrics"]["success_rate"]["delta"] == 0.5
+
+
+def test_benchmark_gate_report_enforces_thresholds():
+    baseline = {
+        "workload": {"workload_kind": "sample_api", "backend_family": "genie-rollout", "runtime_execution_mode": "chunked"},
+        "summary": {
+            "latency": {
+                "submit": {"mean_ms": 10.0, "p95_ms": 12.0},
+                "terminal": {"mean_ms": 100.0, "p95_ms": 120.0},
+            },
+            "success_rate": 1.0,
+        },
+    }
+    current = {
+        "workload": {"workload_kind": "sample_api", "backend_family": "genie-rollout", "runtime_execution_mode": "chunked"},
+        "summary": {
+            "latency": {
+                "submit": {"mean_ms": 9.0, "p95_ms": 11.0},
+                "terminal": {"mean_ms": 103.0, "p95_ms": 130.0},
+            },
+            "success_rate": 1.0,
+        },
+    }
+
+    report = benchmark_gate_report(
+        current,
+        baseline,
+        max_terminal_mean_ratio=1.05,
+        max_terminal_p95_ratio=1.10,
+    )
+
+    assert report["terminal_mean_pass"] is True
+    assert report["terminal_p95_pass"] is True
+    assert report["pass"] is True
+
+    failing = {
+        **current,
+        "summary": {
+            "latency": {
+                "submit": {"mean_ms": 9.0, "p95_ms": 11.0},
+                "terminal": {"mean_ms": 111.0, "p95_ms": 140.0},
+            },
+            "success_rate": 0.875,
+        },
+    }
+    fail_report = benchmark_gate_report(
+        failing,
+        baseline,
+        max_terminal_mean_ratio=1.05,
+        max_terminal_p95_ratio=1.10,
+    )
+    assert fail_report["pass"] is False
+    assert fail_report["success_rate_pass"] is False
+    assert fail_report["terminal_mean_pass"] is False
+    assert fail_report["terminal_p95_pass"] is False
+
+
+def test_committed_genie_cleanup_gate_artifacts_pass():
+    root = Path(__file__).resolve().parents[1]
+    report = genie_cleanup_gate_report(
+        default_baseline=load_json(root / "benchmarks/results/genie_default_baseline.json"),
+        default_batched=load_json(root / "benchmarks/results/genie_default_batched.json"),
+        heavy_off=load_json(root / "benchmarks/results/genie_heavy_off.json"),
+        heavy_on=load_json(root / "benchmarks/results/genie_heavy_on.json"),
+    )
+
+    assert report["default"]["pass"] is True
+    assert report["heavy"]["pass"] is True
+    assert report["overall_pass"] is True
 
 
 def test_sample_gpu_snapshot_parses_nvidia_smi_output(monkeypatch):

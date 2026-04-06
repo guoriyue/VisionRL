@@ -3,9 +3,9 @@
   "blocked": false,
   "blocker": null,
   "branch": "codex/ecs-runtime-int4-cleanup",
-  "last_completed_step": "step_3_runtime_profile",
-  "current_step": "step_4_benchmark_gates",
-  "next_step": "step_4_benchmark_gates",
+  "last_completed_step": "step_4_benchmark_gates",
+  "current_step": "step_5_cleanup",
+  "next_step": "step_5_cleanup",
   "dirty_worktree_at_start": [
     "M AGENTS.md",
     "M tests/test_bench_samples_api.py",
@@ -55,65 +55,66 @@
     "genie_heavy_on": "benchmarks/results/genie_heavy_on.json",
     "baseline_doc": "docs/GENIE_ECS_BASELINE.md",
     "batching_policy_doc": "docs/GENIE_ECS_BATCHING_POLICY.md",
-    "runtime_profile_doc": "docs/GENIE_ECS_RUNTIME_PROFILE.md"
+    "runtime_profile_doc": "docs/GENIE_ECS_RUNTIME_PROFILE.md",
+    "gates_doc": "docs/GENIE_ECS_GATES.md"
   },
   "benchmarks": {
     "genie_default_baseline": {
-      "submit_mean_ms": 2560.38375,
-      "submit_p95_ms": 3749.16665,
-      "terminal_mean_ms": 2564.644875,
-      "terminal_p95_ms": 3753.5838999999996,
+      "submit_mean_ms": 2549.636875,
+      "submit_p95_ms": 3626.85185,
+      "terminal_mean_ms": 2553.564,
+      "terminal_p95_ms": 3630.8467,
       "success_rate": 1.0
     },
     "genie_default_batched": {
-      "submit_mean_ms": 6.0015,
-      "submit_p95_ms": 6.620800000000001,
-      "terminal_mean_ms": 2244.60075,
-      "terminal_p95_ms": 3160.02965,
+      "submit_mean_ms": 6.8237499999999995,
+      "submit_p95_ms": 8.29305,
+      "terminal_mean_ms": 2473.15,
+      "terminal_p95_ms": 3575.69945,
       "success_rate": 1.0,
-      "terminal_mean_ratio_vs_baseline": 0.8752091846634322,
-      "terminal_p95_ratio_vs_baseline": 0.8418699925689687,
+      "terminal_mean_ratio_vs_baseline": 0.9685091111873445,
+      "terminal_p95_ratio_vs_baseline": 0.9848114628469442,
       "gate_pass": true
     },
     "genie_profile_baseline": {
-      "submit_mean_ms": 8601.106,
-      "submit_p95_ms": 8601.22955,
-      "terminal_mean_ms": 8610.152125,
-      "terminal_p95_ms": 8610.30205,
+      "submit_mean_ms": 8391.5925,
+      "submit_p95_ms": 8391.72835,
+      "terminal_mean_ms": 8400.82125,
+      "terminal_p95_ms": 8400.96985,
       "success_rate": 1.0
     },
     "genie_profile_batched": {
-      "submit_mean_ms": 1668.998,
-      "submit_p95_ms": 1669.1656,
-      "terminal_mean_ms": 5817.8971249999995,
-      "terminal_p95_ms": 8138.055,
+      "submit_mean_ms": 3033.3675,
+      "submit_p95_ms": 3033.5373499999996,
+      "terminal_mean_ms": 7385.9605,
+      "terminal_p95_ms": 9707.7555,
       "success_rate": 1.0,
-      "terminal_mean_ratio_vs_baseline": 0.6757020132208175,
-      "terminal_p95_ratio_vs_baseline": 0.9451532539442098,
-      "gate_pass": true
+      "terminal_mean_ratio_vs_baseline": 0.8791950548882348,
+      "terminal_p95_ratio_vs_baseline": 1.1555517604910819,
+      "gate_pass": false
     },
     "genie_heavy_off": {
-      "submit_mean_ms": 4436.841875,
-      "submit_p95_ms": 5610.1143,
-      "terminal_mean_ms": 4441.5945,
-      "terminal_p95_ms": 5614.87915,
+      "submit_mean_ms": 4348.501125,
+      "submit_p95_ms": 5405.83145,
+      "terminal_mean_ms": 4353.358125,
+      "terminal_p95_ms": 5410.58345,
       "success_rate": 1.0
     },
     "genie_heavy_on": {
-      "submit_mean_ms": 1191.071375,
-      "submit_p95_ms": 2365.6761,
-      "terminal_mean_ms": 4492.41125,
-      "terminal_p95_ms": 5749.0163,
+      "submit_mean_ms": 848.47575,
+      "submit_p95_ms": 1681.36315,
+      "terminal_mean_ms": 4132.1317500000005,
+      "terminal_p95_ms": 5036.77455,
       "success_rate": 1.0,
-      "terminal_mean_ratio_vs_baseline": 1.0114411052157057,
-      "terminal_p95_ratio_vs_baseline": 1.0238895880777774,
+      "terminal_mean_ratio_vs_baseline": 0.9491825922316007,
+      "terminal_p95_ratio_vs_baseline": 0.9309115359823162,
       "gate_pass": true
     },
     "cleanup_gate": {
-      "semantic_equivalence": "pending",
+      "semantic_equivalence": true,
       "default_workload": true,
       "heavy_workload": true,
-      "manifest_lineage_artifacts": "pending"
+      "manifest_lineage_artifacts": true
     }
   },
   "tests": [
@@ -127,6 +128,10 @@
     },
     {
       "command": "pytest tests/test_genie.py tests/test_genie_runtime.py tests/test_server.py",
+      "status": "passed"
+    },
+    {
+      "command": "pytest tests/test_benchmarking.py tests/test_bench_samples_api.py tests/test_genie.py tests/test_genie_batcher.py tests/test_genie_runtime.py tests/test_server.py",
       "status": "passed"
     }
   ],
@@ -143,6 +148,9 @@
     "Profile workload also improved after removing the earlier head-of-line behavior.",
     "Step 3 unified single-request and batched runtime profiling under the same stage_profile, scheduler, runtime_state, and benchmark_profile contract.",
     "Scheduler metadata now carries execution_path, observed batch sizes, and occupancy summaries in both execution paths.",
-    "Benchmark-facing runtime fields are now mirrored into rollout metadata for later regression gates."
+    "Benchmark-facing runtime fields are now mirrored into rollout metadata for later regression gates.",
+    "Step 4 added executable cleanup gates for default and heavy benchmarks via wm_infra.benchmarking helpers and committed benchmark artifacts.",
+    "Semantic equivalence between single-request and batched Genie execution now has explicit regression coverage.",
+    "Sample manifest, temporal lineage, and artifact visibility remain covered, so cleanup can begin."
   ]
 }
