@@ -25,6 +25,7 @@ The goal is to make `genie-rollout` behave like a many-world temporal runtime:
 This document is a backend-specific refinement of the broader execution direction in:
 
 - `docs/ECS_EXECUTION_RUNTIME.md`
+- `docs/GENIE_ECS_BASELINE.md`
 
 ## Why this redesign exists
 

@@ -1,0 +1,132 @@
+{
+  "plan_file": "docs/GENIE_ECS_EXECUTION_PLAN.md",
+  "blocked": false,
+  "blocker": null,
+  "branch": "codex/ecs-runtime-int4-cleanup",
+  "last_completed_step": "step_1_baseline",
+  "current_step": "step_2_batching_policy",
+  "next_step": "step_2_batching_policy",
+  "dirty_worktree_at_start": [
+    "M AGENTS.md",
+    "M tests/test_bench_samples_api.py",
+    "M tests/test_server.py",
+    "M wm_infra/backends/__init__.py",
+    "M wm_infra/controlplane/__init__.py",
+    "M wm_infra/controlplane/resource_estimator.py",
+    "M wm_infra/controlplane/schemas.py",
+    "?? benchmarks/payloads/genie_heavy.json",
+    "?? benchmarks/results/cosmos_benchmark_smoke.json",
+    "?? benchmarks/results/genie_gpu_profile_smoke.json",
+    "?? benchmarks/results/genie_heavy_off.json",
+    "?? benchmarks/results/genie_heavy_off_run/",
+    "?? benchmarks/results/genie_heavy_on.json",
+    "?? benchmarks/results/genie_heavy_on_run/",
+    "?? benchmarks/results/genie_profile_baseline_run/",
+    "?? benchmarks/results/genie_profile_batched_run/",
+    "?? benchmarks/results/genie_profile_batched_smoke.json",
+    "?? benchmarks/results/genie_profile_batched_smoke_workspace/",
+    "?? benchmarks/results/genie_profile_tune_bs2.json",
+    "?? benchmarks/results/genie_profile_tune_bs2_workspace/",
+    "?? benchmarks/results/genie_profile_tune_bs4.json",
+    "?? benchmarks/results/genie_profile_tune_bs4_workspace/",
+    "?? benchmarks/results/gpu_profile_smoke.json",
+    "?? benchmarks/results/rollout_api_chunked.json",
+    "?? benchmarks/results/rollout_api_heavy_chunked.json",
+    "?? benchmarks/results/rollout_api_heavy_legacy.json",
+    "?? benchmarks/results/rollout_api_heavy_payload.json",
+    "?? benchmarks/results/rollout_api_legacy.json",
+    "?? benchmarks/results/state_fork_cow.json",
+    "?? benchmarks/results/state_fork_cow_cuda.json",
+    "?? benchmarks/results/state_fork_deep_copy.json",
+    "?? benchmarks/results/state_fork_deep_copy_cuda.json",
+    "?? external/",
+    "?? tests/test_cosmos.py",
+    "?? wm_infra/backends/cosmos.py",
+    "?? wm_infra/backends/cosmos_runner.py",
+    "?? wm_infra/backends/cosmos_runtime.py",
+    "?? wm_infra/backends/cosmos_scheduler.py"
+  ],
+  "artifacts": {
+    "genie_default_baseline": "benchmarks/results/genie_default_baseline.json",
+    "genie_default_batched": "benchmarks/results/genie_default_batched.json",
+    "genie_profile_baseline": "benchmarks/results/genie_profile_baseline.json",
+    "genie_profile_batched": "benchmarks/results/genie_profile_batched.json",
+    "genie_heavy_off": "benchmarks/results/genie_heavy_off.json",
+    "genie_heavy_on": "benchmarks/results/genie_heavy_on.json",
+    "baseline_doc": "docs/GENIE_ECS_BASELINE.md"
+  },
+  "benchmarks": {
+    "genie_default_baseline": {
+      "submit_mean_ms": 1105.245,
+      "submit_p95_ms": 1837.43035,
+      "terminal_mean_ms": 2382.764875,
+      "terminal_p95_ms": 3830.27875,
+      "success_rate": 1.0
+    },
+    "genie_default_batched": {
+      "submit_mean_ms": 707.580375,
+      "submit_p95_ms": 1408.49935,
+      "terminal_mean_ms": 2427.50475,
+      "terminal_p95_ms": 3444.31905,
+      "success_rate": 1.0,
+      "terminal_mean_ratio_vs_baseline": 1.0187764539713556,
+      "terminal_p95_ratio_vs_baseline": 0.8992345661526593,
+      "gate_pass": true
+    },
+    "genie_profile_baseline": {
+      "submit_mean_ms": 2035.5674999999999,
+      "submit_p95_ms": 2035.7285499999998,
+      "terminal_mean_ms": 6694.12375,
+      "terminal_p95_ms": 9207.270349999999,
+      "success_rate": 1.0
+    },
+    "genie_profile_batched": {
+      "submit_mean_ms": 11.392125,
+      "submit_p95_ms": 11.53035,
+      "terminal_mean_ms": 10066.317875,
+      "terminal_p95_ms": 10066.3891,
+      "success_rate": 1.0,
+      "terminal_mean_ratio_vs_baseline": 1.5037543748724396,
+      "terminal_p95_ratio_vs_baseline": 1.0933087350910687,
+      "gate_pass": false
+    },
+    "genie_heavy_off": {
+      "submit_mean_ms": 841.121,
+      "submit_p95_ms": 1667.7308,
+      "terminal_mean_ms": 4114.00175,
+      "terminal_p95_ms": 5043.3,
+      "success_rate": 1.0
+    },
+    "genie_heavy_on": {
+      "submit_mean_ms": 5.73275,
+      "submit_p95_ms": 5.84565,
+      "terminal_mean_ms": 4446.339125,
+      "terminal_p95_ms": 5709.77265,
+      "success_rate": 1.0,
+      "terminal_mean_ratio_vs_baseline": 1.0807820208146484,
+      "terminal_p95_ratio_vs_baseline": 1.132150110046993,
+      "gate_pass": false
+    },
+    "cleanup_gate": {
+      "semantic_equivalence": "pending",
+      "default_workload": true,
+      "heavy_workload": false,
+      "manifest_lineage_artifacts": "pending"
+    }
+  },
+  "tests": [
+    {
+      "command": "pytest tests/test_benchmarking.py tests/test_bench_samples_api.py tests/test_genie.py tests/test_genie_batcher.py tests/test_genie_runtime.py",
+      "status": "passed"
+    }
+  ],
+  "commits": [],
+  "notes": [
+    "Execution started with unrelated dirty changes present in the worktree.",
+    "This run is constrained to genie-rollout and the plan/status files.",
+    "Step 1 baseline is complete on the current HEAD.",
+    "Default batched workload is within gate.",
+    "Heavy batched workload currently fails the cleanup gate.",
+    "Profile batched workload currently regresses and needs runtime/policy investigation."
+  ]
+}
