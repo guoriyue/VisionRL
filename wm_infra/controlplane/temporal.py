@@ -176,6 +176,170 @@ class CheckpointCreate(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class EnvironmentSpec(BaseModel):
+    env_name: str
+    backend: str
+    observation_mode: str
+    action_space: dict[str, Any] = Field(default_factory=dict)
+    reward_schema: dict[str, Any] = Field(default_factory=dict)
+    default_horizon: int = 1
+    supports_batch_step: bool = False
+    supports_fork: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskSpec(BaseModel):
+    task_id: str
+    env_name: str
+    task_family: str
+    goal_spec: dict[str, Any] = Field(default_factory=dict)
+    seed_policy: str = "explicit"
+    difficulty: str = "default"
+    split: str = "train"
+    reward_overrides: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EnvironmentSessionRecord(BaseModel):
+    env_id: str
+    env_name: str
+    episode_id: str
+    task_id: str
+    backend: str
+    status: TemporalStatus = TemporalStatus.ACTIVE
+    current_step: int = 0
+    state_handle_id: Optional[str] = None
+    checkpoint_id: Optional[str] = None
+    trajectory_id: Optional[str] = None
+    branch_id: Optional[str] = None
+    policy_version: Optional[str] = None
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+    completed_at: Optional[float] = None
+    labels: dict[str, str] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TransitionRecord(BaseModel):
+    transition_id: str
+    env_id: str
+    episode_id: str
+    trajectory_id: str
+    task_id: str
+    step_idx: int
+    observation_ref: str
+    action: list[float]
+    reward: float
+    terminated: bool
+    truncated: bool
+    next_observation_ref: str
+    info: dict[str, Any] = Field(default_factory=dict)
+    policy_version: Optional[str] = None
+    created_at: float = Field(default_factory=time.time)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TrajectoryRecord(BaseModel):
+    trajectory_id: str
+    env_id: str
+    episode_id: str
+    task_id: str
+    policy_version: Optional[str] = None
+    status: TemporalStatus = TemporalStatus.ACTIVE
+    num_steps: int = 0
+    return_value: float = 0.0
+    success: bool = False
+    transition_refs: list[str] = Field(default_factory=list)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+    completed_at: Optional[float] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EvaluationRunRecord(BaseModel):
+    eval_run_id: str
+    policy_version: str
+    task_split: str
+    status: TemporalStatus = TemporalStatus.PENDING
+    trajectory_ids: list[str] = Field(default_factory=list)
+    metrics: dict[str, float] = Field(default_factory=dict)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+    completed_at: Optional[float] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReplayShardManifest(BaseModel):
+    replay_shard_id: str
+    policy_version: str
+    task_split: str
+    trajectory_ids: list[str] = Field(default_factory=list)
+    transition_ids: list[str] = Field(default_factory=list)
+    num_trajectories: int = 0
+    num_transitions: int = 0
+    uri: Optional[str] = None
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EnvironmentSessionCreate(BaseModel):
+    env_name: str
+    episode_id: str
+    task_id: str
+    backend: str
+    current_step: int = 0
+    state_handle_id: Optional[str] = None
+    checkpoint_id: Optional[str] = None
+    trajectory_id: Optional[str] = None
+    branch_id: Optional[str] = None
+    policy_version: Optional[str] = None
+    labels: dict[str, str] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TransitionCreate(BaseModel):
+    env_id: str
+    episode_id: str
+    trajectory_id: str
+    task_id: str
+    step_idx: int
+    observation_ref: str
+    action: list[float]
+    reward: float
+    terminated: bool
+    truncated: bool
+    next_observation_ref: str
+    info: dict[str, Any] = Field(default_factory=dict)
+    policy_version: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TrajectoryCreate(BaseModel):
+    env_id: str
+    episode_id: str
+    task_id: str
+    policy_version: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EvaluationRunCreate(BaseModel):
+    policy_version: str
+    task_split: str
+    trajectory_ids: list[str] = Field(default_factory=list)
+    metrics: dict[str, float] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReplayShardCreate(BaseModel):
+    policy_version: str
+    task_split: str
+    trajectory_ids: list[str] = Field(default_factory=list)
+    transition_ids: list[str] = Field(default_factory=list)
+    uri: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -244,6 +408,13 @@ class TemporalStore:
         self.state_handles = _EntityStore(self.root, "state_handles", StateHandleRecord, "state_handle_id")
         self.branches = _EntityStore(self.root, "branches", BranchRecord, "branch_id")
         self.checkpoints = _EntityStore(self.root, "checkpoints", CheckpointRecord, "checkpoint_id")
+        self.environment_specs = _EntityStore(self.root, "environment_specs", EnvironmentSpec, "env_name")
+        self.task_specs = _EntityStore(self.root, "task_specs", TaskSpec, "task_id")
+        self.environment_sessions = _EntityStore(self.root, "environment_sessions", EnvironmentSessionRecord, "env_id")
+        self.transitions = _EntityStore(self.root, "transitions", TransitionRecord, "transition_id")
+        self.trajectories = _EntityStore(self.root, "trajectories", TrajectoryRecord, "trajectory_id")
+        self.evaluation_runs = _EntityStore(self.root, "evaluation_runs", EvaluationRunRecord, "eval_run_id")
+        self.replay_shards = _EntityStore(self.root, "replay_shards", ReplayShardManifest, "replay_shard_id")
 
     def create_episode(self, request: EpisodeCreate) -> EpisodeRecord:
         now = time.time()
@@ -286,3 +457,91 @@ class TemporalStore:
         if checkpoint_id not in rollout.checkpoint_ids:
             rollout.checkpoint_ids.append(checkpoint_id)
         return self.update_rollout(rollout)
+
+    def upsert_environment_spec(self, spec: EnvironmentSpec) -> EnvironmentSpec:
+        return self.environment_specs.put(spec)
+
+    def upsert_task_spec(self, task: TaskSpec) -> TaskSpec:
+        return self.task_specs.put(task)
+
+    def create_environment_session(
+        self,
+        request: EnvironmentSessionCreate,
+        *,
+        status: TemporalStatus = TemporalStatus.ACTIVE,
+    ) -> EnvironmentSessionRecord:
+        now = time.time()
+        record = EnvironmentSessionRecord(
+            env_id=str(uuid.uuid4()),
+            status=status,
+            created_at=now,
+            updated_at=now,
+            **request.model_dump(),
+        )
+        return self.environment_sessions.put(record)
+
+    def update_environment_session(self, session: EnvironmentSessionRecord) -> EnvironmentSessionRecord:
+        session.updated_at = time.time()
+        return self.environment_sessions.put(session)
+
+    def create_transition(self, request: TransitionCreate) -> TransitionRecord:
+        record = TransitionRecord(transition_id=str(uuid.uuid4()), **request.model_dump())
+        return self.transitions.put(record)
+
+    def create_trajectory(
+        self,
+        request: TrajectoryCreate,
+        *,
+        status: TemporalStatus = TemporalStatus.ACTIVE,
+    ) -> TrajectoryRecord:
+        now = time.time()
+        record = TrajectoryRecord(
+            trajectory_id=str(uuid.uuid4()),
+            status=status,
+            created_at=now,
+            updated_at=now,
+            **request.model_dump(),
+        )
+        return self.trajectories.put(record)
+
+    def update_trajectory(self, trajectory: TrajectoryRecord) -> TrajectoryRecord:
+        trajectory.updated_at = time.time()
+        return self.trajectories.put(trajectory)
+
+    def create_evaluation_run(
+        self,
+        request: EvaluationRunCreate,
+        *,
+        status: TemporalStatus = TemporalStatus.PENDING,
+    ) -> EvaluationRunRecord:
+        now = time.time()
+        record = EvaluationRunRecord(
+            eval_run_id=str(uuid.uuid4()),
+            status=status,
+            created_at=now,
+            updated_at=now,
+            **request.model_dump(),
+        )
+        return self.evaluation_runs.put(record)
+
+    def update_evaluation_run(self, evaluation_run: EvaluationRunRecord) -> EvaluationRunRecord:
+        evaluation_run.updated_at = time.time()
+        return self.evaluation_runs.put(evaluation_run)
+
+    def create_replay_shard(self, request: ReplayShardCreate) -> ReplayShardManifest:
+        now = time.time()
+        record = ReplayShardManifest(
+            replay_shard_id=str(uuid.uuid4()),
+            created_at=now,
+            updated_at=now,
+            num_trajectories=len(request.trajectory_ids),
+            num_transitions=len(request.transition_ids),
+            **request.model_dump(),
+        )
+        return self.replay_shards.put(record)
+
+    def update_replay_shard(self, replay_shard: ReplayShardManifest) -> ReplayShardManifest:
+        replay_shard.updated_at = time.time()
+        replay_shard.num_trajectories = len(replay_shard.trajectory_ids)
+        replay_shard.num_transitions = len(replay_shard.transition_ids)
+        return self.replay_shards.put(replay_shard)

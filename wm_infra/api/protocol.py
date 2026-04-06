@@ -7,7 +7,7 @@ production API exposed through ``ProduceSampleRequest``.
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -83,3 +83,84 @@ class ModelInfo(BaseModel):
     num_parameters: int
     device: str
     dtype: str
+
+
+class EnvironmentCreateRequest(BaseModel):
+    env_name: str
+    task_id: Optional[str] = None
+    seed: Optional[int] = None
+    policy_version: Optional[str] = None
+    max_episode_steps: Optional[int] = Field(default=None, ge=1)
+    labels: dict[str, str] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EnvironmentResetRequest(BaseModel):
+    seed: Optional[int] = None
+    policy_version: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EnvironmentStepRequest(BaseModel):
+    action: list[float]
+    policy_version: Optional[str] = None
+    checkpoint: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EnvironmentStepManyRequest(BaseModel):
+    env_ids: list[str] = Field(default_factory=list)
+    actions: list[list[float]]
+    policy_version: Optional[str] = None
+    checkpoint: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EnvironmentForkRequest(BaseModel):
+    branch_name: Optional[str] = None
+    policy_version: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EnvironmentCheckpointRequest(BaseModel):
+    tag: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EnvironmentSessionResponse(BaseModel):
+    env_id: str
+    env_name: str
+    episode_id: str
+    task_id: str
+    branch_id: Optional[str] = None
+    state_handle_id: Optional[str] = None
+    checkpoint_id: Optional[str] = None
+    trajectory_id: Optional[str] = None
+    current_step: int = 0
+    policy_version: Optional[str] = None
+    status: str
+    observation: list[list[float]] = Field(default_factory=list)
+    info: dict[str, Any] = Field(default_factory=dict)
+
+
+class EnvironmentStepResponse(BaseModel):
+    env_id: str
+    episode_id: str
+    task_id: str
+    trajectory_id: Optional[str] = None
+    state_handle_id: str
+    checkpoint_id: Optional[str] = None
+    transition_id: Optional[str] = None
+    policy_version: Optional[str] = None
+    step_idx: int
+    observation: list[list[float]]
+    reward: float
+    terminated: bool
+    truncated: bool
+    info: dict[str, Any] = Field(default_factory=dict)
+
+
+class EnvironmentStepManyResponse(BaseModel):
+    env_ids: list[str]
+    results: list[EnvironmentStepResponse]
+    runtime: dict[str, Any] = Field(default_factory=dict)

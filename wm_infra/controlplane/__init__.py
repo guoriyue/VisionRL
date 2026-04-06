@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 from .schemas import (
     ArtifactKind,
     ArtifactRecord,
+    CosmosTaskConfig,
+    CosmosVariant,
     EvaluationRecord,
     EvaluationStatus,
     ExperimentRef,
@@ -39,21 +41,33 @@ from .temporal import (
     BranchRecord,
     CheckpointCreate,
     CheckpointRecord,
+    EnvironmentSessionCreate,
+    EnvironmentSessionRecord,
+    EnvironmentSpec,
+    EvaluationRunCreate,
+    EvaluationRunRecord,
     EpisodeCreate,
     EpisodeRecord,
+    ReplayShardCreate,
+    ReplayShardManifest,
     RolloutCreate,
     RolloutRecord,
     StateHandleCreate,
     StateHandleKind,
     StateHandleRecord,
+    TaskSpec,
     TemporalStatus,
     TemporalStore,
+    TrajectoryCreate,
+    TrajectoryRecord,
+    TransitionCreate,
+    TransitionRecord,
 )
 
 if TYPE_CHECKING:
-    from .resource_estimator import estimate_rollout_request, estimate_wan_request
+    from .resource_estimator import estimate_cosmos_request, estimate_rollout_request, estimate_wan_request
 
-_RESOURCE_ESTIMATOR_EXPORTS = {"estimate_rollout_request", "estimate_wan_request"}
+_RESOURCE_ESTIMATOR_EXPORTS = {"estimate_cosmos_request", "estimate_rollout_request", "estimate_wan_request"}
 
 
 def __getattr__(name: str):
@@ -72,6 +86,13 @@ __all__ = [
     "BranchRecord",
     "CheckpointCreate",
     "CheckpointRecord",
+    "CosmosTaskConfig",
+    "CosmosVariant",
+    "EnvironmentSessionCreate",
+    "EnvironmentSessionRecord",
+    "EnvironmentSpec",
+    "EvaluationRunCreate",
+    "EvaluationRunRecord",
     "EpisodeCreate",
     "EpisodeRecord",
     "EvaluationRecord",
@@ -80,6 +101,8 @@ __all__ = [
     "FailureTag",
     "GenieTaskConfig",
     "ProduceSampleRequest",
+    "ReplayShardCreate",
+    "ReplayShardManifest",
     "ResourceEstimate",
     "RolloutCreate",
     "RolloutRecord",
@@ -91,6 +114,7 @@ __all__ = [
     "StateHandleCreate",
     "StateHandleKind",
     "StateHandleRecord",
+    "TaskSpec",
     "TaskType",
     "TemporalRefs",
     "TemporalStatus",
@@ -100,8 +124,13 @@ __all__ = [
     "TokenizerFamily",
     "TokenizerKind",
     "TrainingExportRecord",
+    "TrajectoryCreate",
+    "TrajectoryRecord",
+    "TransitionCreate",
+    "TransitionRecord",
     "VideoMemoryProfile",
     "WanTaskConfig",
+    "estimate_cosmos_request",
     "estimate_rollout_request",
     "estimate_wan_request",
 ]

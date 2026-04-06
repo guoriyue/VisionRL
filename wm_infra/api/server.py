@@ -36,7 +36,19 @@ import numpy as np
 import torch
 
 from wm_infra.api.metrics import ACTIVE_ROLLOUTS, API_AUTH_FAILURES, QUEUE_DEPTH, REQUEST_DURATION, REQUEST_TOTAL, SAMPLE_DURATION, SAMPLE_TOTAL
-from wm_infra.api.protocol import HealthResponse, RolloutRequest, RolloutResponse, SSE_DONE, StepResult
+from wm_infra.api.protocol import (
+    EnvironmentCheckpointRequest,
+    EnvironmentCreateRequest,
+    EnvironmentForkRequest,
+    EnvironmentResetRequest,
+    EnvironmentStepManyRequest,
+    EnvironmentStepRequest,
+    HealthResponse,
+    RolloutRequest,
+    RolloutResponse,
+    SSE_DONE,
+    StepResult,
+)
 from wm_infra.backends import BackendRegistry, CosmosJobQueue, CosmosPredictBackend, GenieJobQueue, GenieRolloutBackend, RolloutBackend, WanJobQueue, WanVideoBackend
 from wm_infra.backends.cosmos_runner import CosmosRunner
 from wm_infra.backends.genie_runner import GenieRunner
@@ -53,6 +65,7 @@ from wm_infra.controlplane import (
 )
 from wm_infra.core.engine import AsyncWorldModelEngine, RolloutJob
 from wm_infra.models.dynamics import LatentDynamicsModel
+from wm_infra.rl.runtime import RLEnvironmentManager
 from wm_infra.tokenizer.video_tokenizer import VideoTokenizer
 
 logger = logging.getLogger("wm_infra")
@@ -237,6 +250,7 @@ def create_app(
         app.state.wan_job_queue = wan_job_queue
         app.state.cosmos_job_queue = cosmos_job_queue
         app.state.genie_job_queue = genie_job_queue
+        app.state.rl_env_manager = RLEnvironmentManager(temporal_store)
 
         device_str = config.device.value if hasattr(config.device, "value") else str(config.device)
         logger.info(
@@ -680,6 +694,156 @@ def create_app(
         if item is None:
             raise HTTPException(status_code=404, detail="Checkpoint not found")
         return item.model_dump(mode="json")
+
+    @app.get("/v1/env-specs")
+    async def list_environment_specs():
+        manager: RLEnvironmentManager = app.state.rl_env_manager
+        items = manager.list_environment_specs()
+        return {"environment_specs": [item.model_dump(mode="json") for item in items], "count": len(items)}
+
+    @app.get("/v1/task-specs")
+    async def list_task_specs(env_name: str | None = None):
+        manager: RLEnvironmentManager = app.state.rl_env_manager
+        items = manager.list_task_specs(env_name=env_name)
+        return {"task_specs": [item.model_dump(mode="json") for item in items], "count": len(items)}
+
+    @app.post("/v1/envs")
+    async def create_env_session(request: EnvironmentCreateRequest):
+        manager: RLEnvironmentManager = app.state.rl_env_manager
+        try:
+            response = manager.create_session(
+                env_name=request.env_name,
+                task_id=request.task_id,
+                seed=request.seed,
+                policy_version=request.policy_version,
+                max_episode_steps=request.max_episode_steps,
+                labels=request.labels,
+                metadata=request.metadata,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Unknown env or task: {exc.args[0]}") from exc
+        return response.model_dump(mode="json")
+
+    @app.get("/v1/envs")
+    async def list_env_sessions(status: str | None = None, task_id: str | None = None):
+        manager: RLEnvironmentManager = app.state.rl_env_manager
+        items = manager.list_sessions()
+        if status is not None:
+            items = [item for item in items if item.status.value == status]
+        if task_id is not None:
+            items = [item for item in items if item.task_id == task_id]
+        return {"envs": [item.model_dump(mode="json") for item in items], "count": len(items)}
+
+    @app.get("/v1/envs/{env_id}")
+    async def get_env_session(env_id: str):
+        manager: RLEnvironmentManager = app.state.rl_env_manager
+        try:
+            session = manager.get_session(env_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Environment session not found") from exc
+        return session.model_dump(mode="json")
+
+    @app.post("/v1/envs/{env_id}/reset")
+    async def reset_env_session(env_id: str, request: EnvironmentResetRequest):
+        manager: RLEnvironmentManager = app.state.rl_env_manager
+        try:
+            response = manager.reset_session(
+                env_id,
+                seed=request.seed,
+                policy_version=request.policy_version,
+                metadata=request.metadata,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Environment session not found") from exc
+        return response.model_dump(mode="json")
+
+    @app.post("/v1/envs/{env_id}/step")
+    async def step_env_session(env_id: str, request: EnvironmentStepRequest):
+        manager: RLEnvironmentManager = app.state.rl_env_manager
+        try:
+            response = manager.step_session(
+                env_id,
+                action=request.action,
+                policy_version=request.policy_version,
+                checkpoint=request.checkpoint,
+                metadata=request.metadata,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Environment session not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return response.model_dump(mode="json")
+
+    @app.post("/v1/envs/{env_id}/step_many")
+    async def step_many_env_sessions(env_id: str, request: EnvironmentStepManyRequest):
+        manager: RLEnvironmentManager = app.state.rl_env_manager
+        try:
+            response = manager.step_many(
+                env_id,
+                env_ids=request.env_ids,
+                actions=request.actions,
+                policy_version=request.policy_version,
+                checkpoint=request.checkpoint,
+                metadata=request.metadata,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Environment session not found: {exc.args[0]}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return response.model_dump(mode="json")
+
+    @app.post("/v1/envs/{env_id}/fork")
+    async def fork_env_session(env_id: str, request: EnvironmentForkRequest):
+        manager: RLEnvironmentManager = app.state.rl_env_manager
+        try:
+            response = manager.fork_session(
+                env_id,
+                branch_name=request.branch_name,
+                policy_version=request.policy_version,
+                metadata=request.metadata,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Environment session not found") from exc
+        return response.model_dump(mode="json")
+
+    @app.post("/v1/envs/{env_id}/checkpoint")
+    async def checkpoint_env_session(env_id: str, request: EnvironmentCheckpointRequest):
+        manager: RLEnvironmentManager = app.state.rl_env_manager
+        try:
+            checkpoint_id = manager.checkpoint_session(env_id, tag=request.tag, metadata=request.metadata)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Environment session not found") from exc
+        store: TemporalStore = app.state.temporal_store
+        checkpoint = store.checkpoints.get(checkpoint_id)
+        assert checkpoint is not None
+        return checkpoint.model_dump(mode="json")
+
+    @app.delete("/v1/envs/{env_id}")
+    async def delete_env_session(env_id: str):
+        manager: RLEnvironmentManager = app.state.rl_env_manager
+        try:
+            manager.delete_session(env_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Environment session not found") from exc
+        return {"deleted": True, "env_id": env_id}
+
+    @app.get("/v1/transitions")
+    async def list_transitions(env_id: str | None = None, trajectory_id: str | None = None):
+        manager: RLEnvironmentManager = app.state.rl_env_manager
+        items = manager.list_transitions(env_id=env_id, trajectory_id=trajectory_id)
+        return {"transitions": [item.model_dump(mode="json") for item in items], "count": len(items)}
+
+    @app.get("/v1/trajectories")
+    async def list_trajectories(env_id: str | None = None, episode_id: str | None = None):
+        manager: RLEnvironmentManager = app.state.rl_env_manager
+        items = manager.list_trajectories(env_id=env_id, episode_id=episode_id)
+        return {"trajectories": [item.model_dump(mode="json") for item in items], "count": len(items)}
+
+    @app.get("/v1/evaluations")
+    async def list_evaluation_runs():
+        manager: RLEnvironmentManager = app.state.rl_env_manager
+        items = manager.list_evaluation_runs()
+        return {"evaluation_runs": [item.model_dump(mode="json") for item in items], "count": len(items)}
 
     return app
 
