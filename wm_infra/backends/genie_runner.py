@@ -490,6 +490,7 @@ class GenieRunner:
         if len(prepared_runs) == 1:
             return [self.run_window(prepared_runs[0], frame_start=frame_start, frame_end=frame_end)]
 
+        batch_size = len(prepared_runs)
         first = prepared_runs[0]
         if any(prepared.mode != first.mode for prepared in prepared_runs):
             return [self.run_window(prepared, frame_start=frame_start, frame_end=frame_end) for prepared in prepared_runs]
@@ -504,6 +505,8 @@ class GenieRunner:
                     frames_generated=0,
                     elapsed_s=0.0,
                     error=prepared.error,
+                    batch_size=batch_size,
+                    batched=True,
                 )
                 for prepared in prepared_runs
             ]
@@ -523,6 +526,8 @@ class GenieRunner:
                         frames_generated=max(normalized_end - normalized_start, 0) if prepared.error is None else 0,
                         elapsed_s=elapsed,
                         error=prepared.error,
+                        batch_size=batch_size,
+                        batched=True,
                     )
                 )
             return results
@@ -579,6 +584,8 @@ class GenieRunner:
                     frames_generated=max(normalized_end - normalized_start, 0),
                     elapsed_s=elapsed,
                     error=None,
+                    batch_size=batch_size,
+                    batched=True,
                 )
             )
         return results

@@ -3,9 +3,9 @@
   "blocked": false,
   "blocker": null,
   "branch": "codex/ecs-runtime-int4-cleanup",
-  "last_completed_step": "step_2_batching_policy",
-  "current_step": "step_3_runtime_profile",
-  "next_step": "step_3_runtime_profile",
+  "last_completed_step": "step_3_runtime_profile",
+  "current_step": "step_4_benchmark_gates",
+  "next_step": "step_4_benchmark_gates",
   "dirty_worktree_at_start": [
     "M AGENTS.md",
     "M tests/test_bench_samples_api.py",
@@ -54,58 +54,59 @@
     "genie_heavy_off": "benchmarks/results/genie_heavy_off.json",
     "genie_heavy_on": "benchmarks/results/genie_heavy_on.json",
     "baseline_doc": "docs/GENIE_ECS_BASELINE.md",
-    "batching_policy_doc": "docs/GENIE_ECS_BATCHING_POLICY.md"
+    "batching_policy_doc": "docs/GENIE_ECS_BATCHING_POLICY.md",
+    "runtime_profile_doc": "docs/GENIE_ECS_RUNTIME_PROFILE.md"
   },
   "benchmarks": {
     "genie_default_baseline": {
-      "submit_mean_ms": 2424.265125,
-      "submit_p95_ms": 3473.7300999999998,
-      "terminal_mean_ms": 2428.410125,
-      "terminal_p95_ms": 3478.4401500000004,
+      "submit_mean_ms": 2560.38375,
+      "submit_p95_ms": 3749.16665,
+      "terminal_mean_ms": 2564.644875,
+      "terminal_p95_ms": 3753.5838999999996,
       "success_rate": 1.0
     },
     "genie_default_batched": {
-      "submit_mean_ms": 5.1405,
-      "submit_p95_ms": 5.3355,
-      "terminal_mean_ms": 2389.425875,
-      "terminal_p95_ms": 3456.3505,
+      "submit_mean_ms": 6.0015,
+      "submit_p95_ms": 6.620800000000001,
+      "terminal_mean_ms": 2244.60075,
+      "terminal_p95_ms": 3160.02965,
       "success_rate": 1.0,
-      "terminal_mean_ratio_vs_baseline": 0.9839465955117445,
-      "terminal_p95_ratio_vs_baseline": 0.9936495529468861,
+      "terminal_mean_ratio_vs_baseline": 0.8752091846634322,
+      "terminal_p95_ratio_vs_baseline": 0.8418699925689687,
       "gate_pass": true
     },
     "genie_profile_baseline": {
-      "submit_mean_ms": 9069.378625,
-      "submit_p95_ms": 9069.532,
-      "terminal_mean_ms": 9076.2415,
-      "terminal_p95_ms": 9076.3212,
+      "submit_mean_ms": 8601.106,
+      "submit_p95_ms": 8601.22955,
+      "terminal_mean_ms": 8610.152125,
+      "terminal_p95_ms": 8610.30205,
       "success_rate": 1.0
     },
     "genie_profile_batched": {
-      "submit_mean_ms": 1961.656,
-      "submit_p95_ms": 1961.82485,
-      "terminal_mean_ms": 6084.44525,
-      "terminal_p95_ms": 8398.7696,
+      "submit_mean_ms": 1668.998,
+      "submit_p95_ms": 1669.1656,
+      "terminal_mean_ms": 5817.8971249999995,
+      "terminal_p95_ms": 8138.055,
       "success_rate": 1.0,
-      "terminal_mean_ratio_vs_baseline": 0.6703705768516625,
-      "terminal_p95_ratio_vs_baseline": 0.925349534787288,
+      "terminal_mean_ratio_vs_baseline": 0.6757020132208175,
+      "terminal_p95_ratio_vs_baseline": 0.9451532539442098,
       "gate_pass": true
     },
     "genie_heavy_off": {
-      "submit_mean_ms": 4172.982625000001,
-      "submit_p95_ms": 5083.019,
-      "terminal_mean_ms": 4177.4135,
-      "terminal_p95_ms": 5088.083549999999,
+      "submit_mean_ms": 4436.841875,
+      "submit_p95_ms": 5610.1143,
+      "terminal_mean_ms": 4441.5945,
+      "terminal_p95_ms": 5614.87915,
       "success_rate": 1.0
     },
     "genie_heavy_on": {
-      "submit_mean_ms": 1626.89075,
-      "submit_p95_ms": 2199.6282,
-      "terminal_mean_ms": 4373.812,
-      "terminal_p95_ms": 5565.04225,
+      "submit_mean_ms": 1191.071375,
+      "submit_p95_ms": 2365.6761,
+      "terminal_mean_ms": 4492.41125,
+      "terminal_p95_ms": 5749.0163,
       "success_rate": 1.0,
-      "terminal_mean_ratio_vs_baseline": 1.047014378634052,
-      "terminal_p95_ratio_vs_baseline": 1.0937403435523382,
+      "terminal_mean_ratio_vs_baseline": 1.0114411052157057,
+      "terminal_p95_ratio_vs_baseline": 1.0238895880777774,
       "gate_pass": true
     },
     "cleanup_gate": {
@@ -123,6 +124,10 @@
     {
       "command": "pytest tests/test_genie.py tests/test_genie_batcher.py tests/test_server.py tests/test_bench_samples_api.py",
       "status": "passed"
+    },
+    {
+      "command": "pytest tests/test_genie.py tests/test_genie_runtime.py tests/test_server.py",
+      "status": "passed"
     }
   ],
   "commits": [
@@ -135,6 +140,9 @@
     "Step 2 converged the batching policy so that off disables both queue and transition cross-request batching.",
     "Whole-request queue batching is now restricted to single-window workloads and capped at batch size 2.",
     "Default and heavy benchmark gates are both green after the policy change.",
-    "Profile workload also improved after removing the earlier head-of-line behavior."
+    "Profile workload also improved after removing the earlier head-of-line behavior.",
+    "Step 3 unified single-request and batched runtime profiling under the same stage_profile, scheduler, runtime_state, and benchmark_profile contract.",
+    "Scheduler metadata now carries execution_path, observed batch sizes, and occupancy summaries in both execution paths.",
+    "Benchmark-facing runtime fields are now mirrored into rollout metadata for later regression gates."
   ]
 }

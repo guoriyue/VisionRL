@@ -118,6 +118,22 @@ class TestGenieRunner:
         assert result.elapsed_s >= 0
         assert result.error is None
 
+    def test_run_window_batch_marks_batch_metadata_in_stub_mode(self):
+        runner = _force_stub_runner()
+        runner.load()
+        prepared_a = runner.prepare_inputs(prompt="a", seed=1, num_frames=9, num_prompt_frames=4)
+        prepared_b = runner.prepare_inputs(prompt="b", seed=2, num_frames=9, num_prompt_frames=4)
+
+        results = runner.run_window_batch(
+            [prepared_a, prepared_b],
+            frame_start=4,
+            frame_end=9,
+        )
+
+        assert len(results) == 2
+        assert all(result.batch_size == 2 for result in results)
+        assert all(result.batched is True for result in results)
+
     def test_run_accepts_per_request_overrides(self, tmp_path):
         runner = _force_stub_runner()
         runner.num_prompt_frames = 8
@@ -390,6 +406,8 @@ class TestGenieRolloutBackend:
         assert rollout.metrics["total_elapsed_ms"] >= rollout.metrics["runner_exec_ms"]
         assert rollout.metadata["stage_timings_ms"] == record.runtime["stage_timings_ms"]
         assert rollout.metadata["stage_graph"] == record.runtime["stage_graph"]
+        assert rollout.metadata["stage_profile"] == record.runtime["stage_profile"]
+        assert rollout.metadata["benchmark_profile"] == record.runtime["benchmark_profile"]
         assert f"{record.sample_id}:tokens" in rollout.artifact_ids
 
         # Verify checkpoint
@@ -399,6 +417,60 @@ class TestGenieRolloutBackend:
 
         # Verify checkpoint attached to rollout
         assert record.temporal.checkpoint_id in rollout.checkpoint_ids
+
+    @pytest.mark.asyncio
+    async def test_execute_job_batch_emits_consistent_runtime_profile(self, tmp_path):
+        backend, temporal_store = self._make_backend(tmp_path)
+        episode, branch, state = self._make_episode_and_state(temporal_store)
+
+        requests = [
+            ProduceSampleRequest(
+                task_type=TaskType.GENIE_ROLLOUT,
+                backend="genie-rollout",
+                model="genie-local",
+                sample_spec=SampleSpec(prompt=f"batched-{index}"),
+                temporal=TemporalRefs(
+                    episode_id=episode.episode_id,
+                    branch_id=branch.branch_id,
+                    state_handle_id=state.state_handle_id,
+                ),
+                task_config=RolloutTaskConfig(num_steps=2),
+                genie_config=GenieTaskConfig(
+                    num_frames=9,
+                    num_prompt_frames=4,
+                    checkpoint_every_n_frames=0,
+                ),
+            )
+            for index in range(2)
+        ]
+
+        records = await backend.execute_job_batch(
+            [(request, f"sample-batch-{index}") for index, request in enumerate(requests)]
+        )
+
+        assert len(records) == 2
+        for record in records:
+            assert record.runtime["scheduler"]["execution_path"] == "runner_window_batch"
+            assert record.runtime["scheduler"]["transition_entities"] == 1
+            assert record.runtime["scheduler"]["batched_across_requests"] is True
+            assert record.runtime["scheduler"]["max_observed_batch_size"] == 2
+            assert record.runtime["benchmark_profile"]["max_observed_batch_size"] == 2
+            assert record.runtime["benchmark_profile"]["chunk_count"] == 1
+            assert record.runtime["stage_profile"]["completed_stages"] == [
+                "admission",
+                "state_materialize",
+                "prompt_prepare",
+                "transition",
+                "artifact_persist",
+                "controlplane_commit",
+            ]
+            assert record.runtime["stage_profile"]["stages"]["transition"]["count"] == 1
+            assert record.runtime["stage_profile"]["stages"]["checkpoint"]["count"] == 0
+            assert record.runtime["runtime_state"]["source_cache_key"] is not None
+            rollout = temporal_store.rollouts.get(record.temporal.rollout_id)
+            assert rollout is not None
+            assert rollout.metadata["stage_profile"] == record.runtime["stage_profile"]
+            assert rollout.metadata["benchmark_profile"] == record.runtime["benchmark_profile"]
 
     @pytest.mark.asyncio
     async def test_genie_config_drives_execution_and_round_trips(self, tmp_path):

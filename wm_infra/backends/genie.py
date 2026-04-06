@@ -24,6 +24,10 @@ from wm_infra.backends.genie_runtime import (
     GenieQueueLane,
     GenieResidencyTier,
     GenieRuntimeState,
+    build_benchmark_profile,
+    build_runtime_state_profile,
+    build_scheduler_profile,
+    build_stage_profile,
     build_transition_entities,
     frame_windows,
     make_stage_signature,
@@ -551,6 +555,16 @@ class GenieRolloutBackend(ProduceSampleBackend):
             estimated_transfer_bytes=runtime_state.materialized_bytes,
         )
         chunks = [decision.chunk for decision in decisions]
+        chunk_history = [
+            {
+                "chunk_id": chunk.chunk_id,
+                "queue_lane": chunk.queue_lane,
+                "frame_range": list(chunk.frame_range),
+                "chunk_size": chunk.size,
+                "expected_occupancy": chunk.expected_occupancy,
+            }
+            for chunk in chunks
+        ]
         scheduler_inputs_history = [
             {**decision.scheduler_inputs, "chunk_id": decision.chunk.chunk_id, "frame_range": list(decision.chunk.frame_range)}
             for decision in decisions
@@ -598,6 +612,7 @@ class GenieRolloutBackend(ProduceSampleBackend):
                     "chunk_size": transition_outcome.batch_size,
                     "frame_range": list(chunk.frame_range),
                     "expected_occupancy": max(chunk.expected_occupancy, cross_request_fill_ratio),
+                    "batched_across_requests": transition_outcome.batch_size > 1,
                     "cross_request_batch_id": transition_outcome.batch_id,
                     "cross_request_sample_ids": transition_outcome.sample_ids,
                     "scheduler_inputs": decision.scheduler_inputs,
@@ -825,6 +840,21 @@ class GenieRolloutBackend(ProduceSampleBackend):
 
         total_elapsed_ms = round((time.perf_counter() - total_start) * 1000.0, 3)
         stage_timings_ms["total_elapsed_ms"] = total_elapsed_ms
+        scheduler_profile = build_scheduler_profile(
+            execution_path="transition_batcher",
+            transition_entities=len(transition_entities),
+            chunks=chunk_history,
+            scheduler_inputs=scheduler_inputs_history,
+            observed_batch_sizes=observed_cross_request_batch_sizes,
+            batched_across_requests=any(size > 1 for size in observed_cross_request_batch_sizes),
+            cross_request_batcher=self._transition_batcher.snapshot(),
+        )
+        runtime_state_profile = build_runtime_state_profile(runtime_state)
+        stage_profile = build_stage_profile(stage_history, stage_timings_ms)
+        benchmark_profile = build_benchmark_profile(
+            stage_timings_ms=stage_timings_ms,
+            scheduler_profile=scheduler_profile,
+        )
 
         runtime: dict[str, Any] = {
             "runner": f"genie-{mode}",
@@ -861,31 +891,11 @@ class GenieRolloutBackend(ProduceSampleBackend):
             "stage_timings_ms": stage_timings_ms,
             "stage_graph": GENIE_STAGE_GRAPH,
             "stage_history": stage_history,
-            "scheduler": {
-                "transition_entities": len(transition_entities),
-                "chunks": [
-                    {
-                        "chunk_id": chunk.chunk_id,
-                        "queue_lane": chunk.queue_lane,
-                        "frame_range": list(chunk.frame_range),
-                        "chunk_size": chunk.size,
-                        "expected_occupancy": chunk.expected_occupancy,
-                    }
-                    for chunk in chunks
-                ],
-                "scheduler_inputs": scheduler_inputs_history,
-                "cross_request_batcher": self._transition_batcher.snapshot(),
-                "observed_batch_sizes": observed_cross_request_batch_sizes,
-            },
+            "stage_profile": stage_profile,
+            "benchmark_profile": benchmark_profile,
+            "scheduler": scheduler_profile,
             "queue_lane": queue_lane,
-            "runtime_state": {
-                "resident_tier": runtime_state.resident_tier.value,
-                "materialized_bytes": runtime_state.materialized_bytes,
-                "reuse_hits": runtime_state.reuse_hits,
-                "reuse_misses": runtime_state.reuse_misses,
-                "last_completed_frame": runtime_state.last_completed_frame,
-                "checkpoint_delta_ref": runtime_state.checkpoint_delta_ref,
-            },
+            "runtime_state": runtime_state_profile,
             "checkpoint_deltas": [{**delta.metadata, "path": delta.path} for delta in checkpoint_deltas],
         }
         if run_result.extra.get("fallback_from"):
@@ -996,14 +1006,9 @@ class GenieRolloutBackend(ProduceSampleBackend):
         rollout.metadata["stage_graph"] = GENIE_STAGE_GRAPH
         rollout.metadata["stage_timings_ms"] = stage_timings_ms
         rollout.metadata["stage_history"] = stage_history
-        rollout.metadata["scheduler"] = {
-            "transition_entities": len(transition_entities),
-            "chunk_count": len(chunks),
-            "queue_lanes": [chunk.queue_lane for chunk in chunks],
-            "scheduler_inputs": scheduler_inputs_history,
-            "cross_request_batcher": self._transition_batcher.snapshot(),
-            "observed_batch_sizes": observed_cross_request_batch_sizes,
-        }
+        rollout.metadata["stage_profile"] = stage_profile
+        rollout.metadata["benchmark_profile"] = benchmark_profile
+        rollout.metadata["scheduler"] = scheduler_profile
         rollout.metrics = {
             "steps": float(step_count),
             "estimated_units": estimate.estimated_units,
@@ -1018,7 +1023,10 @@ class GenieRolloutBackend(ProduceSampleBackend):
             "artifact_persist_ms": stage_timings_ms["artifact_persist_ms"],
             "temporal_persist_ms": stage_timings_ms["temporal_persist_ms"],
             "checkpoint_delta_count": float(len(checkpoint_deltas)),
-            "max_cross_request_batch_size": float(max(observed_cross_request_batch_sizes) if observed_cross_request_batch_sizes else 1),
+            "chunk_count": float(scheduler_profile["chunk_count"]),
+            "max_chunk_size": float(scheduler_profile["max_chunk_size"]),
+            "avg_expected_occupancy": scheduler_profile["avg_expected_occupancy"],
+            "max_cross_request_batch_size": float(scheduler_profile["max_observed_batch_size"]),
             "total_elapsed_ms": total_elapsed_ms,
         }
         self.temporal_store.update_rollout(rollout)
@@ -1059,6 +1067,8 @@ class GenieRolloutBackend(ProduceSampleBackend):
                 "genie_config_applied": True,
                 "stage_timings_ms": stage_timings_ms,
                 "stage_graph": GENIE_STAGE_GRAPH,
+                "stage_profile": stage_profile,
+                "benchmark_profile": benchmark_profile,
                 "notes": (
                     f"Genie rollout executed via {mode} runner. "
                     f"{run_result.frames_generated} frames generated, {run_result.tokens_generated} tokens produced."
@@ -1197,6 +1207,7 @@ class GenieRolloutBackend(ProduceSampleBackend):
                 "intermediate_checkpoints": [],
                 "chunk_history": [],
                 "scheduler_inputs_history": [],
+                "observed_batch_sizes": [],
             }
 
             admission_start = time.perf_counter()
@@ -1444,6 +1455,7 @@ class GenieRolloutBackend(ProduceSampleBackend):
                         "expected_occupancy": chunk.expected_occupancy,
                     }
                 )
+                ctx["observed_batch_sizes"].append(result.batch_size)
                 ctx["scheduler_inputs_history"].append(
                     {
                         **decision.scheduler_inputs,
@@ -1461,7 +1473,9 @@ class GenieRolloutBackend(ProduceSampleBackend):
                         "chunk_size": chunk.size,
                         "frame_range": list(chunk.frame_range),
                         "expected_occupancy": chunk.expected_occupancy,
-                        "batched_across_requests": True,
+                        "batched_across_requests": result.batched,
+                        "cross_request_batch_id": chunk.chunk_id if result.batched else None,
+                        "cross_request_sample_ids": [batched_ctx["sample_id"] for batched_ctx in chunk_contexts] if result.batched else [ctx["sample_id"]],
                     }
                 )
 
@@ -1682,6 +1696,21 @@ class GenieRolloutBackend(ProduceSampleBackend):
                 }
             )
             ctx["stage_timings_ms"]["total_elapsed_ms"] = round((time.perf_counter() - ctx["started_at"]) * 1000.0, 3)
+            scheduler_profile = build_scheduler_profile(
+                execution_path="runner_window_batch",
+                transition_entities=len(ctx["transition_entities"]),
+                chunks=ctx["chunk_history"],
+                scheduler_inputs=ctx["scheduler_inputs_history"],
+                observed_batch_sizes=ctx["observed_batch_sizes"],
+                batched_across_requests=any(size > 1 for size in ctx["observed_batch_sizes"]),
+                cross_request_batcher=None,
+            )
+            runtime_state_profile = build_runtime_state_profile(ctx["runtime_state"])
+            stage_profile = build_stage_profile(ctx["stage_history"], ctx["stage_timings_ms"])
+            benchmark_profile = build_benchmark_profile(
+                stage_timings_ms=ctx["stage_timings_ms"],
+                scheduler_profile=scheduler_profile,
+            )
 
             runtime: dict[str, Any] = {
                 "runner": f"genie-{mode}",
@@ -1718,23 +1747,13 @@ class GenieRolloutBackend(ProduceSampleBackend):
                 "stage_timings_ms": ctx["stage_timings_ms"],
                 "stage_graph": GENIE_STAGE_GRAPH,
                 "stage_history": ctx["stage_history"],
-                "scheduler": {
-                    "transition_entities": len(ctx["transition_entities"]),
-                    "chunks": ctx["chunk_history"],
-                    "scheduler_inputs": ctx["scheduler_inputs_history"],
-                    "batched_across_requests": True,
-                },
+                "stage_profile": stage_profile,
+                "benchmark_profile": benchmark_profile,
+                "scheduler": scheduler_profile,
                 "queue_lane": ctx["queue_lane"],
-                "runtime_state": {
-                    "resident_tier": ctx["runtime_state"].resident_tier.value,
-                    "materialized_bytes": ctx["runtime_state"].materialized_bytes,
-                    "reuse_hits": ctx["runtime_state"].reuse_hits,
-                    "reuse_misses": ctx["runtime_state"].reuse_misses,
-                    "last_completed_frame": ctx["runtime_state"].last_completed_frame,
-                    "checkpoint_delta_ref": ctx["runtime_state"].checkpoint_delta_ref,
-                },
+                "runtime_state": runtime_state_profile,
                 "checkpoint_deltas": [{**delta.metadata, "path": delta.path} for delta in ctx["checkpoint_deltas"]],
-                "batched_transition": True,
+                "batched_transition": scheduler_profile["batched_across_requests"],
             }
             if run_result.extra.get("fallback_from"):
                 runtime["fallback_from"] = run_result.extra["fallback_from"]
@@ -1844,13 +1863,9 @@ class GenieRolloutBackend(ProduceSampleBackend):
             ctx["rollout"].metadata["stage_graph"] = GENIE_STAGE_GRAPH
             ctx["rollout"].metadata["stage_timings_ms"] = ctx["stage_timings_ms"]
             ctx["rollout"].metadata["stage_history"] = ctx["stage_history"]
-            ctx["rollout"].metadata["scheduler"] = {
-                "transition_entities": len(ctx["transition_entities"]),
-                "chunk_count": len(ctx["chunk_history"]),
-                "queue_lanes": [chunk["queue_lane"] for chunk in ctx["chunk_history"]],
-                "scheduler_inputs": ctx["scheduler_inputs_history"],
-                "batched_across_requests": True,
-            }
+            ctx["rollout"].metadata["stage_profile"] = stage_profile
+            ctx["rollout"].metadata["benchmark_profile"] = benchmark_profile
+            ctx["rollout"].metadata["scheduler"] = scheduler_profile
             ctx["rollout"].metrics = {
                 "steps": float(ctx["step_count"]),
                 "estimated_units": ctx["estimate"].estimated_units,
@@ -1865,6 +1880,10 @@ class GenieRolloutBackend(ProduceSampleBackend):
                 "artifact_persist_ms": ctx["stage_timings_ms"]["artifact_persist_ms"],
                 "temporal_persist_ms": ctx["stage_timings_ms"]["temporal_persist_ms"],
                 "checkpoint_delta_count": float(len(ctx["checkpoint_deltas"])),
+                "chunk_count": float(scheduler_profile["chunk_count"]),
+                "max_chunk_size": float(scheduler_profile["max_chunk_size"]),
+                "avg_expected_occupancy": scheduler_profile["avg_expected_occupancy"],
+                "max_cross_request_batch_size": float(scheduler_profile["max_observed_batch_size"]),
                 "total_elapsed_ms": ctx["stage_timings_ms"]["total_elapsed_ms"],
             }
             self.temporal_store.update_rollout(ctx["rollout"])
@@ -1905,6 +1924,8 @@ class GenieRolloutBackend(ProduceSampleBackend):
                         "genie_config_applied": True,
                         "stage_timings_ms": ctx["stage_timings_ms"],
                         "stage_graph": GENIE_STAGE_GRAPH,
+                        "stage_profile": stage_profile,
+                        "benchmark_profile": benchmark_profile,
                         "notes": (
                             f"Genie rollout executed via {mode} runner. "
                             f"{run_result.frames_generated} frames generated, {run_result.tokens_generated} tokens produced."

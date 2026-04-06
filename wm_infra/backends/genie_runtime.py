@@ -196,6 +196,129 @@ class GenieRuntimeTrace:
         }
 
 
+def _ordered_unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def build_stage_profile(
+    stage_history: list[dict[str, Any]],
+    stage_timings_ms: dict[str, float],
+) -> dict[str, Any]:
+    """Summarize stage execution into a stable profiling payload."""
+
+    stages: dict[str, dict[str, Any]] = {}
+    completed_stages: list[str] = []
+    for stage in GENIE_STAGE_GRAPH:
+        entries = [entry for entry in stage_history if entry.get("stage") == stage]
+        queue_lanes = _ordered_unique(
+            [str(entry["queue_lane"]) for entry in entries if entry.get("queue_lane") is not None]
+        )
+        runner_modes = _ordered_unique(
+            [str(entry["runner_mode"]) for entry in entries if entry.get("runner_mode") is not None]
+        )
+        chunk_sizes = [int(entry.get("chunk_size") or 0) for entry in entries if entry.get("chunk_size") is not None]
+        frame_ranges = [list(entry["frame_range"]) for entry in entries if entry.get("frame_range") is not None]
+        stage_elapsed_ms = round(
+            float(stage_timings_ms.get(f"{stage}_ms", sum(float(entry.get("elapsed_ms", 0.0)) for entry in entries))),
+            3,
+        )
+        stages[stage] = {
+            "count": len(entries),
+            "elapsed_ms": stage_elapsed_ms,
+            "queue_lanes": queue_lanes,
+            "runner_modes": runner_modes,
+            "chunk_count": sum(1 for entry in entries if entry.get("chunk_id") is not None),
+            "max_chunk_size": max(chunk_sizes) if chunk_sizes else 0,
+            "frame_ranges": frame_ranges,
+        }
+        if entries:
+            completed_stages.append(stage)
+    return {
+        "graph": list(GENIE_STAGE_GRAPH),
+        "completed_stages": completed_stages,
+        "stage_count": len(completed_stages),
+        "total_elapsed_ms": round(float(stage_timings_ms.get("total_elapsed_ms", 0.0)), 3),
+        "stages": stages,
+    }
+
+
+def build_scheduler_profile(
+    *,
+    execution_path: str,
+    transition_entities: int,
+    chunks: list[dict[str, Any]],
+    scheduler_inputs: list[dict[str, Any]],
+    observed_batch_sizes: list[int],
+    batched_across_requests: bool,
+    cross_request_batcher: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build a scheduler-facing profile payload shared by single and batch paths."""
+
+    queue_lanes = _ordered_unique(
+        [str(chunk["queue_lane"]) for chunk in chunks if chunk.get("queue_lane") is not None]
+    )
+    occupancies = [float(chunk.get("expected_occupancy") or 0.0) for chunk in chunks]
+    chunk_sizes = [int(chunk.get("chunk_size") or 0) for chunk in chunks]
+    return {
+        "execution_path": execution_path,
+        "transition_entities": transition_entities,
+        "chunk_count": len(chunks),
+        "chunks": chunks,
+        "queue_lanes": queue_lanes,
+        "scheduler_inputs": scheduler_inputs,
+        "observed_batch_sizes": observed_batch_sizes,
+        "batched_across_requests": batched_across_requests,
+        "max_chunk_size": max(chunk_sizes) if chunk_sizes else 0,
+        "max_observed_batch_size": max(observed_batch_sizes) if observed_batch_sizes else 1,
+        "avg_expected_occupancy": round(sum(occupancies) / len(occupancies), 4) if occupancies else 0.0,
+        "cross_request_batcher": cross_request_batcher,
+    }
+
+
+def build_runtime_state_profile(runtime_state: GenieRuntimeState) -> dict[str, Any]:
+    """Expose the hot runtime state in a stable, JSON-friendly shape."""
+
+    return {
+        "resident_tier": runtime_state.resident_tier.value,
+        "materialized_bytes": runtime_state.materialized_bytes,
+        "reuse_hits": runtime_state.reuse_hits,
+        "reuse_misses": runtime_state.reuse_misses,
+        "last_completed_frame": runtime_state.last_completed_frame,
+        "checkpoint_delta_ref": runtime_state.checkpoint_delta_ref,
+        "dirty_since_checkpoint": runtime_state.dirty_since_checkpoint,
+        "source_cache_key": runtime_state.source_cache_key,
+    }
+
+
+def build_benchmark_profile(
+    *,
+    stage_timings_ms: dict[str, float],
+    scheduler_profile: dict[str, Any],
+) -> dict[str, Any]:
+    """Emit the runtime fields most useful for benchmark-gate comparisons."""
+
+    return {
+        "state_token_prep_ms": round(float(stage_timings_ms.get("state_token_prep_ms", 0.0)), 3),
+        "transition_ms": round(float(stage_timings_ms.get("transition_ms", 0.0)), 3),
+        "checkpoint_ms": round(float(stage_timings_ms.get("checkpoint_ms", 0.0)), 3),
+        "artifact_persist_ms": round(float(stage_timings_ms.get("artifact_persist_ms", 0.0)), 3),
+        "controlplane_commit_ms": round(float(stage_timings_ms.get("controlplane_commit_ms", 0.0)), 3),
+        "total_elapsed_ms": round(float(stage_timings_ms.get("total_elapsed_ms", 0.0)), 3),
+        "chunk_count": int(scheduler_profile.get("chunk_count", 0)),
+        "max_chunk_size": int(scheduler_profile.get("max_chunk_size", 0)),
+        "max_observed_batch_size": int(scheduler_profile.get("max_observed_batch_size", 1)),
+        "avg_expected_occupancy": float(scheduler_profile.get("avg_expected_occupancy", 0.0)),
+        "batched_across_requests": bool(scheduler_profile.get("batched_across_requests", False)),
+    }
+
+
 @dataclass(slots=True)
 class CachedPromptState:
     """Best-effort reusable prompt state entry."""

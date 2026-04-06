@@ -4,7 +4,12 @@ from wm_infra.backends.genie_checkpoint import build_checkpoint_delta, checkpoin
 from wm_infra.backends.genie_runtime import (
     GenieBatchSignature,
     GenieExecutionEntity,
+    GenieResidencyTier,
     GenieRuntimeState,
+    build_benchmark_profile,
+    build_runtime_state_profile,
+    build_scheduler_profile,
+    build_stage_profile,
     build_transition_entities,
     default_window_size,
     temperature_bucket,
@@ -104,3 +109,72 @@ def test_checkpoint_due_and_delta_metadata():
     assert delta.artifact_id == "sample:checkpoint-delta:0008"
     assert delta.bytes_size == token_window.nbytes
     assert delta.metadata["frame_count"] == 4
+
+
+def test_stage_and_scheduler_profiles_are_stable():
+    stage_history = [
+        {
+            "stage": "transition",
+            "elapsed_ms": 12.5,
+            "queue_lane": "hot_continuation",
+            "runner_mode": "stub",
+            "chunk_id": "transition:0",
+            "chunk_size": 2,
+            "frame_range": [4, 8],
+        },
+        {
+            "stage": "artifact_persist",
+            "elapsed_ms": 1.2,
+            "queue_lane": "persist_only",
+            "runner_mode": "stub",
+        },
+    ]
+    stage_timings_ms = {
+        "transition_ms": 12.5,
+        "artifact_persist_ms": 1.2,
+        "controlplane_commit_ms": 0.7,
+        "total_elapsed_ms": 16.0,
+    }
+    scheduler_profile = build_scheduler_profile(
+        execution_path="runner_window_batch",
+        transition_entities=3,
+        chunks=[
+            {
+                "chunk_id": "transition:0",
+                "queue_lane": "hot_continuation",
+                "frame_range": [4, 8],
+                "chunk_size": 2,
+                "expected_occupancy": 1.0,
+            }
+        ],
+        scheduler_inputs=[{"queue_lane": "hot_continuation"}],
+        observed_batch_sizes=[2],
+        batched_across_requests=True,
+        cross_request_batcher=None,
+    )
+    benchmark_profile = build_benchmark_profile(
+        stage_timings_ms=stage_timings_ms,
+        scheduler_profile=scheduler_profile,
+    )
+    runtime_state_profile = build_runtime_state_profile(
+        GenieRuntimeState(
+            rollout_id="rollout-1",
+            resident_tier=GenieResidencyTier.HOT_GPU,
+            materialized_bytes=4096,
+            last_completed_frame=8,
+            dirty_since_checkpoint=True,
+            source_cache_key="state_handle:1",
+            reuse_hits=2,
+            reuse_misses=1,
+        )
+    )
+    stage_profile = build_stage_profile(stage_history, stage_timings_ms)
+
+    assert stage_profile["completed_stages"] == ["transition", "artifact_persist"]
+    assert stage_profile["stages"]["transition"]["max_chunk_size"] == 2
+    assert scheduler_profile["execution_path"] == "runner_window_batch"
+    assert scheduler_profile["max_observed_batch_size"] == 2
+    assert benchmark_profile["chunk_count"] == 1
+    assert benchmark_profile["batched_across_requests"] is True
+    assert runtime_state_profile["dirty_since_checkpoint"] is True
+    assert runtime_state_profile["source_cache_key"] == "state_handle:1"
