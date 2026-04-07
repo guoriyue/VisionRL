@@ -3,7 +3,7 @@
 from wm_infra.rl.demo import DemoConfig, run_reinforce_demo
 from wm_infra.rl.env import GoalReward, WorldModelEnv, WorldModelVectorEnv
 from wm_infra.rl.genie_adapter import GenieRLSpec, GenieTokenReward, GenieWorldModelAdapter
-from wm_infra.rl.runtime import RLEnvironmentManager
+from wm_infra.runtime.env import LearnedEnvRuntimeManager, RLEnvironmentManager
 from wm_infra.rl.training import (
     Collector,
     Evaluator,
@@ -25,6 +25,7 @@ __all__ = [
     "GenieTokenReward",
     "GenieWorldModelAdapter",
     "LearnerAdapter",
+    "LearnedEnvRuntimeManager",
     "LocalActorCriticLearner",
     "RLEnvironmentManager",
     "SynchronousCollector",

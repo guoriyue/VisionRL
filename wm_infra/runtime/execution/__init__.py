@@ -1,15 +1,13 @@
-"""Compatibility exports for the runtime execution substrate."""
+"""Execution substrate for temporal runtime scheduling."""
 
-from wm_infra.runtime.execution import (
+from wm_infra.runtime.execution.scheduler import HomogeneousChunkScheduler, SchedulerDecision, build_execution_chunks
+from wm_infra.runtime.execution.types import (
     BatchSignature,
     ExecutionBatchPolicy,
     ExecutionChunk,
     ExecutionEntity,
     ExecutionStats,
     ExecutionWorkItem,
-    HomogeneousChunkScheduler,
-    SchedulerDecision,
-    build_execution_chunks,
     chunk_fill_ratio,
     summarize_execution_chunks,
 )

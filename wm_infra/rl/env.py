@@ -2,43 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Callable, Optional
 
 import numpy as np
 import torch
 
 from wm_infra.models.base import WorldModel
+from wm_infra.runtime.env.rewards import GoalReward
 
 
 TensorSampler = Callable[[int, torch.device, torch.dtype, Optional[torch.Generator]], torch.Tensor]
-
-
-@dataclass(slots=True)
-class GoalReward:
-    """Dense goal-reaching reward used by the RL examples.
-
-    The reward is the negative mean squared error between the current state and
-    a sampled goal latent. An episode terminates early once the distance falls
-    below the configured threshold.
-    """
-
-    success_threshold: float = 0.05
-    reward_scale: float = 1.0
-
-    def evaluate(
-        self,
-        next_state: torch.Tensor,
-        goal_state: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
-        error = (next_state - goal_state).pow(2).mean(dim=(1, 2))
-        reward = -error * self.reward_scale
-        terminated = error <= self.success_threshold
-        info = {
-            "goal_mse": error,
-            "success": terminated.to(torch.float32),
-        }
-        return reward, terminated, info
 
 
 class WorldModelEnv:
@@ -200,4 +173,3 @@ class WorldModelVectorEnv:
     def _observation(self) -> np.ndarray:
         assert self._states is not None and self._goals is not None
         return torch.cat([self._states, self._goals], dim=-1).detach().cpu().numpy()
-

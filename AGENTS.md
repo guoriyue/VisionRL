@@ -137,6 +137,24 @@ It should usually not own:
 - generic LLM token decoding engines already solved better by `vLLM`, `SGLang`, or `TensorRT-LLM`
 - low-level optimizations whose main value is generic transformer serving rather than temporal product behavior
 
+Important nuance:
+- do not assume `wm-infra` should remain only a high-level control plane
+- a valid target for this repo is to become a lower-level runtime substrate for learned temporal simulators built from video models and world models
+- if the workload uses a video model or world model as the simulator itself, the repo may need to own execution primitives below the API/control-plane layer
+
+For learned-simulator workloads, `wm-infra` may appropriately own:
+- latent/state residency and memory management
+- action-conditioned transition stepping and batching
+- branch/fork/checkpoint primitives for temporal state
+- disaggregated encode / transition / decode execution
+- prompt/state reuse, cache locality, and state transfer reduction
+- env setup and rollout execution when the "environment step" is implemented by a learned model rather than a traditional physics engine
+
+For avoidance of doubt:
+- the intended lower-level direction is not "build a generic game engine"
+- the intended lower-level direction is "build runtime systems for learned temporal simulation"
+- when comparing to `EnvPool` or `Madrona`, focus on the analogous systems problems for learned simulators: transition throughput, temporal state layout, cache reuse, branch efficiency, decode cost, and rollout continuity
+
 ### Recommended Architecture Direction
 
 Use a layered architecture:
@@ -150,6 +168,12 @@ For future world-model work:
 - treat state as a first-class object, not as request-local metadata
 - keep rollout/session/episode identity explicit and durable
 - separate runtime execution from persistent world-state bookkeeping
+- treat learned transition execution as the core "env stepping" primitive when a world model is acting as the simulator
+
+For learned-simulator work specifically:
+- if the dominant bottleneck is inside transition execution, latent-state movement, or decode/encode staging, it is in scope for `wm-infra` to own that lower-level runtime work directly
+- agents should not prematurely defer these problems to external serving engines or traditional simulator frameworks when the workload is fundamentally a learned temporal simulator
+- the repo may grow execution abstractions that are closer to a temporal simulation engine than a request/response inference server, as long as they stay grounded in concrete `Wan` or `Genie` workload needs
 
 For future video-model work:
 - keep video-specific execution knobs first-class
@@ -191,6 +215,8 @@ Possible directions include:
 - hierarchical caching across text prefixes, visual embeddings, latent trajectories, and control-plane artifacts
 - disaggregated execution across decode, prefill, encoder, and state-transition stages
 - new admission-control or routing systems that optimize for temporal workloads rather than generic text-only serving
+- learned-environment execution runtimes where env setup, step, branch, and checkpoint are implemented over model state rather than explicit physics state
+- world-model/video-model serving engines that are optimized for simulator-style rollout throughput instead of single-shot generation APIs
 
 The right goal is not "build another vLLM".
 The right goal is to discover and implement performance primitives that matter specifically for world-model and video-model infrastructure.

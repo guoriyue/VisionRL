@@ -25,7 +25,15 @@ import torch
 import torch.nn as nn
 
 from wm_infra.config import EngineConfig
-from wm_infra.core.execution import BatchSignature, ExecutionChunk, ExecutionEntity, ExecutionStats
+from wm_infra.runtime.execution import (
+    BatchSignature,
+    ExecutionBatchPolicy,
+    ExecutionChunk,
+    ExecutionEntity,
+    ExecutionStats,
+    ExecutionWorkItem,
+    HomogeneousChunkScheduler,
+)
 from wm_infra.core.state import LatentStateManager
 from wm_infra.core.scheduler import RolloutScheduler, RolloutRequest, ScheduledBatch
 from wm_infra.models.base import WorldModel, RolloutInput, RolloutOutput
@@ -242,8 +250,17 @@ class WorldModelEngine:
             raise ValueError(f"Expected rollout state to be [N, D] or [1, N, D], got {tuple(state_tensor.shape)}")
         return state_tensor
 
+    def _transition_batch_policy(self, logical_batch_size: int) -> ExecutionBatchPolicy:
+        return ExecutionBatchPolicy(
+            mode="sync",
+            max_chunk_size=max(1, logical_batch_size),
+            min_ready_size=1,
+            return_when_ready_count=max(1, logical_batch_size),
+            allow_partial_batch=True,
+        )
+
     def _build_transition_chunks(self, batch: ScheduledBatch) -> list[ExecutionChunk]:
-        chunks: dict[BatchSignature, list[tuple[ExecutionEntity, torch.Tensor, torch.Tensor]]] = {}
+        work_items: list[ExecutionWorkItem] = []
         for i, job_id in enumerate(batch.request_ids):
             step_idx = batch.step_indices[i]
             job = self._jobs[job_id]
@@ -263,23 +280,21 @@ class WorldModelEngine:
                 step_idx=step_idx,
                 batch_signature=signature,
             )
-            chunks.setdefault(signature, []).append((entity, current_state, action))
-
-        execution_chunks: list[ExecutionChunk] = []
-        for chunk_idx, (signature, items) in enumerate(chunks.items()):
-            entities = [item[0] for item in items]
-            latent_batch = torch.stack([item[1] for item in items], dim=0)
-            action_batch = torch.stack([item[2] for item in items], dim=0)
-            execution_chunks.append(
-                ExecutionChunk(
-                    chunk_id=f"{signature.stage}:{chunk_idx}",
-                    signature=signature,
-                    entities=entities,
-                    latent_batch=latent_batch,
-                    action_batch=action_batch,
+            work_items.append(
+                ExecutionWorkItem(
+                    entity=entity,
+                    latent_item=current_state,
+                    action_item=action,
                 )
             )
-        return execution_chunks
+        chunks, _ = HomogeneousChunkScheduler().schedule(
+            work_items=work_items,
+            policy=self._transition_batch_policy(batch.size),
+            chunk_id_prefix="transition",
+            latent_join=lambda items: torch.stack(items, dim=0),
+            action_join=lambda items: torch.stack(items, dim=0),
+        )
+        return chunks
 
     def _record_transition_chunk(self, size: int, logical_batch_size: int) -> None:
         from wm_infra.api.metrics import BATCH_FILL_RATIO, EXECUTION_CHUNK_SIZE, EXECUTION_CHUNK_TOTAL
