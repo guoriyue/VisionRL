@@ -3,10 +3,32 @@
 from wm_infra.runtime.env.catalog import LearnedEnvCatalog
 from wm_infra.runtime.env.async_runtime import AsyncTransitionDispatcher, TransitionDispatch
 from wm_infra.runtime.env.genie import GenieRLSpec, GenieTokenReward, GenieWorldModelAdapter
-from wm_infra.runtime.env.manager import LearnedEnvRuntimeManager, RLEnvironmentManager
-from wm_infra.runtime.env.pipeline import TransitionStagePipeline, TransitionStageProfile
+from wm_infra.runtime.env.manager import RLEnvironmentManager
+from wm_infra.runtime.env.persistence import (
+    TransitionCommitResult,
+    TransitionExecutionResult,
+    TransitionPersistenceContext,
+    TransitionPersistenceLayer,
+    TransitionPersistencePlan,
+    build_transition_persistence_plan,
+)
+from wm_infra.runtime.env.pipeline import (
+    TransitionExecutionStage,
+    TransitionMaterializedChunk,
+    TransitionPersistIntent,
+    TransitionPersistStage,
+    TransitionPipelineRun,
+    TransitionStagePipeline,
+    TransitionStageProfile,
+)
 from wm_infra.runtime.env.rewards import GoalReward
-from wm_infra.runtime.env.state import RuntimeStateView, build_inline_state_handle_create, load_runtime_state_view
+from wm_infra.runtime.env.state import (
+    RuntimeStateView,
+    StateHandleRefs,
+    build_inline_state_handle_create,
+    load_runtime_state_view,
+    split_state_handle_refs,
+)
 from wm_infra.runtime.env.toy import ToyContinuousWorldModel, ToyLineWorldModel, ToyLineWorldSpec, ToyWorldSpec
 from wm_infra.runtime.env.transition import StatelessTransitionContext, build_stateless_step_chunks
 
@@ -17,18 +39,30 @@ __all__ = [
     "GenieWorldModelAdapter",
     "GoalReward",
     "LearnedEnvCatalog",
-    "LearnedEnvRuntimeManager",
     "RLEnvironmentManager",
     "RuntimeStateView",
+    "StateHandleRefs",
     "StatelessTransitionContext",
     "ToyContinuousWorldModel",
     "ToyLineWorldModel",
     "ToyLineWorldSpec",
     "ToyWorldSpec",
+    "TransitionCommitResult",
     "TransitionDispatch",
+    "TransitionExecutionResult",
+    "TransitionExecutionStage",
+    "TransitionMaterializedChunk",
+    "TransitionPersistIntent",
+    "TransitionPersistStage",
+    "TransitionPersistenceContext",
+    "TransitionPersistenceLayer",
+    "TransitionPersistencePlan",
+    "TransitionPipelineRun",
     "TransitionStagePipeline",
     "TransitionStageProfile",
     "build_stateless_step_chunks",
+    "build_transition_persistence_plan",
     "build_inline_state_handle_create",
     "load_runtime_state_view",
+    "split_state_handle_refs",
 ]

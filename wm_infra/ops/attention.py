@@ -51,11 +51,6 @@ def resolve_attention_backend(backend: str = "auto") -> str:
             raise ImportError("flashinfer not installed. pip install flashinfer")
         return backend
 
-    if backend == "triton":
-        # Preserve the legacy config value, but route it to the maintained
-        # framework backend instead of carrying a custom attention kernel.
-        return "sdpa"
-
     if backend != "sdpa":
         raise ValueError(f"Unknown attention backend: {backend}")
 
@@ -105,7 +100,7 @@ def flash_attention(
         K: [B, Hkv, Sk, D] keys
         V: [B, Hkv, Sk, D] values
         causal: whether to apply causal masking
-        backend: "auto" | "flash_attn" | "flashinfer" | "sdpa" | legacy "triton"
+        backend: "auto" | "flash_attn" | "flashinfer" | "sdpa"
 
     Returns:
         Output: [B, Hq, Sq, D]

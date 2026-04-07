@@ -34,16 +34,8 @@ class SampleManifestStore:
     def _record_path(self, record: SampleRecord) -> Path:
         return self.samples_dir / self._experiment_bucket(record) / f"{record.sample_id}.json"
 
-    def _candidate_paths(self, sample_id: str) -> list[Path]:
-        candidates: list[Path] = []
-        legacy_path = self.samples_dir / f"{sample_id}.json"
-        if legacy_path.exists():
-            candidates.append(legacy_path)
-
-        for path in sorted(self.samples_dir.glob(f"**/{sample_id}.json")):
-            if path not in candidates:
-                candidates.append(path)
-        return candidates
+    def _bucket_dirs(self) -> list[Path]:
+        return [path for path in sorted(self.samples_dir.iterdir()) if path.is_dir()]
 
     @staticmethod
     def _atomic_write_text(path: Path, content: str) -> None:
@@ -82,16 +74,17 @@ class SampleManifestStore:
         return record
 
     def get(self, sample_id: str) -> SampleRecord | None:
-        for path in self._candidate_paths(sample_id):
-            record = self._load_record(path)
+        for bucket_dir in self._bucket_dirs():
+            record = self._load_record(bucket_dir / f"{sample_id}.json")
             if record is not None:
                 return record
         return None
 
     def list(self) -> list[SampleRecord]:
         records = []
-        for path in sorted(self.samples_dir.glob("**/*.json")):
-            record = self._load_record(path)
-            if record is not None:
-                records.append(record)
+        for bucket_dir in self._bucket_dirs():
+            for path in sorted(bucket_dir.glob("*.json")):
+                record = self._load_record(path)
+                if record is not None:
+                    records.append(record)
         return records

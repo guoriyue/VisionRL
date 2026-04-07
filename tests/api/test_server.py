@@ -13,6 +13,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
+import wm_infra.api.server as server_module
 from wm_infra.api.server import create_app
 from wm_infra.backends import BackendRegistry, GenieRolloutBackend
 from wm_infra.backends.genie_runner import GenieRunner
@@ -46,8 +47,65 @@ def _test_config() -> EngineConfig:
             num_latent_tokens=16,
             pool_size_gb=0.1,
         ),
-        controlplane=ControlPlaneConfig(),
+        controlplane=ControlPlaneConfig(wan_engine_adapter="stub"),
     )
+
+
+def test_create_async_engine_uses_strict_state_loading(monkeypatch):
+    calls = {}
+
+    class DummyDynamics:
+        def __init__(self, config):
+            self.config = config
+
+        def load_state_dict(self, state_dict, strict=True):
+            calls["dynamics_strict"] = strict
+            calls["dynamics_state_dict"] = state_dict
+
+        def to(self, *args, **kwargs):
+            return self
+
+        def eval(self):
+            return self
+
+    class DummyTokenizer:
+        def __init__(self, config):
+            self.config = config
+
+        def load_state_dict(self, state_dict, strict=True):
+            calls["tokenizer_strict"] = strict
+            calls["tokenizer_state_dict"] = state_dict
+
+        def to(self, *args, **kwargs):
+            return self
+
+        def eval(self):
+            return self
+
+    class DummyEngine:
+        def __init__(self, config, dynamics, tokenizer, execution_mode="chunked"):
+            calls["execution_mode"] = execution_mode
+            calls["config"] = config
+            calls["dynamics"] = dynamics
+            calls["tokenizer"] = tokenizer
+
+    monkeypatch.setattr(server_module, "LatentDynamicsModel", DummyDynamics)
+    monkeypatch.setattr(server_module, "VideoTokenizer", DummyTokenizer)
+    monkeypatch.setattr(server_module, "AsyncWorldModelEngine", DummyEngine)
+    monkeypatch.setattr(
+        server_module.torch,
+        "load",
+        lambda *args, **kwargs: {"dynamics": {"weights": 1}, "tokenizer": {"vocab": 2}},
+    )
+
+    config = _test_config()
+    config.model_path = "dummy-model.pt"
+    engine = server_module._create_async_engine(config)
+
+    assert isinstance(engine, DummyEngine)
+    assert calls["dynamics_strict"] is True
+    assert calls["tokenizer_strict"] is True
+    assert calls["execution_mode"] == "chunked"
 
 
 @pytest_asyncio.fixture
@@ -58,6 +116,7 @@ async def client(tmp_path):
     config = _test_config()
     config.controlplane.cosmos_output_root = str(tmp_path / "cosmos")
     config.controlplane.wan_output_root = str(tmp_path / "wan")
+    config.controlplane.wan_engine_adapter = "stub"
     temporal_store = TemporalStore(tmp_path / "temporal")
     registry = BackendRegistry()
     genie_runner = GenieRunner()
@@ -138,6 +197,8 @@ class TestBackends:
         assert backends["wan-video"]["shell_runner_configured"] is False
         assert backends["wan-video"]["runner_mode"] == "stub"
         assert backends["wan-video"]["async_queue"] is True
+        assert backends["wan-video"]["execution_backend"] == "in_process_stage_scheduler"
+        assert backends["wan-video"]["engine_adapter"]["name"] == "stub-wan-engine"
         assert backends["wan-video"]["max_batch_size"] == 4
         assert backends["wan-video"]["batch_wait_ms"] == 2.0
         assert backends["wan-video"]["prewarm_common_signatures"] is False
@@ -207,7 +268,7 @@ class TestSamples:
     @pytest.mark.asyncio
     async def test_create_and_get_sample_manifest(self, client):
         resp = await client.post("/v1/samples", json={
-            "task_type": "world_model_rollout",
+            "task_type": "temporal_rollout",
             "backend": "rollout-engine",
             "model": "latent_dynamics",
             "return_artifacts": [ArtifactKind.LATENT.value],
@@ -234,9 +295,9 @@ class TestSamples:
         assert get_resp.json()["sample_id"] == sample_id
 
     @pytest.mark.asyncio
-    async def test_create_sample_supports_legacy_num_steps_in_sample_metadata(self, client):
+    async def test_create_sample_does_not_hydrate_num_steps_from_sample_metadata(self, client):
         resp = await client.post("/v1/samples", json={
-            "task_type": "world_model_rollout",
+            "task_type": "temporal_rollout",
             "backend": "rollout-engine",
             "model": "latent_dynamics",
             "return_artifacts": [ArtifactKind.LATENT.value],
@@ -246,6 +307,9 @@ class TestSamples:
             },
         })
         assert resp.status_code == 200
+        assert resp.json()["task_type"] == "temporal_rollout"
+        assert resp.json()["task_config"] is None
+        assert resp.json()["runtime"]["steps_completed"] == 1
 
     @pytest.mark.asyncio
     async def test_create_cosmos_sample_queues_and_completes(self, client):
@@ -271,7 +335,7 @@ class TestSamples:
     @pytest.mark.asyncio
     async def test_create_sample_persists_under_experiment_directory(self, client, tmp_path):
         resp = await client.post("/v1/samples", json={
-            "task_type": "world_model_rollout",
+            "task_type": "temporal_rollout",
             "backend": "rollout-engine",
             "model": "latent_dynamics",
             "task_config": {"num_steps": 1},
@@ -328,6 +392,9 @@ class TestSamples:
         final = await _wait_for_terminal_sample(client, sample_id)
         assert final["status"] == "accepted"
         assert final["runtime"]["runner"] == "stub"
+        assert final["runtime"]["execution_backend"] == "in_process_stage_scheduler"
+        assert final["runtime"]["pipeline"]["stage_count"] >= 6
+        assert final["runtime"]["stages"][0]["name"] == "text_encode"
         assert final["runtime"]["elapsed_ms"] >= 0
         kinds = {a["kind"] for a in final["artifacts"]}
         assert "video" not in kinds
@@ -378,7 +445,7 @@ class TestSamples:
     @pytest.mark.asyncio
     async def test_create_sample_rejects_unknown_backend(self, client):
         resp = await client.post("/v1/samples", json={
-            "task_type": "world_model_rollout",
+            "task_type": "temporal_rollout",
             "backend": "missing-backend",
             "model": "latent_dynamics",
             "sample_spec": {"prompt": "bad backend"},
@@ -510,7 +577,7 @@ class TestTemporalControlPlane:
         state = state_resp.json()
 
         sample_resp = await client.post("/v1/samples", json={
-            "task_type": "genie_rollout",
+            "task_type": "temporal_rollout",
             "backend": "genie-rollout",
             "model": "genie-local",
             "sample_spec": {"prompt": "roll forward in time"},
@@ -608,7 +675,7 @@ class TestTemporalControlPlane:
         state = state_resp.json()
 
         sample_resp = await client.post("/v1/samples", json={
-            "task_type": "genie_rollout",
+            "task_type": "temporal_rollout",
             "backend": "genie-rollout",
             "model": "genie-local",
             "sample_spec": {"prompt": "download test"},
@@ -694,6 +761,7 @@ class TestTemporalControlPlane:
             assert backend.batch_wait_ms == 7.5
             assert backend.warm_pool_size == 5
             assert backend.prewarm_common_signatures is False
+            assert backend.execution_backend == "in_process_stage_scheduler"
             assert app.state.wan_job_queue is not None
             snapshot = app.state.wan_job_queue.snapshot()
             assert snapshot["max_batch_size"] == 3
@@ -714,7 +782,7 @@ class TestTemporalControlPlane:
 
         inline_tokens = list(range(4 * 16 * 16))
         sample_resp = await client.post("/v1/samples", json={
-            "task_type": "genie_rollout",
+            "task_type": "temporal_rollout",
             "backend": "genie-rollout",
             "model": "genie-local",
             "sample_spec": {"prompt": "raw tokens path"},
@@ -763,6 +831,7 @@ class TestShellRunner:
 
         config = _test_config()
         config.controlplane.wan_output_root = str(tmp_path / "wan")
+        config.controlplane.wan_engine_adapter = "disabled"
         config.controlplane.wan_shell_runner = "python -c \"import sys; print('runner boom'); sys.exit(7)\""
         app = create_app(config, sample_store=SampleManifestStore(tmp_path))
 
@@ -805,6 +874,7 @@ class TestOfficialRunner:
         registry = BackendRegistry()
         wan_backend = WanVideoBackend(
             wan_root,
+            wan_engine_adapter="disabled",
             wan_repo_dir="/fake/Wan2.2",
             wan_conda_env="test_env",
         )
@@ -828,6 +898,7 @@ class TestOfficialRunner:
 
         backend = WanVideoBackend(
             str(tmp_path / "wan"),
+            wan_engine_adapter="disabled",
             wan_repo_dir="/fake/Wan2.2",
             wan_conda_env="test_env",
         )
@@ -841,6 +912,25 @@ class TestOfficialRunner:
         assert "--task i2v-A14B" in cmd
         assert "--image /tmp/input.png" in cmd
         assert "--save_file" in cmd
+
+    def test_official_runner_builds_i2v_command_with_file_uri_reference(self, tmp_path):
+        from wm_infra.backends import WanVideoBackend
+        from wm_infra.controlplane import ProduceSampleRequest
+
+        backend = WanVideoBackend(
+            str(tmp_path / "wan"),
+            wan_engine_adapter="disabled",
+            wan_repo_dir="/fake/Wan2.2",
+            wan_conda_env="test_env",
+        )
+        request = ProduceSampleRequest.model_validate({
+            "task_type": "image_to_video",
+            "backend": "wan-video",
+            "model": "wan2.2-i2v-A14B",
+            "sample_spec": {"prompt": "animate this", "references": ["file:///tmp/input.png"]},
+        })
+        cmd = backend._build_official_command(request, "sample123", backend._resolve_wan_config(request), tmp_path / "out.mp4")
+        assert "--image /tmp/input.png" in cmd
 
 
 class TestStreaming:

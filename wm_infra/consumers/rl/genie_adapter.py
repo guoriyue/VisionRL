@@ -1,4 +1,4 @@
-"""Compatibility exports for runtime Genie env adapters."""
+"""Consumer-side Genie RL adapters built on top of runtime env primitives."""
 
 from wm_infra.runtime.env.genie import GenieRLSpec, GenieTokenReward, GenieWorldModelAdapter
 

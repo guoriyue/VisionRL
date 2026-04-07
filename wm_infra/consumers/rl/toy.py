@@ -1,4 +1,4 @@
-"""Compatibility exports for runtime toy world models."""
+"""Consumer-side toy world models layered on top of runtime env primitives."""
 
 from wm_infra.runtime.env.toy import (
     ToyContinuousWorldModel,

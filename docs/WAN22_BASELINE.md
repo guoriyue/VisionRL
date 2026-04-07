@@ -139,6 +139,20 @@ This means:
 
 ## Integration into wm-infra
 
+The baseline is no longer only an external `generate.py` smoke test.
+`wm-infra` now has a real in-process Wan adapter path that reuses this exact repo + checkpoint combination:
+
+```bash
+WM_WAN_ENGINE_ADAPTER=official
+WM_WAN_REPO_DIR=/home/mingfeiguo/Desktop/Wan2.2
+WM_WAN_CKPT_DIR=/home/mingfeiguo/Desktop/Wan2.2/Wan2.2-T2V-A14B
+```
+
+That adapter was verified locally by running a real `wan-video` sample through `WanVideoBackend` and producing a valid MP4 artifact with:
+- `runner=real`
+- `execution_backend=in_process_stage_scheduler`
+- stage sequence `text_encode -> diffusion -> vae_decode -> safety -> postprocess -> persist`
+
 This profiling data is now reflected in the implemented temporal control plane:
 
 - **`WanTaskConfig`** (`wm_infra/controlplane/schemas.py`) carries first-class Wan execution fields such as

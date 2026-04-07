@@ -11,6 +11,18 @@ from typing import Any, Optional
 
 import numpy as np
 
+try:
+    import torch
+except Exception:  # pragma: no cover - torch is optional for cpu-only tests
+    torch = None  # type: ignore[assignment]
+
+from wm_infra.backends.serving_primitives import (
+    ExecutionFamily,
+    ResidencyRecord,
+    ResidencyTier,
+    TransferPlan,
+    batch_size_family,
+)
 
 GENIE_STAGE_GRAPH = [
     "admission",
@@ -107,6 +119,636 @@ class GenieRuntimeState:
     source_cache_key: str | None = None
     reuse_hits: int = 0
     reuse_misses: int = 0
+    layout_key: str = "token_frames_contiguous"
+    page_size_tokens: int = 1024
+    page_count: int = 0
+    paged_state_key: str | None = None
+    paged_state_snapshot: dict[str, Any] | None = None
+    transfer_plan: TransferPlan | None = None
+    transfer_fast_path: dict[str, Any] | None = None
+    residency_records: list[ResidencyRecord] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class GenieStatePage:
+    """One page in a paged token-state store."""
+
+    page_id: int
+    token_start: int
+    token_end: int
+    frame_start: int
+    frame_end: int
+    bytes_size: int
+    resident_tier: GenieResidencyTier = GenieResidencyTier.COLD_FILE
+    dirty: bool = False
+    access_count: int = 0
+    last_accessed_at: float = 0.0
+    last_updated_at: float = 0.0
+    prefetch_count: int = 0
+    eviction_count: int = 0
+    last_transfer_kind: str | None = None
+    last_transfer_async: bool = False
+    last_transfer_at: float = 0.0
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "page_id": self.page_id,
+            "token_start": self.token_start,
+            "token_end": self.token_end,
+            "frame_start": self.frame_start,
+            "frame_end": self.frame_end,
+            "bytes_size": self.bytes_size,
+            "resident_tier": self.resident_tier.value,
+            "dirty": self.dirty,
+            "access_count": self.access_count,
+            "last_accessed_at": self.last_accessed_at,
+            "last_updated_at": self.last_updated_at,
+            "prefetch_count": self.prefetch_count,
+            "eviction_count": self.eviction_count,
+            "last_transfer_kind": self.last_transfer_kind,
+            "last_transfer_async": self.last_transfer_async,
+            "last_transfer_at": self.last_transfer_at,
+        }
+
+
+@dataclass(slots=True)
+class GeniePageTransferRequest:
+    """Best-effort scaffold for a page-level host/device transfer."""
+
+    transfer_id: int
+    direction: str
+    page_ids: list[int]
+    bytes_size: int
+    async_requested: bool
+    status: str
+    from_tier: GenieResidencyTier
+    to_tier: GenieResidencyTier
+    frame_window: tuple[int, int] | None
+    reason: str
+    created_at: float = field(default_factory=time.time)
+    completed_at: float = 0.0
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "transfer_id": self.transfer_id,
+            "direction": self.direction,
+            "page_ids": list(self.page_ids),
+            "bytes_size": self.bytes_size,
+            "async_requested": self.async_requested,
+            "status": self.status,
+            "from_tier": self.from_tier.value,
+            "to_tier": self.to_tier.value,
+            "frame_window": list(self.frame_window) if self.frame_window is not None else None,
+            "reason": self.reason,
+            "created_at": self.created_at,
+            "completed_at": self.completed_at,
+        }
+
+
+@dataclass(slots=True)
+class GeniePagedStateStore:
+    """Page/block-oriented token state store for Genie runtime work."""
+
+    store_id: str
+    total_frames: int
+    spatial_h: int
+    spatial_w: int
+    page_size_tokens: int
+    dtype: str
+    pages: list[GenieStatePage]
+    page_buffers: dict[int, np.ndarray]
+    gpu_page_buffers: dict[int, Any] = field(default_factory=dict)
+    gpu_pool_device: str | None = None
+    gpu_pool_emulated: bool = False
+    gpu_hot_page_limit: int = 8
+    resident_tier: GenieResidencyTier = GenieResidencyTier.COLD_FILE
+    hot_page_ids: set[int] = field(default_factory=set)
+    dirty_page_ids: set[int] = field(default_factory=set)
+    transfer_history: list[GeniePageTransferRequest] = field(default_factory=list)
+    pending_transfer_ids: list[int] = field(default_factory=list)
+    next_transfer_id: int = 0
+    reclaimed_transfer_count: int = 0
+    touch_count: int = 0
+    write_count: int = 0
+    last_page_span: tuple[int, int] | None = None
+    last_frame_window: tuple[int, int] | None = None
+    last_transfer_fast_path: dict[str, Any] | None = None
+
+    @classmethod
+    def from_tokens(
+        cls,
+        *,
+        store_id: str,
+        tokens: np.ndarray,
+        page_size_tokens: int = 1024,
+    ) -> "GeniePagedStateStore":
+        tokens_np = np.asarray(tokens, dtype=np.uint32)
+        if tokens_np.ndim != 3:
+            raise ValueError("GeniePagedStateStore requires a [T,H,W] token tensor")
+        flat = tokens_np.reshape(-1).copy()
+        page_size, _page_count = page_layout(flat.size, page_size_tokens)
+        frame_size = int(tokens_np.shape[1]) * int(tokens_np.shape[2])
+        pages: list[GenieStatePage] = []
+        page_buffers: dict[int, np.ndarray] = {}
+        for page_id, token_start in enumerate(range(0, flat.size, page_size)):
+            token_end = min(token_start + page_size, flat.size)
+            page_buffer = flat[token_start:token_end].copy()
+            pages.append(
+                GenieStatePage(
+                    page_id=page_id,
+                    token_start=token_start,
+                    token_end=token_end,
+                    frame_start=int(token_start // frame_size),
+                    frame_end=int(math.ceil(token_end / frame_size)),
+                    bytes_size=int(page_buffer.nbytes),
+                    resident_tier=GenieResidencyTier.WARM_PINNED_CPU,
+                )
+            )
+            page_buffers[page_id] = page_buffer
+        return cls(
+            store_id=store_id,
+            total_frames=int(tokens_np.shape[0]),
+            spatial_h=int(tokens_np.shape[1]),
+            spatial_w=int(tokens_np.shape[2]),
+            page_size_tokens=page_size,
+            dtype=str(tokens_np.dtype),
+            pages=pages,
+            page_buffers=page_buffers,
+            resident_tier=GenieResidencyTier.WARM_PINNED_CPU,
+        )
+
+    @property
+    def page_count(self) -> int:
+        return len(self.pages)
+
+    @property
+    def bytes_size(self) -> int:
+        return int(sum(buffer.nbytes for buffer in self.page_buffers.values()))
+
+    @property
+    def physical_bytes(self) -> int:
+        gpu_bytes = 0
+        for buffer in self.gpu_page_buffers.values():
+            if torch is not None and isinstance(buffer, torch.Tensor):
+                gpu_bytes += int(buffer.numel() * buffer.element_size())
+            else:
+                gpu_bytes += int(np.asarray(buffer, dtype=np.uint32).nbytes)
+        return self.bytes_size + gpu_bytes
+
+    def _gpu_available(self) -> bool:
+        return bool(torch is not None and torch.cuda.is_available())
+
+    def _gpu_buffer_bytes(self, page_id: int) -> int:
+        buffer = self.gpu_page_buffers.get(page_id)
+        if buffer is None:
+            return 0
+        if torch is not None and isinstance(buffer, torch.Tensor):
+            return int(buffer.numel() * buffer.element_size())
+        return int(np.asarray(buffer, dtype=np.uint32).nbytes)
+
+    def _record_transfer(
+        self,
+        *,
+        direction: str,
+        page_ids: list[int],
+        async_requested: bool,
+        from_tier: GenieResidencyTier,
+        to_tier: GenieResidencyTier,
+        frame_window: tuple[int, int] | None,
+        reason: str,
+    ) -> GeniePageTransferRequest:
+        completed = (not async_requested) or len(page_ids) == 0
+        request = GeniePageTransferRequest(
+            transfer_id=self.next_transfer_id,
+            direction=direction,
+            page_ids=list(page_ids),
+            bytes_size=sum(self.pages[page_id].bytes_size for page_id in page_ids),
+            async_requested=async_requested,
+            status="completed" if completed else "pending",
+            from_tier=from_tier,
+            to_tier=to_tier,
+            frame_window=frame_window,
+            reason=reason,
+            completed_at=time.time() if completed else 0.0,
+        )
+        self.next_transfer_id += 1
+        self.transfer_history.append(request)
+        if not completed:
+            self.pending_transfer_ids.append(request.transfer_id)
+        return request
+
+    def poll_transfers(self, *, max_to_complete: int | None = None) -> list[dict[str, Any]]:
+        completed: list[dict[str, Any]] = []
+        limit = len(self.pending_transfer_ids) if max_to_complete is None else max(int(max_to_complete), 0)
+        transfer_by_id = {request.transfer_id: request for request in self.transfer_history}
+        while self.pending_transfer_ids and len(completed) < limit:
+            transfer_id = self.pending_transfer_ids.pop(0)
+            request = transfer_by_id.get(transfer_id)
+            if request is None or request.status != "pending":
+                continue
+            request.status = "completed"
+            request.completed_at = time.time()
+            completed.append(request.as_dict())
+        return completed
+
+    def reclaim_completed_transfers(self, *, max_to_reclaim: int | None = None) -> list[int]:
+        reclaimed: list[int] = []
+        limit = len(self.transfer_history) if max_to_reclaim is None else max(int(max_to_reclaim), 0)
+        for request in self.transfer_history:
+            if len(reclaimed) >= limit:
+                break
+            if request.status != "completed":
+                continue
+            request.status = "reclaimed"
+            reclaimed.append(request.transfer_id)
+        self.reclaimed_transfer_count += len(reclaimed)
+        return reclaimed
+
+    def _prefetch_page(self, page_id: int, *, async_requested: bool, reason: str) -> None:
+        page = self.pages[page_id]
+        page.prefetch_count += 1
+        page.last_transfer_kind = "host_to_gpu"
+        page.last_transfer_async = async_requested
+        page.last_transfer_at = time.time()
+        page.resident_tier = GenieResidencyTier.HOT_GPU
+        self._ensure_gpu_page(page_id)
+        self.hot_page_ids.add(page_id)
+        self.gpu_pool_device = "cuda" if self._gpu_available() else "cpu-emulated"
+        self.gpu_pool_emulated = not self._gpu_available()
+
+    def _evict_page(self, page_id: int, *, async_requested: bool, reason: str) -> None:
+        page = self.pages[page_id]
+        page.eviction_count += 1
+        page.last_transfer_kind = "gpu_to_host"
+        page.last_transfer_async = async_requested
+        page.last_transfer_at = time.time()
+        page.resident_tier = GenieResidencyTier.WARM_PINNED_CPU
+        self._drop_gpu_page(page_id)
+        self.hot_page_ids.discard(page_id)
+
+    def _trim_hot_pages(
+        self,
+        *,
+        keep_page_ids: set[int],
+        async_requested: bool,
+        reason: str,
+    ) -> list[int]:
+        if self.gpu_hot_page_limit <= 0:
+            return []
+        evicted: list[int] = []
+        while len(self.hot_page_ids) > self.gpu_hot_page_limit:
+            candidates = [page_id for page_id in self.hot_page_ids if page_id not in keep_page_ids]
+            if not candidates:
+                break
+            page_id = min(
+                candidates,
+                key=lambda candidate: self.pages[candidate].last_accessed_at or self.pages[candidate].last_transfer_at,
+            )
+            self._evict_page(page_id, async_requested=async_requested, reason=reason)
+            evicted.append(page_id)
+        return evicted
+
+    def _ensure_gpu_page(self, page_id: int) -> None:
+        if page_id in self.gpu_page_buffers:
+            return
+        host_buffer = self.page_buffers[page_id]
+        if self._gpu_available():
+            assert torch is not None
+            gpu_buffer = torch.from_numpy(host_buffer.astype(np.int32, copy=True)).to("cuda", non_blocking=True)
+            self.gpu_page_buffers[page_id] = gpu_buffer
+            self.gpu_pool_device = "cuda"
+            self.gpu_pool_emulated = False
+            return
+        self.gpu_page_buffers[page_id] = host_buffer.copy()
+        self.gpu_pool_device = "cpu-emulated"
+        self.gpu_pool_emulated = True
+
+    def _drop_gpu_page(self, page_id: int) -> None:
+        self.gpu_page_buffers.pop(page_id, None)
+
+    def _page_numpy(self, page_id: int, *, prefer_gpu: bool = False) -> np.ndarray:
+        if prefer_gpu and page_id in self.gpu_page_buffers:
+            buffer = self.gpu_page_buffers[page_id]
+            if torch is not None and isinstance(buffer, torch.Tensor):
+                return buffer.detach().cpu().numpy().astype(np.uint32, copy=False)
+            return np.asarray(buffer, dtype=np.uint32)
+        return self.page_buffers[page_id]
+
+    def transfer_queue_snapshot(self) -> dict[str, Any]:
+        completed = sum(1 for request in self.transfer_history if request.status == "completed")
+        reclaimed = sum(1 for request in self.transfer_history if request.status == "reclaimed")
+        return {
+            "pending": len(self.pending_transfer_ids),
+            "completed": completed,
+            "reclaimed": reclaimed,
+            "history": len(self.transfer_history),
+        }
+
+    def materialize(self) -> np.ndarray:
+        flat = np.empty(self.total_frames * self.spatial_h * self.spatial_w, dtype=np.uint32)
+        for page in self.pages:
+            flat[page.token_start:page.token_end] = self._page_numpy(page.page_id, prefer_gpu=True)
+        return flat.reshape(self.total_frames, self.spatial_h, self.spatial_w).copy()
+
+    def prefetch_pages(
+        self,
+        page_ids: list[int],
+        *,
+        frame_window: tuple[int, int] | None = None,
+        async_requested: bool = True,
+        reason: str = "prefetch",
+    ) -> dict[str, Any]:
+        normalized = [page_id for page_id in dict.fromkeys(page_ids) if 0 <= page_id < len(self.pages)]
+        for page_id in normalized:
+            self._prefetch_page(page_id, async_requested=async_requested, reason=reason)
+        evicted = self._trim_hot_pages(
+            keep_page_ids=set(normalized),
+            async_requested=async_requested,
+            reason=f"{reason}:evict",
+        )
+        transfer = self._record_transfer(
+            direction="host_to_gpu",
+            page_ids=normalized,
+            async_requested=async_requested,
+            from_tier=GenieResidencyTier.WARM_PINNED_CPU,
+            to_tier=GenieResidencyTier.HOT_GPU,
+            frame_window=frame_window,
+            reason=reason,
+        )
+        return {
+            "transfer": transfer.as_dict(),
+            "prefetched_page_ids": normalized,
+            "evicted_page_ids": evicted,
+            "hot_page_ids": sorted(self.hot_page_ids),
+            "gpu_page_ids": sorted(self.gpu_page_buffers.keys()),
+            "hot_page_limit": self.gpu_hot_page_limit,
+            "transfer_queue": self.transfer_queue_snapshot(),
+        }
+
+    def evict_pages(
+        self,
+        page_ids: list[int],
+        *,
+        frame_window: tuple[int, int] | None = None,
+        async_requested: bool = True,
+        reason: str = "evict",
+    ) -> dict[str, Any]:
+        normalized = [page_id for page_id in dict.fromkeys(page_ids) if 0 <= page_id < len(self.pages)]
+        for page_id in normalized:
+            self._evict_page(page_id, async_requested=async_requested, reason=reason)
+        transfer = self._record_transfer(
+            direction="gpu_to_host",
+            page_ids=normalized,
+            async_requested=async_requested,
+            from_tier=GenieResidencyTier.HOT_GPU,
+            to_tier=GenieResidencyTier.WARM_PINNED_CPU,
+            frame_window=frame_window,
+            reason=reason,
+        )
+        return {
+            "transfer": transfer.as_dict(),
+            "evicted_page_ids": normalized,
+            "hot_page_ids": sorted(self.hot_page_ids),
+            "gpu_page_ids": sorted(self.gpu_page_buffers.keys()),
+            "hot_page_limit": self.gpu_hot_page_limit,
+            "transfer_queue": self.transfer_queue_snapshot(),
+        }
+
+    def page_span_for_frames(self, frame_start: int, frame_end: int) -> tuple[int, int]:
+        frame_size = self.spatial_h * self.spatial_w
+        token_start = max(frame_start, 0) * frame_size
+        token_end = min(frame_end, self.total_frames) * frame_size
+        if token_end <= token_start:
+            return (0, 0)
+        first_page = token_start // self.page_size_tokens
+        last_page = (token_end - 1) // self.page_size_tokens
+        return (int(first_page), int(last_page))
+
+    def page_ids_for_frames(self, frame_start: int, frame_end: int) -> list[int]:
+        safe_start = max(min(int(frame_start), self.total_frames), 0)
+        safe_end = max(min(int(frame_end), self.total_frames), safe_start)
+        if safe_end <= safe_start:
+            return []
+        first_page, last_page = self.page_span_for_frames(safe_start, safe_end)
+        if last_page < first_page:
+            return []
+        return list(range(first_page, last_page + 1))
+
+    def prefetch_window(
+        self,
+        *,
+        frame_start: int,
+        frame_end: int,
+        async_requested: bool = True,
+    ) -> dict[str, Any]:
+        safe_start = max(min(int(frame_start), self.total_frames), 0)
+        safe_end = max(min(int(frame_end), self.total_frames), safe_start)
+        page_ids = self.page_ids_for_frames(safe_start, safe_end)
+        page_window = self.prefetch_pages(
+            page_ids,
+            frame_window=(safe_start, safe_end),
+            async_requested=async_requested,
+            reason="prefetch_window",
+        )
+        page_window["frame_window"] = [safe_start, safe_end]
+        return page_window
+
+    def evict_window(
+        self,
+        *,
+        frame_start: int,
+        frame_end: int,
+        async_requested: bool = True,
+    ) -> dict[str, Any]:
+        safe_start = max(min(int(frame_start), self.total_frames), 0)
+        safe_end = max(min(int(frame_end), self.total_frames), safe_start)
+        page_ids = self.page_ids_for_frames(safe_start, safe_end)
+        page_window = self.evict_pages(
+            page_ids,
+            frame_window=(safe_start, safe_end),
+            async_requested=async_requested,
+            reason="evict_window",
+        )
+        page_window["frame_window"] = [safe_start, safe_end]
+        return page_window
+
+    def window_tokens(self, frame_start: int, frame_end: int) -> np.ndarray:
+        safe_start = max(min(int(frame_start), self.total_frames), 0)
+        safe_end = max(min(int(frame_end), self.total_frames), safe_start)
+        if safe_end <= safe_start:
+            return np.empty((0, self.spatial_h, self.spatial_w), dtype=np.uint32)
+        frame_size = self.spatial_h * self.spatial_w
+        token_start = safe_start * frame_size
+        token_end = safe_end * frame_size
+        flat = np.empty(token_end - token_start, dtype=np.uint32)
+        offset = 0
+        for page_id in self.page_ids_for_frames(safe_start, safe_end):
+            page = self.pages[page_id]
+            overlap_start = max(token_start, page.token_start)
+            overlap_end = min(token_end, page.token_end)
+            if overlap_end <= overlap_start:
+                continue
+            local_start = overlap_start - page.token_start
+            local_end = overlap_end - page.token_start
+            slice_len = overlap_end - overlap_start
+            flat[offset : offset + slice_len] = self._page_numpy(page_id, prefer_gpu=True)[local_start:local_end]
+            offset += slice_len
+        return flat.reshape(safe_end - safe_start, self.spatial_h, self.spatial_w)
+
+    def touch_window(
+        self,
+        *,
+        frame_start: int,
+        frame_end: int,
+        resident_tier: GenieResidencyTier,
+        mark_dirty: bool = False,
+        transfer_fast_path: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        page_ids = self.page_ids_for_frames(frame_start, frame_end)
+        safe_start = max(min(int(frame_start), self.total_frames), 0)
+        safe_end = max(min(int(frame_end), self.total_frames), safe_start)
+        now = time.time()
+        async_requested = bool(transfer_fast_path and transfer_fast_path.get("non_blocking_h2d", False))
+        if resident_tier == GenieResidencyTier.HOT_GPU:
+            page_transfer = self.prefetch_pages(
+                page_ids,
+                frame_window=(safe_start, safe_end),
+                async_requested=async_requested,
+                reason="touch_window_prefetch",
+            )
+        else:
+            page_transfer = self.evict_pages(
+                page_ids,
+                frame_window=(safe_start, safe_end),
+                async_requested=async_requested,
+                reason="touch_window_evict",
+            )
+        touched_bytes = 0
+        now = time.time()
+        for page_id in page_ids:
+            page = self.pages[page_id]
+            page.resident_tier = resident_tier
+            page.access_count += 1
+            page.last_accessed_at = now
+            touched_bytes += page.bytes_size
+            if mark_dirty:
+                page.dirty = True
+                page.last_updated_at = now
+                self.dirty_page_ids.add(page_id)
+
+        self.resident_tier = resident_tier
+        self.touch_count += 1
+        if mark_dirty:
+            self.write_count += 1
+        self.last_page_span = (page_ids[0], page_ids[-1]) if page_ids else None
+        self.last_frame_window = (safe_start, safe_end)
+        self.last_transfer_fast_path = transfer_fast_path
+        return {
+            "frame_window": [safe_start, safe_end],
+            "page_span": list(self.last_page_span) if self.last_page_span is not None else None,
+            "page_ids": page_ids,
+            "pages_touched": len(page_ids),
+            "page_bytes": touched_bytes,
+            "resident_tier": resident_tier.value,
+            "dirty_pages": sorted(self.dirty_page_ids),
+            "hot_pages": sorted(self.hot_page_ids),
+            "page_transfer": page_transfer,
+        }
+
+    def update_window(
+        self,
+        *,
+        frame_start: int,
+        frame_end: int,
+        tokens: np.ndarray,
+        resident_tier: GenieResidencyTier = GenieResidencyTier.HOT_GPU,
+        transfer_fast_path: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        tokens_np = np.asarray(tokens, dtype=np.uint32)
+        if tokens_np.ndim != 3:
+            raise ValueError("GeniePagedStateStore.update_window requires a [T,H,W] token tensor")
+        frame_size = self.spatial_h * self.spatial_w
+        token_start = max(frame_start, 0) * frame_size
+        token_end = min(frame_end, self.total_frames) * frame_size
+        expected_tokens = max(token_end - token_start, 0)
+        replacement = tokens_np.reshape(-1)
+        if replacement.size != expected_tokens:
+            raise ValueError(
+                f"GeniePagedStateStore.update_window expected {expected_tokens} tokens, got {replacement.size}"
+            )
+        replacement_offset = 0
+        touched_page_ids = self.page_ids_for_frames(frame_start, frame_end)
+        for page_id in touched_page_ids:
+            page = self.pages[page_id]
+            overlap_start = max(token_start, page.token_start)
+            overlap_end = min(token_end, page.token_end)
+            if overlap_end <= overlap_start:
+                continue
+            local_start = overlap_start - page.token_start
+            local_end = overlap_end - page.token_start
+            replacement_len = overlap_end - overlap_start
+            self.page_buffers[page_id][local_start:local_end] = replacement[
+                replacement_offset : replacement_offset + replacement_len
+            ]
+            if page_id in self.gpu_page_buffers:
+                gpu_replacement = replacement[replacement_offset : replacement_offset + replacement_len]
+                gpu_buffer = self.gpu_page_buffers[page_id]
+                if torch is not None and isinstance(gpu_buffer, torch.Tensor):
+                    gpu_buffer[local_start:local_end] = torch.from_numpy(gpu_replacement.astype(np.int32, copy=False)).to(
+                        gpu_buffer.device,
+                        non_blocking=True,
+                    )
+                else:
+                    gpu_buffer[local_start:local_end] = gpu_replacement
+            replacement_offset += replacement_len
+        return self.touch_window(
+            frame_start=frame_start,
+            frame_end=frame_end,
+            resident_tier=resident_tier,
+            mark_dirty=True,
+            transfer_fast_path=transfer_fast_path,
+        )
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "store_id": self.store_id,
+            "total_frames": self.total_frames,
+            "spatial": [self.spatial_h, self.spatial_w],
+            "page_size_tokens": self.page_size_tokens,
+            "page_count": self.page_count,
+            "bytes_size": self.bytes_size,
+            "physical_bytes": self.physical_bytes,
+            "dtype": self.dtype,
+            "resident_tier": self.resident_tier.value,
+            "hot_page_ids": sorted(self.hot_page_ids),
+            "dirty_page_ids": sorted(self.dirty_page_ids),
+            "touch_count": self.touch_count,
+            "write_count": self.write_count,
+            "last_page_span": list(self.last_page_span) if self.last_page_span is not None else None,
+            "last_frame_window": list(self.last_frame_window) if self.last_frame_window is not None else None,
+            "last_transfer_fast_path": self.last_transfer_fast_path,
+            "page_pool": {
+                "logical_bytes": self.bytes_size,
+                "physical_bytes": self.physical_bytes,
+                "hot_page_count": len(self.hot_page_ids),
+                "dirty_page_count": len(self.dirty_page_ids),
+                "hot_page_limit": self.gpu_hot_page_limit,
+                "host_pool": {
+                    "page_count": len(self.page_buffers),
+                    "bytes": self.bytes_size,
+                    "resident_tier": GenieResidencyTier.WARM_PINNED_CPU.value,
+                },
+                "gpu_pool": {
+                    "page_count": len(self.gpu_page_buffers),
+                    "bytes": sum(self._gpu_buffer_bytes(page_id) for page_id in self.gpu_page_buffers),
+                    "device": self.gpu_pool_device,
+                    "emulated": self.gpu_pool_emulated,
+                },
+            },
+            "transfer_queue": self.transfer_queue_snapshot(),
+            "transfer_history": [request.as_dict() for request in self.transfer_history],
+            "pages": [page.as_dict() for page in self.pages],
+        }
 
 
 @dataclass(slots=True)
@@ -294,6 +936,14 @@ def build_runtime_state_profile(runtime_state: GenieRuntimeState) -> dict[str, A
         "checkpoint_delta_ref": runtime_state.checkpoint_delta_ref,
         "dirty_since_checkpoint": runtime_state.dirty_since_checkpoint,
         "source_cache_key": runtime_state.source_cache_key,
+        "layout_key": runtime_state.layout_key,
+        "page_size_tokens": runtime_state.page_size_tokens,
+        "page_count": runtime_state.page_count,
+        "paged_state_key": runtime_state.paged_state_key,
+        "paged_state": runtime_state.paged_state_snapshot,
+        "transfer_plan": None if runtime_state.transfer_plan is None else runtime_state.transfer_plan.as_dict(),
+        "transfer_fast_path": runtime_state.transfer_fast_path,
+        "residency": [record.as_dict() for record in runtime_state.residency_records],
     }
 
 
@@ -334,6 +984,170 @@ class CachedPromptState:
     @property
     def memory_bytes(self) -> int:
         return int(self.tokens.nbytes)
+
+
+def build_genie_execution_family(
+    signature: GenieBatchSignature,
+    *,
+    batch_size: int,
+) -> ExecutionFamily:
+    return ExecutionFamily(
+        backend=signature.backend,
+        model=signature.model_name,
+        stage=signature.stage,
+        device=signature.device,
+        dtype=signature.dtype,
+        runner_mode=signature.runner_mode,
+        batch_size_family=batch_size_family(batch_size),
+        width=signature.spatial_w,
+        height=signature.spatial_h,
+        frame_count=signature.window_num_frames,
+        num_steps=signature.maskgit_steps,
+        prompt_frames=signature.num_prompt_frames,
+        memory_mode="persist" if signature.needs_persist else "runtime_hot",
+        layout_key=f"token_frames:{signature.spatial_h}x{signature.spatial_w}",
+        execution_kind="temporal_rollout",
+        tokenizer_kind=signature.tokenizer_kind,
+    )
+
+
+def generic_residency_tier(tier: GenieResidencyTier) -> ResidencyTier:
+    mapping = {
+        GenieResidencyTier.HOT_GPU: ResidencyTier.GPU_HOT,
+        GenieResidencyTier.WARM_PINNED_CPU: ResidencyTier.CPU_PINNED_WARM,
+        GenieResidencyTier.COLD_FILE: ResidencyTier.DURABLE_ONLY,
+    }
+    return mapping[tier]
+
+
+def page_layout(token_count: int, page_size_tokens: int = 1024) -> tuple[int, int]:
+    page_size = max(int(page_size_tokens), 1)
+    pages = int(math.ceil(max(int(token_count), 0) / page_size))
+    return page_size, pages
+
+
+def build_genie_transfer_plan(
+    *,
+    materialized_bytes: int,
+    checkpoint_bytes: int = 0,
+    artifact_io_bytes: int = 0,
+    prompt_state_hot: bool = False,
+    host_staging: dict[str, Any] | None = None,
+) -> TransferPlan:
+    plan = TransferPlan(
+        overlap_h2d_with_compute=not prompt_state_hot,
+        overlap_d2h_with_io=True,
+        staging_tier=ResidencyTier.CPU_PINNED_WARM,
+        notes=[
+            "Genie fast path prefers warm pinned prompt state and hot GPU transition windows.",
+        ],
+    )
+    plan.add_h2d(materialized_bytes)
+    plan.add_artifact_io(checkpoint_bytes + artifact_io_bytes)
+    if host_staging:
+        plan.staging_bytes = max(int(host_staging.get("bytes", 0)), 0)
+        if host_staging.get("pinned"):
+            plan.notes.append("Pinned host staging reserved for prompt/state materialization.")
+        if host_staging.get("non_blocking_h2d"):
+            plan.notes.append("Prompt H2D path is eligible for non-blocking transfer.")
+    return plan
+
+
+def build_genie_transfer_fast_path(
+    *,
+    paged_state: GeniePagedStateStore | None,
+    host_staging: dict[str, Any] | None,
+    frame_start: int | None,
+    frame_end: int | None,
+    resident_tier: GenieResidencyTier,
+) -> dict[str, Any]:
+    page_window: dict[str, Any] | None = None
+    if paged_state is not None and frame_start is not None and frame_end is not None:
+        page_ids = paged_state.page_ids_for_frames(frame_start, frame_end)
+        page_bytes = sum(paged_state.pages[page_id].bytes_size for page_id in page_ids)
+        async_requested = bool(host_staging and host_staging.get("non_blocking_h2d"))
+        keep_page_ids = set(page_ids)
+        eviction_candidates = sorted(
+            [page_id for page_id in paged_state.hot_page_ids if page_id not in keep_page_ids],
+            key=lambda candidate: (
+                paged_state.pages[candidate].last_accessed_at or paged_state.pages[candidate].last_transfer_at,
+                candidate,
+            ),
+        )
+        evict_page_ids = eviction_candidates[: max(len(paged_state.hot_page_ids) - paged_state.gpu_hot_page_limit, 0)]
+        page_window = {
+            "frame_window": [max(int(frame_start), 0), max(int(frame_end), 0)],
+            "page_span": [page_ids[0], page_ids[-1]] if page_ids else None,
+            "page_ids": page_ids,
+            "pages_touched": len(page_ids),
+            "page_bytes": page_bytes,
+            "store_id": paged_state.store_id,
+            "hot_page_count": len(paged_state.hot_page_ids),
+            "hot_page_limit": paged_state.gpu_hot_page_limit,
+            "prefetch_page_ids": page_ids,
+            "evict_page_ids": evict_page_ids,
+            "transfer_direction": "host_to_gpu" if resident_tier == GenieResidencyTier.HOT_GPU else "gpu_to_host",
+            "async_transfer": async_requested,
+            "transfer_mode": "scaffolded_async" if async_requested else "inline",
+            "transfer_queue": paged_state.transfer_queue_snapshot(),
+        }
+    return {
+        "host_staging": host_staging,
+        "page_window": page_window,
+        "resident_tier": resident_tier.value,
+        "pool_path": "host_to_gpu" if resident_tier == GenieResidencyTier.HOT_GPU else "host_only",
+        "non_blocking_h2d": bool(host_staging and host_staging.get("non_blocking_h2d")),
+        "pinned_host_staging": bool(host_staging and host_staging.get("pinned")),
+        "async_transfer": bool(host_staging and host_staging.get("non_blocking_h2d")),
+        "prefetch_strategy": "page_window_lru",
+        "transfer_queue": None if paged_state is None else paged_state.transfer_queue_snapshot(),
+    }
+
+
+def build_genie_residency_records(
+    *,
+    rollout_id: str,
+    resident_tier: GenieResidencyTier,
+    materialized_bytes: int,
+    page_size_tokens: int,
+    page_count: int,
+    cache_key: str | None,
+    host_staging: dict[str, Any] | None = None,
+    state_store_key: str | None = None,
+) -> list[ResidencyRecord]:
+    records = [
+        ResidencyRecord(
+            object_id=f"{rollout_id}:prompt-state",
+            tier=generic_residency_tier(resident_tier),
+            bytes_size=max(materialized_bytes, 0),
+            layout_key="token_frames_contiguous",
+            pinned=resident_tier == GenieResidencyTier.WARM_PINNED_CPU,
+            reusable=True,
+            source=cache_key,
+        ),
+        ResidencyRecord(
+            object_id=f"{rollout_id}:state-pages",
+            tier=generic_residency_tier(resident_tier),
+            bytes_size=max(materialized_bytes, 0),
+            layout_key=f"paged_tokens:{page_size_tokens}",
+            pinned=resident_tier == GenieResidencyTier.WARM_PINNED_CPU,
+            reusable=True,
+            source=state_store_key or f"pages:{page_count}",
+        ),
+    ]
+    if host_staging and int(host_staging.get("bytes", 0)) > 0:
+        records.append(
+            ResidencyRecord(
+                object_id=f"{rollout_id}:host-staging",
+                tier=ResidencyTier.CPU_PINNED_WARM if host_staging.get("pinned") else ResidencyTier.CPU_WARM,
+                bytes_size=max(int(host_staging.get("bytes", 0)), 0),
+                layout_key="staging_prompt_tokens",
+                pinned=bool(host_staging.get("pinned")),
+                reusable=False,
+                source=f"staging:{host_staging.get('alloc_id', 'ephemeral')}",
+            )
+        )
+    return records
 
 
 def _stable_token_hash(tokens: np.ndarray) -> str:
@@ -447,21 +1261,6 @@ def default_window_num_frames(
     if checkpoint_every_n_frames > 0:
         return max(1, min(checkpoint_every_n_frames, remaining))
     return remaining
-
-
-def default_window_size(
-    *,
-    total_frames: int,
-    prompt_frames: int,
-    checkpoint_every_n_frames: int,
-) -> int:
-    """Backward-compatible alias used by runtime tests."""
-
-    return default_window_num_frames(
-        total_frames=total_frames,
-        num_prompt_frames=prompt_frames,
-        checkpoint_every_n_frames=checkpoint_every_n_frames,
-    )
 
 
 def frame_windows(

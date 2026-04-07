@@ -42,7 +42,7 @@ class StateResidency(str, Enum):
     DISK = "disk"
 
 
-class ExecutionStateRef(BaseModel):
+class ExecutionResidencyRef(BaseModel):
     residency: StateResidency = StateResidency.INLINE
     storage_backend: str = "state_handle_metadata"
     state_key: str = "latent_state"
@@ -53,9 +53,15 @@ class ExecutionStateRef(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+ExecutionStateRef = ExecutionResidencyRef
+
+
 class StateLineageRef(BaseModel):
     env_name: Optional[str] = None
     task_id: Optional[str] = None
+    branch_id: Optional[str] = None
+    rollout_id: Optional[str] = None
+    checkpoint_id: Optional[str] = None
     trajectory_id: Optional[str] = None
     step_idx: int = 0
     parent_state_handle_id: Optional[str] = None
@@ -102,11 +108,15 @@ class StateHandleRecord(BaseModel):
     dtype: Optional[str] = None
     version: int = 1
     is_terminal: bool = False
-    execution_state_ref: Optional[ExecutionStateRef] = None
+    execution_state_ref: Optional[ExecutionResidencyRef] = None
     lineage_ref: Optional[StateLineageRef] = None
     created_at: float = Field(default_factory=time.time)
     artifact_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def execution_residency_ref(self) -> Optional[ExecutionResidencyRef]:
+        return self.execution_state_ref
 
 
 class RolloutRecord(BaseModel):
@@ -176,10 +186,14 @@ class StateHandleCreate(BaseModel):
     dtype: Optional[str] = None
     version: int = 1
     is_terminal: bool = False
-    execution_state_ref: Optional[ExecutionStateRef] = None
+    execution_state_ref: Optional[ExecutionResidencyRef] = None
     lineage_ref: Optional[StateLineageRef] = None
     artifact_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def execution_residency_ref(self) -> Optional[ExecutionResidencyRef]:
+        return self.execution_state_ref
 
 
 class RolloutCreate(BaseModel):

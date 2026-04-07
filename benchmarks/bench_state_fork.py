@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import time
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -39,7 +40,15 @@ def _device(device: str) -> str:
     return device
 
 
-def run_benchmark(args: argparse.Namespace) -> dict:
+def _tensor_nbytes(shape: tuple[int, ...], dtype: torch.dtype) -> int:
+    element_size = torch.empty((), dtype=dtype).element_size()
+    numel = 1
+    for dim in shape:
+        numel *= int(dim)
+    return int(numel * element_size)
+
+
+def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     device = _device(args.device)
     dtype = torch.float16 if device == "cuda" else torch.float32
     manager = LatentStateManager(
@@ -83,6 +92,11 @@ def run_benchmark(args: argparse.Namespace) -> dict:
     logical_bytes = int(stats["logical_bytes"])
     physical_bytes = int(stats["physical_bytes"])
     logical_to_physical_ratio = (logical_bytes / physical_bytes) if physical_bytes else 0.0
+    initial_state_bytes = _tensor_nbytes((args.tokens, args.latent_dim), dtype)
+    action_bytes = _tensor_nbytes((args.action_dim,), dtype)
+    predicted_state_bytes = _tensor_nbytes((args.tokens, args.latent_dim), dtype)
+    source_history_bytes = args.history_steps * (action_bytes + predicted_state_bytes)
+    branch_history_bytes = args.branches * args.append_steps_per_branch * (action_bytes + predicted_state_bytes)
 
     result = {
         "schema_version": 1,
@@ -107,6 +121,27 @@ def run_benchmark(args: argparse.Namespace) -> dict:
             "bytes_saved_via_sharing": int(stats["bytes_saved_via_sharing"]),
             "reuse_hit_rate": float(stats["reuse_hit_rate"]),
             "num_active": int(stats["num_active"]),
+        },
+        "profiling": {
+            "transfer": {
+                "device": device,
+                "dtype": str(dtype).replace("torch.", ""),
+                "initial_state_bytes": initial_state_bytes,
+                "action_bytes_per_step": action_bytes,
+                "predicted_state_bytes_per_step": predicted_state_bytes,
+                "source_history_bytes": source_history_bytes,
+                "branch_history_bytes": branch_history_bytes,
+                "total_history_bytes": source_history_bytes + branch_history_bytes,
+            },
+            "residency": {
+                "logical_bytes": logical_bytes,
+                "physical_bytes": physical_bytes,
+                "logical_to_physical_ratio": logical_to_physical_ratio,
+                "bytes_saved_via_sharing": int(stats["bytes_saved_via_sharing"]),
+                "reuse_hit_rate": float(stats["reuse_hit_rate"]),
+                "num_active": int(stats["num_active"]),
+            },
+            "state_stats": stats,
         },
         "state_stats": stats,
     }

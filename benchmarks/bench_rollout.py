@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from typing import Any
 
 import torch
 
@@ -15,6 +16,31 @@ from wm_infra.benchmarking import GpuSampler, format_gpu_summary
 from wm_infra.config import EngineConfig, DynamicsConfig
 from wm_infra.core.engine import WorldModelEngine, RolloutJob
 from wm_infra.models.dynamics import LatentDynamicsModel
+
+
+def _tensor_nbytes(shape: tuple[int, ...], dtype: torch.dtype) -> int:
+    element_size = torch.empty((), dtype=dtype).element_size()
+    numel = 1
+    for dim in shape:
+        numel *= int(dim)
+    return int(numel * element_size)
+
+
+def _residency_profile(snapshot: dict[str, Any]) -> dict[str, Any]:
+    logical_bytes = int(snapshot.get("logical_bytes") or 0)
+    physical_bytes = int(snapshot.get("physical_bytes") or 0)
+    return {
+        "logical_bytes": logical_bytes,
+        "physical_bytes": physical_bytes,
+        "bytes_saved_via_sharing": int(snapshot.get("bytes_saved_via_sharing") or 0),
+        "reuse_hit_rate": float(snapshot.get("reuse_hit_rate") or 0.0),
+        "num_active": int(snapshot.get("num_active") or 0),
+        "tensor_materializations": int(snapshot.get("tensor_materializations") or 0),
+        "tensor_reuse_hits": int(snapshot.get("tensor_reuse_hits") or 0),
+        "fork_count": int(snapshot.get("fork_count") or 0),
+        "memory_used_bytes": int(snapshot.get("memory_used_bytes") or physical_bytes),
+        "logical_to_physical_ratio": (logical_bytes / physical_bytes) if physical_bytes else 0.0,
+    }
 
 
 def run_benchmark(
@@ -67,6 +93,7 @@ def run_benchmark(
                 return_latents=True,
             ))
         engine.run_until_done()
+    warmup_state_snapshot = engine.state_manager.stats_snapshot()
     engine.reset_execution_stats()
 
     if device == "cuda":
@@ -112,22 +139,50 @@ def run_benchmark(
     execution_stats = engine.execution_stats_snapshot()
     print(f"Execution stats: {execution_stats}")
 
+    final_state_snapshot = engine.state_manager.stats_snapshot()
+    latent_bytes = _tensor_nbytes((num_tokens, latent_dim), engine.dtype)
+    action_bytes = _tensor_nbytes((action_dim,), engine.dtype)
+    transfer_profile = {
+        "device": device,
+        "dtype": str(engine.dtype).replace("torch.", ""),
+        "batch_size": batch_size,
+        "num_steps": num_steps,
+        "latent_bytes_per_job": latent_bytes,
+        "action_bytes_per_step": action_bytes,
+        "input_h2d_bytes_per_job": latent_bytes + (num_steps * action_bytes),
+        "input_h2d_bytes_total": batch_size * (latent_bytes + (num_steps * action_bytes)),
+        "expected_state_bytes_per_job": latent_bytes + (num_steps * (latent_bytes + action_bytes)),
+        "expected_state_bytes_total": batch_size * (latent_bytes + (num_steps * (latent_bytes + action_bytes))),
+    }
+    residency_profile = {
+        "warmup": _residency_profile(warmup_state_snapshot),
+        "final": _residency_profile(final_state_snapshot),
+    }
+
     gpu_summary = gpu_sampler.summary()
     print(format_gpu_summary(gpu_summary))
 
     if device == "cuda":
         peak_mem = torch.cuda.max_memory_allocated() / (1024**3)
+        peak_reserved_mem = torch.cuda.max_memory_reserved() / (1024**3)
         print(f"Peak GPU memory: {peak_mem:.2f} GB")
+        print(f"Peak GPU reserved: {peak_reserved_mem:.2f} GB")
     else:
         peak_mem = None
+        peak_reserved_mem = None
 
     return {
         "avg_latency_s": avg_latency,
         "avg_steps_per_sec": total_steps / avg_latency,
         "avg_step_ms": avg_latency * 1000 / total_steps,
         "execution_stats": execution_stats,
+        "state_snapshot": final_state_snapshot,
+        "warmup_state_snapshot": warmup_state_snapshot,
+        "transfer_profile": transfer_profile,
+        "residency_profile": residency_profile,
         "gpu_summary": gpu_summary,
         "peak_mem_gb": peak_mem,
+        "peak_reserved_mem_gb": peak_reserved_mem,
     }
 
 
@@ -136,7 +191,7 @@ def main():
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"])
     parser.add_argument("--steps", type=int, default=16)
     parser.add_argument("--batch", type=int, default=4)
-    parser.add_argument("--execution-mode", choices=["legacy", "chunked"], default="chunked")
+    parser.add_argument("--execution-mode", choices=["chunked"], default="chunked")
     parser.add_argument("--hidden", type=int, default=256)
     parser.add_argument("--layers", type=int, default=6)
     parser.add_argument("--tokens", type=int, default=64)

@@ -2,6 +2,10 @@
 
 This document translates product strategy into concrete repository work.
 
+Related architecture gap doc:
+
+- `docs/TARGET_ARCHITECTURE_GAP.md`
+
 ## Current state
 
 The repo already has a credible temporal runtime skeleton:

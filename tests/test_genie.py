@@ -267,7 +267,7 @@ class TestGenieRolloutBackend:
         episode, branch, state = self._make_episode_and_state(temporal_store)
 
         request = ProduceSampleRequest(
-            task_type=TaskType.GENIE_ROLLOUT,
+            task_type=TaskType.WORLD_MODEL_ROLLOUT,
             backend="genie-rollout",
             model="genie-local",
             sample_spec=SampleSpec(prompt="test rollout"),
@@ -302,13 +302,22 @@ class TestGenieRolloutBackend:
             "artifact_persist",
             "controlplane_commit",
         ]
+        assert record.runtime["runtime_state"]["paged_state_key"].endswith(":paged-state")
+        assert record.runtime["runtime_state"]["paged_state"]["page_count"] >= 1
+        assert record.runtime["runtime_state"]["paged_state"]["page_pool"]["physical_bytes"] >= record.runtime["runtime_state"]["paged_state"]["page_pool"]["logical_bytes"]
+        assert record.runtime["runtime_state"]["paged_state"]["page_pool"]["host_pool"]["page_count"] >= 1
+        assert record.runtime["runtime_state"]["transfer_fast_path"]["page_window"]["pages_touched"] >= 1
+        assert record.runtime["runtime_state"]["transfer_fast_path"]["pool_path"] in {"host_only", "host_to_gpu"}
+        assert record.runtime["runtime_state"]["transfer_plan"]["staging_tier"] == "cpu_pinned_warm"
+        assert record.runtime["runtime_state"]["transfer_plan"]["staging_bytes"] >= 0
+        assert record.runtime["runtime_state"]["transfer_plan"]["d2h_bytes"] > 0
 
     def test_queue_batch_key_skips_multi_window_rollout(self, tmp_path):
         backend, temporal_store = self._make_backend(tmp_path)
         episode, branch, state = self._make_episode_and_state(temporal_store)
 
         request = ProduceSampleRequest(
-            task_type=TaskType.GENIE_ROLLOUT,
+            task_type=TaskType.WORLD_MODEL_ROLLOUT,
             backend="genie-rollout",
             model="genie-local",
             sample_spec=SampleSpec(prompt="checkpoint-heavy rollout"),
@@ -332,7 +341,7 @@ class TestGenieRolloutBackend:
         episode, branch, state = self._make_episode_and_state(temporal_store)
 
         request = ProduceSampleRequest(
-            task_type=TaskType.GENIE_ROLLOUT,
+            task_type=TaskType.WORLD_MODEL_ROLLOUT,
             backend="genie-rollout",
             model="genie-local",
             sample_spec=SampleSpec(prompt="single window rollout"),
@@ -379,7 +388,7 @@ class TestGenieRolloutBackend:
         episode, branch, state = self._make_episode_and_state(temporal_store)
 
         request = ProduceSampleRequest(
-            task_type=TaskType.GENIE_ROLLOUT,
+            task_type=TaskType.WORLD_MODEL_ROLLOUT,
             backend="genie-rollout",
             model="genie-local",
             sample_spec=SampleSpec(prompt="temporal test"),
@@ -425,7 +434,7 @@ class TestGenieRolloutBackend:
 
         requests = [
             ProduceSampleRequest(
-                task_type=TaskType.GENIE_ROLLOUT,
+                task_type=TaskType.WORLD_MODEL_ROLLOUT,
                 backend="genie-rollout",
                 model="genie-local",
                 sample_spec=SampleSpec(prompt=f"batched-{index}"),
@@ -480,7 +489,7 @@ class TestGenieRolloutBackend:
 
         def make_request(prompt: str) -> ProduceSampleRequest:
             return ProduceSampleRequest(
-                task_type=TaskType.GENIE_ROLLOUT,
+                task_type=TaskType.WORLD_MODEL_ROLLOUT,
                 backend="genie-rollout",
                 model="genie-local",
                 sample_spec=SampleSpec(prompt=prompt),
@@ -540,7 +549,7 @@ class TestGenieRolloutBackend:
         episode, branch, state = self._make_episode_and_state(temporal_store)
 
         request = ProduceSampleRequest(
-            task_type=TaskType.GENIE_ROLLOUT,
+            task_type=TaskType.WORLD_MODEL_ROLLOUT,
             backend="genie-rollout",
             model="genie-local",
             sample_spec=SampleSpec(prompt="config roundtrip"),
@@ -586,7 +595,7 @@ class TestGenieRolloutBackend:
         encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
         request = ProduceSampleRequest(
-            task_type=TaskType.GENIE_ROLLOUT,
+            task_type=TaskType.WORLD_MODEL_ROLLOUT,
             backend="genie-rollout",
             model="genie-local",
             sample_spec=SampleSpec(prompt="b64 tokens"),
@@ -615,7 +624,7 @@ class TestGenieRolloutBackend:
         episode, branch, state = self._make_episode_and_state(temporal_store)
 
         request = ProduceSampleRequest(
-            task_type=TaskType.GENIE_ROLLOUT,
+            task_type=TaskType.WORLD_MODEL_ROLLOUT,
             backend="genie-rollout",
             model="genie-local",
             sample_spec=SampleSpec(prompt="checkpoint cadence"),
@@ -639,7 +648,7 @@ class TestGenieRolloutBackend:
         episode, branch, state = self._make_episode_and_state(temporal_store)
 
         request = ProduceSampleRequest(
-            task_type=TaskType.GENIE_ROLLOUT,
+            task_type=TaskType.WORLD_MODEL_ROLLOUT,
             backend="genie-rollout",
             model="genie-local",
             sample_spec=SampleSpec(prompt="bad tokenizer"),
@@ -664,7 +673,7 @@ class TestGenieRolloutBackend:
         episode, branch, state = self._make_episode_and_state(temporal_store)
 
         request = ProduceSampleRequest(
-            task_type=TaskType.GENIE_ROLLOUT,
+            task_type=TaskType.WORLD_MODEL_ROLLOUT,
             backend="genie-rollout",
             model="genie-local",
             sample_spec=SampleSpec(prompt="bad scaffold"),
@@ -693,7 +702,7 @@ class TestGenieRolloutBackend:
         episode, branch, state = self._make_episode_and_state(temporal_store)
 
         request = ProduceSampleRequest(
-            task_type=TaskType.GENIE_ROLLOUT,
+            task_type=TaskType.WORLD_MODEL_ROLLOUT,
             backend="genie-rollout",
             model="genie-local",
             sample_spec=SampleSpec(prompt="bad shape"),
@@ -722,7 +731,7 @@ class TestGenieRolloutBackend:
         episode, branch, state = self._make_episode_and_state(temporal_store)
 
         request = ProduceSampleRequest(
-            task_type=TaskType.GENIE_ROLLOUT,
+            task_type=TaskType.WORLD_MODEL_ROLLOUT,
             backend="genie-rollout",
             model="genie-local",
             sample_spec=SampleSpec(prompt="too long"),
@@ -758,7 +767,7 @@ class TestGenieRolloutBackend:
         backend, temporal_store = self._make_backend(tmp_path)
 
         request = ProduceSampleRequest(
-            task_type=TaskType.GENIE_ROLLOUT,
+            task_type=TaskType.WORLD_MODEL_ROLLOUT,
             backend="genie-rollout",
             model="genie-local",
             sample_spec=SampleSpec(prompt="no episode"),
@@ -773,7 +782,7 @@ class TestGenieRolloutBackend:
         backend, temporal_store = self._make_backend(tmp_path)
 
         request = ProduceSampleRequest(
-            task_type=TaskType.GENIE_ROLLOUT,
+            task_type=TaskType.WORLD_MODEL_ROLLOUT,
             backend="genie-rollout",
             model="genie-local",
             sample_spec=SampleSpec(prompt="no temporal"),

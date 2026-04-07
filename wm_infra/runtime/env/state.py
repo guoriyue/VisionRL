@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import torch
 
 from wm_infra.controlplane import (
-    ExecutionStateRef,
+    ExecutionResidencyRef,
     StateHandleCreate,
     StateHandleKind,
     StateHandleRecord,
@@ -27,9 +27,19 @@ class RuntimeStateView:
     state: torch.Tensor
     goal: torch.Tensor
     step_idx: int
-    execution_state_ref: ExecutionStateRef
+    execution_state_ref: ExecutionResidencyRef
     lineage_ref: StateLineageRef
     checkpoint_id: str | None
+
+    @property
+    def execution_residency_ref(self) -> ExecutionResidencyRef:
+        return self.execution_state_ref
+
+
+@dataclass(slots=True)
+class StateHandleRefs:
+    execution_residency_ref: ExecutionResidencyRef
+    lineage_ref: StateLineageRef
 
 
 def _estimate_tensor_bytes(*tensors: torch.Tensor) -> int:
@@ -56,7 +66,7 @@ def build_inline_state_handle_create(
     kind: StateHandleKind = StateHandleKind.LATENT,
 ) -> StateHandleCreate:
     observation = torch.cat([state, goal], dim=-1).squeeze(0).detach().cpu().numpy().tolist()
-    execution_state_ref = ExecutionStateRef(
+    execution_state_ref = ExecutionResidencyRef(
         residency=StateResidency.INLINE,
         storage_backend="state_handle_metadata",
         state_key="latent_state",
@@ -69,6 +79,9 @@ def build_inline_state_handle_create(
     lineage_ref = StateLineageRef(
         env_name=env_name,
         task_id=task_id,
+        branch_id=branch_id,
+        rollout_id=rollout_id,
+        checkpoint_id=checkpoint_id,
         trajectory_id=trajectory_id,
         step_idx=step_idx,
         parent_state_handle_id=parent_state_handle_id,
@@ -96,21 +109,42 @@ def build_inline_state_handle_create(
     )
 
 
-def load_runtime_state_view(
-    record: StateHandleRecord,
-    *,
-    dtype: torch.dtype,
-    device: torch.device,
-) -> RuntimeStateView:
-    execution_state_ref = record.execution_state_ref or ExecutionStateRef(
+def split_state_handle_refs(record: StateHandleRecord) -> StateHandleRefs:
+    execution_state_ref = record.execution_state_ref or ExecutionResidencyRef(
         residency=StateResidency.INLINE,
         storage_backend="state_handle_metadata",
     )
     lineage_ref = record.lineage_ref or StateLineageRef(
         env_name=record.metadata.get("env_name"),
         task_id=record.metadata.get("task_id"),
+        branch_id=record.branch_id,
+        rollout_id=record.rollout_id,
+        checkpoint_id=record.checkpoint_id,
+        trajectory_id=record.metadata.get("trajectory_id"),
         step_idx=int(record.metadata.get("step_idx", 0)),
+        parent_state_handle_id=record.metadata.get("parent_state_handle_id"),
     )
+    if lineage_ref.branch_id is None:
+        lineage_ref.branch_id = record.branch_id
+    if lineage_ref.rollout_id is None:
+        lineage_ref.rollout_id = record.rollout_id
+    if lineage_ref.checkpoint_id is None:
+        lineage_ref.checkpoint_id = record.checkpoint_id
+    return StateHandleRefs(
+        execution_residency_ref=execution_state_ref,
+        lineage_ref=lineage_ref,
+    )
+
+
+def load_runtime_state_view(
+    record: StateHandleRecord,
+    *,
+    dtype: torch.dtype,
+    device: torch.device,
+) -> RuntimeStateView:
+    refs = split_state_handle_refs(record)
+    execution_state_ref = refs.execution_residency_ref
+    lineage_ref = refs.lineage_ref
     metadata = record.metadata
     state_key = execution_state_ref.state_key or "latent_state"
     goal_key = execution_state_ref.goal_key or "goal_state"
@@ -140,6 +174,8 @@ def load_runtime_state_view(
 
 __all__ = [
     "RuntimeStateView",
+    "StateHandleRefs",
     "build_inline_state_handle_create",
     "load_runtime_state_view",
+    "split_state_handle_refs",
 ]

@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import copy
+from collections import Counter
 import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -118,10 +119,12 @@ async def _run_iteration(client: httpx.AsyncClient, request_payload: dict[str, A
         terminal_payload, polls, terminal_ts = await _wait_for_terminal_sample(client, created["sample_id"], timeout_s)
         result["status"] = terminal_payload["status"]
         result["terminal_payload"] = terminal_payload
+        result["accounting"] = _runtime_accounting(terminal_payload)
         result["metrics"]["poll_count"] = float(polls)
         result["metrics"]["terminal_latency_ms"] = round((terminal_ts - submit_start) * 1000.0, 3)
     else:
         result["terminal_payload"] = created
+        result["accounting"] = _runtime_accounting(created)
         result["metrics"]["poll_count"] = 0.0
         result["metrics"]["terminal_latency_ms"] = round((submit_end - submit_start) * 1000.0, 3)
 
@@ -233,7 +236,7 @@ DEFAULT_WAN_PAYLOAD = {
 }
 
 DEFAULT_ROLLOUT_PAYLOAD = {
-    "task_type": "world_model_rollout",
+    "task_type": "temporal_rollout",
     "backend": "rollout-engine",
     "model": "latent_dynamics",
     "sample_spec": {"prompt": "predict the next robot movement", "width": 256, "height": 256},
@@ -241,7 +244,7 @@ DEFAULT_ROLLOUT_PAYLOAD = {
 }
 
 DEFAULT_GENIE_PAYLOAD = {
-    "task_type": "genie_rollout",
+    "task_type": "temporal_rollout",
     "backend": "genie-rollout",
     "model": "genie-local",
     "sample_spec": {"prompt": "roll forward in time", "width": 256, "height": 256},
@@ -271,7 +274,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--timeout-s", type=float, default=30.0)
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
-    parser.add_argument("--execution-mode", choices=["legacy", "chunked"], default="chunked")
+    parser.add_argument("--execution-mode", choices=["chunked"], default="chunked")
     parser.add_argument("--gpu-sample-interval-ms", type=float, default=100.0)
     parser.add_argument("--persist-root", help="Optional root directory to keep in-process sample manifests and backend outputs")
     parser.add_argument("--genie-max-concurrent-jobs", type=int, default=1)
@@ -312,6 +315,150 @@ def _observed_runtime_fields(*, in_process: bool, resolved_device: str, requeste
     return execution_fields, workload_fields
 
 
+def _flatten_residency_records(records: list[dict[str, Any]] | None) -> dict[str, Any]:
+    records = records or []
+    tier_counts: Counter[str] = Counter()
+    bytes_by_tier: Counter[str] = Counter()
+    total_bytes = 0
+    for record in records:
+        tier = str(record.get("tier") or "unknown")
+        bytes_size = int(record.get("bytes_size") or 0)
+        tier_counts[tier] += 1
+        bytes_by_tier[tier] += bytes_size
+        total_bytes += bytes_size
+    return {
+        "count": len(records),
+        "total_bytes": total_bytes,
+        "tier_counts": dict(tier_counts),
+        "bytes_by_tier": dict(bytes_by_tier),
+    }
+
+
+def _runtime_accounting(sample_payload: dict[str, Any]) -> dict[str, Any]:
+    runtime = sample_payload.get("runtime") or {}
+    compiled_graph_pool = runtime.get("compiled_graph_pool") or {}
+    runtime_state = runtime.get("runtime_state") or {}
+    execution_family = runtime.get("execution_family") or compiled_graph_pool.get("execution_family") or {}
+    transfer_plan = runtime.get("transfer_plan") or runtime_state.get("transfer_plan") or {}
+    residency = runtime.get("residency") or runtime_state.get("residency") or []
+    residency_summary = _flatten_residency_records(residency)
+
+    compile_info = {
+        "profile_id": compiled_graph_pool.get("profile_id"),
+        "compile_state": compiled_graph_pool.get("compile_state"),
+        "warm_profile_hit": compiled_graph_pool.get("warm_profile_hit"),
+        "compiled_batch_size_hit": compiled_graph_pool.get("compiled_batch_size_hit"),
+        "compiled_batch_sizes": compiled_graph_pool.get("compiled_batch_sizes") or [],
+        "reuse_count": compiled_graph_pool.get("reuse_count"),
+        "prewarmed": compiled_graph_pool.get("prewarmed"),
+        "graph_key": (compiled_graph_pool.get("compiled_profile") or {}).get("graph_key")
+        or compiled_graph_pool.get("graph_family_key")
+        or compiled_graph_pool.get("graph_key"),
+        "execution_family": execution_family,
+    }
+    cache_info = {
+        "prompt_reuse_hit": runtime_state.get("prompt_reuse_hit"),
+        "resident_tier": runtime_state.get("resident_tier"),
+        "reuse_hits": runtime_state.get("reuse_hits"),
+        "reuse_misses": runtime_state.get("reuse_misses"),
+        "source_cache_key": runtime_state.get("source_cache_key"),
+        "checkpoint_delta_ref": runtime_state.get("checkpoint_delta_ref"),
+        "page_size_tokens": runtime_state.get("page_size_tokens"),
+        "page_count": runtime_state.get("page_count"),
+    }
+    transfer_info = {
+        "h2d_bytes": int(transfer_plan.get("h2d_bytes") or 0),
+        "d2h_bytes": int(transfer_plan.get("d2h_bytes") or 0),
+        "device_to_device_bytes": int(transfer_plan.get("device_to_device_bytes") or 0),
+        "artifact_io_bytes": int(transfer_plan.get("artifact_io_bytes") or 0),
+        "staging_bytes": int(transfer_plan.get("staging_bytes") or 0),
+        "overlap_h2d_with_compute": bool(transfer_plan.get("overlap_h2d_with_compute", False)),
+        "overlap_d2h_with_io": bool(transfer_plan.get("overlap_d2h_with_io", False)),
+        "staging_tier": transfer_plan.get("staging_tier"),
+    }
+    transfer_info["total_bytes"] = int(
+        transfer_plan.get("total_bytes")
+        or transfer_info["h2d_bytes"]
+        + transfer_info["d2h_bytes"]
+        + transfer_info["device_to_device_bytes"]
+        + transfer_info["artifact_io_bytes"]
+    )
+    return {
+        "backend": sample_payload.get("backend"),
+        "compile": compile_info,
+        "cache": cache_info,
+        "transfer": transfer_info,
+        "residency": residency_summary,
+    }
+
+
+def _profile_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    compile_states: Counter[str] = Counter()
+    backend_hits: Counter[str] = Counter()
+    residency_tiers: Counter[str] = Counter()
+    total_transfer_bytes = 0
+    total_h2d_bytes = 0
+    total_d2h_bytes = 0
+    total_artifact_io_bytes = 0
+    total_residency_bytes = 0
+    warm_profile_hits = 0
+    prompt_cache_hits = 0
+    page_counts: list[int] = []
+
+    for sample in samples:
+        accounting = sample.get("accounting") or {}
+        backend = str(accounting.get("backend") or sample.get("backend") or "")
+        if backend:
+            backend_hits[backend] += 1
+        compile_info = accounting.get("compile") or {}
+        cache_info = accounting.get("cache") or {}
+        transfer_info = accounting.get("transfer") or {}
+        residency_info = accounting.get("residency") or {}
+
+        compile_state = compile_info.get("compile_state")
+        if compile_state:
+            compile_states[str(compile_state)] += 1
+        if compile_info.get("warm_profile_hit"):
+            warm_profile_hits += 1
+        if cache_info.get("prompt_reuse_hit"):
+            prompt_cache_hits += 1
+        total_transfer_bytes += int(transfer_info.get("total_bytes") or 0)
+        total_h2d_bytes += int(transfer_info.get("h2d_bytes") or 0)
+        total_d2h_bytes += int(transfer_info.get("d2h_bytes") or 0)
+        total_artifact_io_bytes += int(transfer_info.get("artifact_io_bytes") or 0)
+        total_residency_bytes += int(residency_info.get("total_bytes") or 0)
+        for tier, count in (residency_info.get("tier_counts") or {}).items():
+            residency_tiers[str(tier)] += int(count)
+        page_count = cache_info.get("page_count")
+        if page_count is not None:
+            page_counts.append(int(page_count))
+
+    total_samples = len(samples)
+    return {
+        "compile": {
+            "warm_profile_hits": warm_profile_hits,
+            "warm_profile_hit_rate": (warm_profile_hits / total_samples) if total_samples else 0.0,
+            "compile_states": dict(compile_states),
+            "backend_hits": dict(backend_hits),
+        },
+        "cache": {
+            "prompt_cache_hits": prompt_cache_hits,
+            "prompt_cache_hit_rate": (prompt_cache_hits / total_samples) if total_samples else 0.0,
+            "mean_page_count": (sum(page_counts) / len(page_counts)) if page_counts else 0.0,
+        },
+        "transfer": {
+            "total_bytes": total_transfer_bytes,
+            "h2d_bytes": total_h2d_bytes,
+            "d2h_bytes": total_d2h_bytes,
+            "artifact_io_bytes": total_artifact_io_bytes,
+        },
+        "residency": {
+            "total_bytes": total_residency_bytes,
+            "tier_counts": dict(residency_tiers),
+        },
+    }
+
+
 async def _main_async() -> None:
     args = parse_args()
     device = args.device
@@ -341,6 +488,7 @@ async def _main_async() -> None:
     task_cfg = payload.get("wan_config") or payload.get("task_config") or {}
     genie_cfg = payload.get("genie_config") or {}
     summary = run_summary_from_samples(samples)
+    profiling = _profile_samples(samples)
     execution_fields, workload_runtime_fields = _observed_runtime_fields(
         in_process=args.in_process,
         resolved_device=device,
@@ -389,6 +537,7 @@ async def _main_async() -> None:
         },
         "request_payload": payload,
         "summary": summary,
+        "profiling": profiling,
         "gpu_profile": gpu_profile,
         "samples": samples,
         "notes": [

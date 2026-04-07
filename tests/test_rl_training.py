@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from wm_infra.controlplane import TemporalStore
-from wm_infra.rl.training import ExperimentSpec, LocalActorCriticLearner, SynchronousCollector, run_local_experiment
-from wm_infra.rl.runtime import RLEnvironmentManager
+from wm_infra.consumers.rl.runtime import RLEnvironmentManager
+from wm_infra.consumers.rl.training import ExperimentSpec, LocalActorCriticLearner, SynchronousCollector, run_local_experiment
 
 
 def test_synchronous_collector_persists_batched_transitions(tmp_path) -> None:

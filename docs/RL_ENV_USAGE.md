@@ -1,7 +1,7 @@
 # RL Environment Usage
 
-`wm-infra` is still a temporal sample-production stack first. The new `wm_infra.rl`
-module does not turn the repository into a full RL platform yet. What it does give
+`wm-infra` is still a temporal sample-production stack first. The new `wm_infra.consumers.rl`
+consumer layer does not turn the repository into a full RL platform yet. What it does give
 you today is both:
 
 - a stateless transition API at `/v1/transitions/initialize` and `/v1/transitions/predict(_many)`
@@ -14,7 +14,7 @@ This is the right current split:
   are the preferred trainer-facing stateless surface for RL state progression.
 - `POST /v1/envs`, `/reset`, `/step`, `/step_many`, `/fork`, and `/checkpoint`
   remain as a deprecated compatibility layer for older session-oriented clients.
-- `wm_infra.rl` provides local experiment primitives that exercise the same env,
+- `wm_infra.consumers.rl` provides local experiment primitives that exercise the same env,
   trajectory, replay, and evaluation semantics without requiring an external trainer.
 
 ## What You Need To Learn For Real RL Integration
@@ -59,7 +59,7 @@ decoupled rollout path.
 
 ## Current RL Surface In This Repository
 
-The current RL module contains:
+The current consumer-side RL layer contains:
 
 - `GoalReward`: dense goal-reaching reward on latent states
 - `GenieTokenReward`: dense goal-reaching reward on Genie token grids
@@ -76,11 +76,11 @@ The current RL module contains:
 
 Relevant files:
 
-- `wm_infra/rl/env.py`
-- `wm_infra/rl/toy.py`
-- `wm_infra/rl/runtime.py`
-- `wm_infra/rl/training.py`
-- `wm_infra/rl/demo.py`
+- `wm_infra/consumers/rl/env.py`
+- `wm_infra/consumers/rl/toy.py`
+- `wm_infra/consumers/rl/runtime.py`
+- `wm_infra/consumers/rl/training.py`
+- `wm_infra/consumers/rl/demo.py`
 - `examples/rl_train_toy_world.py`
 - `benchmarks/bench_rl_env.py`
 - `docs/GENIE_RL_BACKEND_GAP.md`
@@ -182,8 +182,8 @@ when local collectors choose to auto-reset completed envs for throughput.
 import numpy as np
 import torch
 
-from wm_infra.rl.env import GoalReward, WorldModelEnv
-from wm_infra.rl.toy import ToyLineWorldModel
+from wm_infra.consumers.rl.env import GoalReward, WorldModelEnv
+from wm_infra.consumers.rl.toy import ToyLineWorldModel
 
 
 def initial_sampler(batch_size, device, dtype, generator):
@@ -220,8 +220,8 @@ world-model transitions across many environments at once.
 import numpy as np
 import torch
 
-from wm_infra.rl.env import GoalReward, WorldModelVectorEnv
-from wm_infra.rl.toy import ToyLineWorldModel
+from wm_infra.consumers.rl.env import GoalReward, WorldModelVectorEnv
+from wm_infra.consumers.rl.toy import ToyLineWorldModel
 
 
 def initial_sampler(batch_size, device, dtype, generator):

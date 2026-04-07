@@ -321,47 +321,13 @@ class TestWorldModelEngine:
         assert stats["max_transition_chunk_size"] >= 3
         assert stats["avg_transition_chunk_size"] >= 3.0
 
-    def test_chunked_and_legacy_complete_same_rollout_shape(self):
+    def test_chunked_mode_rejects_non_chunked_execution_mode(self):
         config = _small_config()
         config.device = "cpu"
+        dynamics = LatentDynamicsModel(config.dynamics)
 
-        dynamics_chunked = LatentDynamicsModel(config.dynamics)
-        dynamics_legacy = LatentDynamicsModel(config.dynamics)
-        dynamics_legacy.load_state_dict(dynamics_chunked.state_dict())
-
-        engine_chunked = WorldModelEngine(config, dynamics_chunked, tokenizer=None, execution_mode="chunked")
-        engine_legacy = WorldModelEngine(config, dynamics_legacy, tokenizer=None, execution_mode="legacy")
-
-        initial_latent = torch.randn(16, 6)
-        actions = torch.randn(3, 8)
-
-        chunked_job = RolloutJob(
-            job_id="chunked_job",
-            initial_latent=initial_latent.clone(),
-            actions=actions.clone(),
-            num_steps=3,
-            return_frames=False,
-            return_latents=True,
-        )
-        legacy_job = RolloutJob(
-            job_id="legacy_job",
-            initial_latent=initial_latent.clone(),
-            actions=actions.clone(),
-            num_steps=3,
-            return_frames=False,
-            return_latents=True,
-        )
-
-        engine_chunked.submit_job(chunked_job)
-        engine_legacy.submit_job(legacy_job)
-        chunked_result = engine_chunked.run_until_done()[0]
-        legacy_result = engine_legacy.run_until_done()[0]
-
-        assert chunked_result.steps_completed == legacy_result.steps_completed == 3
-        assert chunked_result.predicted_latents is not None
-        assert legacy_result.predicted_latents is not None
-        assert chunked_result.predicted_latents.shape == legacy_result.predicted_latents.shape
-        assert torch.allclose(chunked_result.predicted_latents, legacy_result.predicted_latents, atol=1e-5, rtol=1e-5)
+        with pytest.raises(ValueError, match="Unsupported execution_mode: legacy"):
+            WorldModelEngine(config, dynamics, tokenizer=None, execution_mode="legacy")
 
     def test_end_to_end_with_latent(self):
         config = _small_config()

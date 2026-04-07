@@ -20,7 +20,7 @@ from wm_infra.controlplane import (
     TemporalStatus,
     TemporalStore,
 )
-from wm_infra.rl.runtime import RLEnvironmentManager
+from wm_infra.consumers.rl.runtime import RLEnvironmentManager
 
 
 @dataclass(slots=True)
