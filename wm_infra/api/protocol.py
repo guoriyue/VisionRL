@@ -164,3 +164,77 @@ class EnvironmentStepManyResponse(BaseModel):
     env_ids: list[str]
     results: list[EnvironmentStepResponse]
     runtime: dict[str, Any] = Field(default_factory=dict)
+
+
+class TransitionInitializeRequest(BaseModel):
+    env_name: str
+    task_id: Optional[str] = None
+    seed: Optional[int] = None
+    policy_version: Optional[str] = None
+    max_episode_steps: Optional[int] = Field(default=None, ge=1)
+    branch_name: Optional[str] = None
+    labels: dict[str, str] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TransitionContextResponse(BaseModel):
+    env_name: str
+    episode_id: str
+    task_id: str
+    branch_id: str
+    state_handle_id: str
+    checkpoint_id: Optional[str] = None
+    trajectory_id: str
+    current_step: int = 0
+    policy_version: Optional[str] = None
+    max_episode_steps: int
+    observation: list[list[float]] = Field(default_factory=list)
+    info: dict[str, Any] = Field(default_factory=dict)
+
+
+class TransitionPredictRequest(BaseModel):
+    state_handle_id: str
+    action: list[float]
+    trajectory_id: Optional[str] = None
+    policy_version: Optional[str] = None
+    checkpoint: bool = False
+    max_episode_steps: Optional[int] = Field(default=None, ge=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TransitionPredictItem(BaseModel):
+    state_handle_id: str
+    action: list[float]
+    trajectory_id: Optional[str] = None
+    max_episode_steps: Optional[int] = Field(default=None, ge=1)
+
+
+class TransitionPredictResponse(BaseModel):
+    env_name: str
+    episode_id: str
+    task_id: str
+    branch_id: Optional[str] = None
+    trajectory_id: str
+    state_handle_id: str
+    checkpoint_id: Optional[str] = None
+    transition_id: str
+    policy_version: Optional[str] = None
+    step_idx: int
+    max_episode_steps: int
+    observation: list[list[float]]
+    reward: float
+    terminated: bool
+    truncated: bool
+    info: dict[str, Any] = Field(default_factory=dict)
+
+
+class TransitionPredictManyRequest(BaseModel):
+    items: list[TransitionPredictItem] = Field(default_factory=list)
+    policy_version: Optional[str] = None
+    checkpoint: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TransitionPredictManyResponse(BaseModel):
+    results: list[TransitionPredictResponse] = Field(default_factory=list)
+    runtime: dict[str, Any] = Field(default_factory=dict)

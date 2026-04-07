@@ -4,14 +4,16 @@
 module does not turn the repository into a full RL platform yet. What it does give
 you today is both:
 
-- a northbound environment-session API at `/v1/envs`
+- a stateless transition API at `/v1/transitions/initialize` and `/v1/transitions/predict(_many)`
 - a local trainer-facing experiment surface on top of the same contract
 
 This is the right current split:
 
 - `POST /v1/samples` remains the product-facing API for persisted sample production.
+- `POST /v1/transitions/initialize`, `/predict`, and `/predict_many`
+  are the preferred trainer-facing stateless surface for RL state progression.
 - `POST /v1/envs`, `/reset`, `/step`, `/step_many`, `/fork`, and `/checkpoint`
-  are the trainer-facing control-plane surface for RL sessions.
+  remain as a deprecated compatibility layer for older session-oriented clients.
 - `wm_infra.rl` provides local experiment primitives that exercise the same env,
   trajectory, replay, and evaluation semantics without requiring an external trainer.
 
@@ -65,7 +67,7 @@ The current RL module contains:
 - `WorldModelVectorEnv`: vectorized batched adapter
 - `ToyLineWorldModel`: a deterministic 1D toy world model for stable examples
 - `GenieWorldModelAdapter`: action-conditioned Genie token-history adapter
-- `RLEnvironmentManager`: northbound environment/session runtime for `/v1/envs`
+- `RLEnvironmentManager`: trainer runtime for both stateless transition routes and legacy `/v1/envs`
 - `ExperimentSpec`: declarative local experiment configuration
 - `SynchronousCollector`: batched rollout collector backed by env sessions
 - `LocalActorCriticLearner`: minimal learner adapter
@@ -85,10 +87,20 @@ Relevant files:
 
 ## Northbound RL API
 
-The trainer-facing HTTP surface now exists.
+The preferred trainer-facing HTTP surface is explicit and stateless.
 
 - `GET /v1/env-specs`
 - `GET /v1/task-specs`
+- `POST /v1/transitions/initialize`
+- `POST /v1/transitions/predict`
+- `POST /v1/transitions/predict_many`
+- `GET /v1/transitions`
+- `GET /v1/trajectories`
+- `GET /v1/evaluations`
+
+The legacy session-oriented compatibility surface still exists, but it should
+not be the default for new integrations:
+
 - `POST /v1/envs`
 - `GET /v1/envs`
 - `GET /v1/envs/{env_id}`
@@ -98,9 +110,6 @@ The trainer-facing HTTP surface now exists.
 - `POST /v1/envs/{env_id}/fork`
 - `POST /v1/envs/{env_id}/checkpoint`
 - `DELETE /v1/envs/{env_id}`
-- `GET /v1/transitions`
-- `GET /v1/trajectories`
-- `GET /v1/evaluations`
 
 The current toy env registry ships with:
 
@@ -124,23 +133,38 @@ That keeps the contract runnable and benchmarkable without pretending CPU has a
 stable real Genie execution path. On CUDA-capable machines, the adapter can
 attempt real Genie execution.
 
-Every step response carries the stable RL fields the trainer actually needs:
+Every transition response carries the stable RL fields the trainer actually needs:
 
 - `observation`
 - `reward`
 - `terminated`
 - `truncated`
 - `info`
-- `env_id`
 - `episode_id`
 - `task_id`
 - `state_handle_id`
 - `checkpoint_id`
 - `policy_version`
 
-The `step_many` route is not just a list of independent HTTP calls. It executes a
-single batched `predict_next()` over all selected sessions and persists the resulting
-`TransitionRecord` objects into the temporal control plane.
+The stateless `predict_many` route is not just a list of independent HTTP calls.
+It executes a single batched `predict_next()` over all selected state handles and
+persists the resulting `TransitionRecord` objects into the temporal control plane.
+
+## Stateless Usage
+
+The preferred HTTP flow is:
+
+1. call `POST /v1/transitions/initialize`
+2. keep the returned `state_handle_id` and `trajectory_id`
+3. submit the next action through `POST /v1/transitions/predict`
+4. for batched stepping, submit several `(state_handle_id, action, trajectory_id)`
+   items to `POST /v1/transitions/predict_many`
+
+This keeps the northbound API stateless:
+
+- the server does not need an in-memory env session to continue the rollout
+- callers move forward by explicitly providing resource IDs
+- restarting the service does not invalidate the contract
 
 The runtime profile now also makes step semantics explicit:
 

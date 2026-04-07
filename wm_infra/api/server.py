@@ -34,6 +34,7 @@ from urllib.parse import unquote
 
 import numpy as np
 import torch
+from fastapi import Response
 
 from wm_infra.api.metrics import ACTIVE_ROLLOUTS, API_AUTH_FAILURES, QUEUE_DEPTH, REQUEST_DURATION, REQUEST_TOTAL, SAMPLE_DURATION, SAMPLE_TOTAL
 from wm_infra.api.protocol import (
@@ -48,6 +49,9 @@ from wm_infra.api.protocol import (
     RolloutResponse,
     SSE_DONE,
     StepResult,
+    TransitionInitializeRequest,
+    TransitionPredictManyRequest,
+    TransitionPredictRequest,
 )
 from wm_infra.backends import BackendRegistry, CosmosJobQueue, CosmosPredictBackend, GenieJobQueue, GenieRolloutBackend, RolloutBackend, WanJobQueue, WanVideoBackend
 from wm_infra.backends.cosmos_runner import CosmosRunner
@@ -722,11 +726,72 @@ def create_app(
         items = manager.list_task_specs(env_name=env_name)
         return {"task_specs": [item.model_dump(mode="json") for item in items], "count": len(items)}
 
-    @app.post("/v1/envs")
-    async def create_env_session(request: EnvironmentCreateRequest):
+    def _mark_env_session_deprecated(response) -> None:
+        response.headers["Deprecation"] = "true"
+        response.headers["Warning"] = (
+            '299 - "The /v1/envs session API is deprecated; use /v1/transitions/initialize and '
+            '/v1/transitions/predict(_many) with explicit state_handle_id/trajectory_id."'
+        )
+
+    @app.post("/v1/transitions/initialize")
+    async def initialize_transition_context(request: TransitionInitializeRequest):
         manager: RLEnvironmentManager = app.state.rl_env_manager
         try:
-            response = manager.create_session(
+            response = manager.initialize_transition_context(
+                env_name=request.env_name,
+                task_id=request.task_id,
+                seed=request.seed,
+                policy_version=request.policy_version,
+                max_episode_steps=request.max_episode_steps,
+                branch_name=request.branch_name,
+                labels=request.labels,
+                metadata=request.metadata,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Unknown env or task: {exc.args[0]}") from exc
+        return response.model_dump(mode="json")
+
+    @app.post("/v1/transitions/predict")
+    async def predict_transition(request: TransitionPredictRequest):
+        manager: RLEnvironmentManager = app.state.rl_env_manager
+        try:
+            response = manager.predict_transition(
+                state_handle_id=request.state_handle_id,
+                action=request.action,
+                trajectory_id=request.trajectory_id,
+                policy_version=request.policy_version,
+                checkpoint=request.checkpoint,
+                max_episode_steps=request.max_episode_steps,
+                metadata=request.metadata,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"State or trajectory not found: {exc.args[0]}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return response.model_dump(mode="json")
+
+    @app.post("/v1/transitions/predict_many")
+    async def predict_many_transitions(request: TransitionPredictManyRequest):
+        manager: RLEnvironmentManager = app.state.rl_env_manager
+        try:
+            response = manager.predict_many_transitions(
+                items=[item.model_dump(mode="python") for item in request.items],
+                policy_version=request.policy_version,
+                checkpoint=request.checkpoint,
+                metadata=request.metadata,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"State or trajectory not found: {exc.args[0]}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return response.model_dump(mode="json")
+
+    @app.post("/v1/envs", deprecated=True)
+    async def create_env_session(request: EnvironmentCreateRequest, response: Response):
+        _mark_env_session_deprecated(response)
+        manager: RLEnvironmentManager = app.state.rl_env_manager
+        try:
+            session_response = manager.create_session(
                 env_name=request.env_name,
                 task_id=request.task_id,
                 seed=request.seed,
@@ -737,10 +802,11 @@ def create_app(
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Unknown env or task: {exc.args[0]}") from exc
-        return response.model_dump(mode="json")
+        return session_response.model_dump(mode="json")
 
-    @app.get("/v1/envs")
-    async def list_env_sessions(status: str | None = None, task_id: str | None = None):
+    @app.get("/v1/envs", deprecated=True)
+    async def list_env_sessions(response: Response, status: str | None = None, task_id: str | None = None):
+        _mark_env_session_deprecated(response)
         manager: RLEnvironmentManager = app.state.rl_env_manager
         items = manager.list_sessions()
         if status is not None:
@@ -749,8 +815,9 @@ def create_app(
             items = [item for item in items if item.task_id == task_id]
         return {"envs": [item.model_dump(mode="json") for item in items], "count": len(items)}
 
-    @app.get("/v1/envs/{env_id}")
-    async def get_env_session(env_id: str):
+    @app.get("/v1/envs/{env_id}", deprecated=True)
+    async def get_env_session(env_id: str, response: Response):
+        _mark_env_session_deprecated(response)
         manager: RLEnvironmentManager = app.state.rl_env_manager
         try:
             session = manager.get_session(env_id)
@@ -758,11 +825,12 @@ def create_app(
             raise HTTPException(status_code=404, detail="Environment session not found") from exc
         return session.model_dump(mode="json")
 
-    @app.post("/v1/envs/{env_id}/reset")
-    async def reset_env_session(env_id: str, request: EnvironmentResetRequest):
+    @app.post("/v1/envs/{env_id}/reset", deprecated=True)
+    async def reset_env_session(env_id: str, request: EnvironmentResetRequest, response: Response):
+        _mark_env_session_deprecated(response)
         manager: RLEnvironmentManager = app.state.rl_env_manager
         try:
-            response = manager.reset_session(
+            reset_response = manager.reset_session(
                 env_id,
                 seed=request.seed,
                 policy_version=request.policy_version,
@@ -770,13 +838,14 @@ def create_app(
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Environment session not found") from exc
-        return response.model_dump(mode="json")
+        return reset_response.model_dump(mode="json")
 
-    @app.post("/v1/envs/{env_id}/step")
-    async def step_env_session(env_id: str, request: EnvironmentStepRequest):
+    @app.post("/v1/envs/{env_id}/step", deprecated=True)
+    async def step_env_session(env_id: str, request: EnvironmentStepRequest, response: Response):
+        _mark_env_session_deprecated(response)
         manager: RLEnvironmentManager = app.state.rl_env_manager
         try:
-            response = manager.step_session(
+            step_response = manager.step_session(
                 env_id,
                 action=request.action,
                 policy_version=request.policy_version,
@@ -787,13 +856,14 @@ def create_app(
             raise HTTPException(status_code=404, detail="Environment session not found") from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return response.model_dump(mode="json")
+        return step_response.model_dump(mode="json")
 
-    @app.post("/v1/envs/{env_id}/step_many")
-    async def step_many_env_sessions(env_id: str, request: EnvironmentStepManyRequest):
+    @app.post("/v1/envs/{env_id}/step_many", deprecated=True)
+    async def step_many_env_sessions(env_id: str, request: EnvironmentStepManyRequest, response: Response):
+        _mark_env_session_deprecated(response)
         manager: RLEnvironmentManager = app.state.rl_env_manager
         try:
-            response = manager.step_many(
+            step_many_response = manager.step_many(
                 env_id,
                 env_ids=request.env_ids,
                 actions=request.actions,
@@ -805,13 +875,14 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"Environment session not found: {exc.args[0]}") from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return response.model_dump(mode="json")
+        return step_many_response.model_dump(mode="json")
 
-    @app.post("/v1/envs/{env_id}/fork")
-    async def fork_env_session(env_id: str, request: EnvironmentForkRequest):
+    @app.post("/v1/envs/{env_id}/fork", deprecated=True)
+    async def fork_env_session(env_id: str, request: EnvironmentForkRequest, response: Response):
+        _mark_env_session_deprecated(response)
         manager: RLEnvironmentManager = app.state.rl_env_manager
         try:
-            response = manager.fork_session(
+            fork_response = manager.fork_session(
                 env_id,
                 branch_name=request.branch_name,
                 policy_version=request.policy_version,
@@ -819,10 +890,11 @@ def create_app(
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Environment session not found") from exc
-        return response.model_dump(mode="json")
+        return fork_response.model_dump(mode="json")
 
-    @app.post("/v1/envs/{env_id}/checkpoint")
-    async def checkpoint_env_session(env_id: str, request: EnvironmentCheckpointRequest):
+    @app.post("/v1/envs/{env_id}/checkpoint", deprecated=True)
+    async def checkpoint_env_session(env_id: str, request: EnvironmentCheckpointRequest, response: Response):
+        _mark_env_session_deprecated(response)
         manager: RLEnvironmentManager = app.state.rl_env_manager
         try:
             checkpoint_id = manager.checkpoint_session(env_id, tag=request.tag, metadata=request.metadata)
@@ -833,8 +905,9 @@ def create_app(
         assert checkpoint is not None
         return checkpoint.model_dump(mode="json")
 
-    @app.delete("/v1/envs/{env_id}")
-    async def delete_env_session(env_id: str):
+    @app.delete("/v1/envs/{env_id}", deprecated=True)
+    async def delete_env_session(env_id: str, response: Response):
+        _mark_env_session_deprecated(response)
         manager: RLEnvironmentManager = app.state.rl_env_manager
         try:
             manager.delete_session(env_id)

@@ -145,6 +145,18 @@ This is still available:
 
 Useful for engine work, but not the primary framing for the repo.
 
+### Stateless transition API
+For trainer-style world-model stepping, prefer explicit state references over
+server-owned sessions.
+
+- `POST /v1/transitions/initialize`
+- `POST /v1/transitions/predict`
+- `POST /v1/transitions/predict_many`
+
+These routes return durable resource IDs such as `state_handle_id`,
+`trajectory_id`, `branch_id`, and `episode_id`. Callers continue work by
+submitting those IDs explicitly rather than relying on an in-memory session.
+
 ## Repo layout
 
 ```text
