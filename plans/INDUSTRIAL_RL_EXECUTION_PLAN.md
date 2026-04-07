@@ -58,6 +58,19 @@
 - RL chunking 仍然主要由 `RLEnvironmentManager` 发起，而不是更深的 runtime 入口
 - benchmark 现在已能对比 toy 和 experimental Genie smoke，但还没有更长跑的 Genie task baseline
 
+从 `EnvPool` 已确认值得复制的点：
+
+1. batched stepping 必须是一等公民
+2. sync / async step 语义必须明确
+3. `env_id` 和 batch return policy 必须是一等公民
+4. auto-reset 语义必须明确写清，而不是隐含行为
+
+已经明确不照搬的点：
+
+1. 不把仓库收缩成纯 env executor
+2. 不放弃 artifact / trajectory / replay / evaluation control plane
+3. 不把 northbound HTTP env API 直接改成默认 auto-reset
+
 ## 下一阶段执行顺序
 
 从当前仓库状态继续开发时，不要再回头重复做 toy demo 层的工作。直接按下面顺序推进。
@@ -128,8 +141,10 @@
 当前结果：
 
 - `step_many` 已显式使用 `ExecutionEntity` / `BatchSignature` / `ExecutionChunk`
+- 已把 chunk formation 下推到 `wm_infra/core/execution.py` 的共享 batch policy/helper
 - runtime profile 已暴露 chunk 和 locality 指标
-- 还没有把 RL chunking 完整下推到更通用 runtime entrypoint
+- 已明确暴露 sync step 语义和 batch policy
+- 还没有把 RL chunking 完整下推到像 engine/scheduler 那样的更通用 runtime entrypoint
 
 ### Phase C. 做扎实 benchmark
 
@@ -156,6 +171,7 @@
 
 - 每轮 runtime 改动前后都能对比 RL 指标
 - benchmark 结果可以直接和当前 toy baseline 对照
+- benchmark 里要能看见 auto-reset 发生频率
 
 ### Phase D. 只有在 contract 清楚后，才继续真实 backend
 

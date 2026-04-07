@@ -29,7 +29,15 @@ from wm_infra.controlplane import (
     TrajectoryRecord,
     TransitionCreate,
 )
-from wm_infra.core.execution import BatchSignature, ExecutionChunk, ExecutionEntity
+from wm_infra.core.execution import (
+    BatchSignature,
+    ExecutionBatchPolicy,
+    ExecutionChunk,
+    ExecutionEntity,
+    build_execution_chunks,
+    chunk_fill_ratio,
+    summarize_execution_chunks,
+)
 from wm_infra.rl.env import GoalReward
 from wm_infra.rl.genie_adapter import GenieRLSpec, GenieTokenReward, GenieWorldModelAdapter
 from wm_infra.rl.toy import ToyLineWorldModel, ToyLineWorldSpec
@@ -152,6 +160,13 @@ class RLEnvironmentManager:
         self.device = torch.device("cpu")
         self.dtype = torch.float32
         self.max_chunk_size = max(1, max_chunk_size)
+        self.env_step_batch_policy = ExecutionBatchPolicy(
+            mode="sync",
+            max_chunk_size=self.max_chunk_size,
+            min_ready_size=1,
+            return_when_ready_count=self.max_chunk_size,
+            allow_partial_batch=True,
+        )
         self.world_model = ToyLineWorldModel(ToyLineWorldSpec(), device=self.device, dtype=self.dtype)
         self.genie_world_model = GenieWorldModelAdapter(device=self.device, spec=GenieRLSpec())
         self._sessions: dict[str, _LiveSession] = {}
@@ -388,20 +403,19 @@ class RLEnvironmentManager:
         responses: list[EnvironmentStepResponse] = []
         reward_stage_ms = 0.0
         trajectory_persist_ms = 0.0
-        chunk_sizes: list[int] = []
         chunk_history: list[dict[str, Any]] = []
         step_chunks = self._build_step_chunks(ordered_env_ids, sessions, action_tensor)
+        chunk_summary = summarize_execution_chunks(step_chunks, policy=self.env_step_batch_policy)
         reward_fn = self._reward_fn_for_env(env_name)
         world_model = self._world_model_for_env(env_name)
 
-        for chunk_index, chunk in enumerate(step_chunks):
-            chunk_sizes.append(chunk.size)
+        for chunk in step_chunks:
             chunk_history.append(
                 {
                     "chunk_id": chunk.chunk_id,
                     "chunk_size": chunk.size,
                     "signature": asdict(chunk.signature),
-                    "fill_ratio": chunk.size / self.max_chunk_size,
+                    "fill_ratio": chunk_fill_ratio(chunk.size, self.env_step_batch_policy.max_chunk_size),
                 }
             )
 
@@ -518,14 +532,13 @@ class RLEnvironmentManager:
             runtime={
                 "execution_path": "chunked_env_step",
                 "env_step_chunk_total": len(step_chunks),
-                "chunk_count": len(step_chunks),
-                "chunk_sizes": chunk_sizes,
-                "max_chunk_size": max(chunk_sizes) if chunk_sizes else 0,
-                "avg_chunk_size": (sum(chunk_sizes) / len(chunk_sizes)) if chunk_sizes else 0.0,
                 "reward_stage_ms": reward_stage_ms,
                 "trajectory_persist_ms": trajectory_persist_ms,
                 "state_locality_hit_rate": 1.0,
                 "state_locality_mode": "in_process_live_session",
+                "step_semantics": "sync_step_many",
+                "northbound_reset_policy": "explicit_reset_required",
+                **chunk_summary,
                 "chunks": chunk_history,
             },
         )
@@ -812,31 +825,28 @@ class RLEnvironmentManager:
             device=str(self.device),
             needs_decode=False,
         )
-        chunks: list[ExecutionChunk] = []
-        for offset in range(0, len(env_ids), self.max_chunk_size):
-            chunk_env_ids = env_ids[offset:offset + self.max_chunk_size]
-            chunk_sessions = sessions[offset:offset + self.max_chunk_size]
-            chunk_actions = action_tensor[offset:offset + self.max_chunk_size]
-            chunk_entities = [
-                ExecutionEntity(
-                    entity_id=f"{env_id}:env_step:{session.step_idx}",
-                    rollout_id=env_id,
-                    stage="env_step",
-                    step_idx=session.step_idx,
-                    batch_signature=signature,
-                )
-                for env_id, session in zip(chunk_env_ids, chunk_sessions, strict=True)
-            ]
-            chunks.append(
-                ExecutionChunk(
-                    chunk_id=f"env_step:{offset // self.max_chunk_size}",
-                    signature=signature,
-                    entities=chunk_entities,
-                    latent_batch=torch.cat([session.state for session in chunk_sessions], dim=0),
-                    action_batch=chunk_actions,
-                )
+        entities = [
+            ExecutionEntity(
+                entity_id=f"{env_id}:env_step:{session.step_idx}",
+                rollout_id=env_id,
+                stage="env_step",
+                step_idx=session.step_idx,
+                batch_signature=signature,
             )
-        return chunks
+            for env_id, session in zip(env_ids, sessions, strict=True)
+        ]
+        latent_items = [session.state for session in sessions]
+        action_items = [action_tensor[index:index + 1] for index in range(action_tensor.shape[0])]
+        return build_execution_chunks(
+            signature=signature,
+            entities=entities,
+            latent_items=latent_items,
+            action_items=action_items,
+            policy=self.env_step_batch_policy,
+            chunk_id_prefix="env_step",
+            latent_join=lambda items: torch.cat(items, dim=0),
+            action_join=lambda items: torch.cat(items, dim=0),
+        )
 
     def _resolve_env_spec(self, env_name: str) -> EnvironmentSpec:
         spec = self.temporal_store.environment_specs.get(env_name)

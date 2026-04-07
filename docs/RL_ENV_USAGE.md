@@ -142,6 +142,16 @@ The `step_many` route is not just a list of independent HTTP calls. It executes 
 single batched `predict_next()` over all selected sessions and persists the resulting
 `TransitionRecord` objects into the temporal control plane.
 
+The runtime profile now also makes step semantics explicit:
+
+- `batch_policy`
+- `step_semantics`
+- `northbound_reset_policy`
+- `chunk_fill_ratios`
+
+This matters because northbound env sessions keep explicit reset semantics even
+when local collectors choose to auto-reset completed envs for throughput.
+
 ## Single-Environment Usage
 
 ```python
@@ -217,6 +227,30 @@ next_obs, reward, terminated, truncated, info = env.step(actions)
 This is the current bridge from `wm-infra`'s ECS-style runtime ideas to trainer
 workloads: the trainer sees a vectorized environment contract, while the runtime
 sees homogeneous state updates that can be batched.
+
+## What We Borrow From EnvPool
+
+`EnvPool` is a useful reference for the RL environment layer, but not for the
+entire `wm-infra` product boundary.
+
+The parts we now adopt directly are:
+
+- explicit batched stepping as a first-class path rather than a helper wrapper
+- explicit sync step semantics for `step_many`
+- explicit batch policy metadata in runtime profiles
+- explicit separation between northbound reset semantics and collector-local
+  auto-reset behavior
+
+The concrete repo behavior is now:
+
+- northbound `/v1/envs/.../step` and `step_many` keep explicit reset semantics
+- collector-side rollout gathering may auto-reset finished env sessions locally
+- execution chunk formation is described by a shared `ExecutionBatchPolicy`
+  instead of being only an implicit manager detail
+
+This is intentionally different from EnvPool in one important way: `wm-infra`
+still owns temporal control-plane objects such as trajectories, checkpoints,
+artifacts, replay shards, and evaluation runs.
 
 ## Local Experiment Entry Point
 

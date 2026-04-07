@@ -42,6 +42,7 @@ class ExperimentSpec:
     eval_num_envs: int = 16
     eval_episodes: int = 16
     eval_interval: int = 10
+    collector_auto_reset: bool = True
     replay_dir: str = ""
     temporal_root: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -207,11 +208,16 @@ class LocalActorCriticLearner(LearnerAdapter):
             "trajectory_persist_ms": trajectory_persist_ms,
             "trajectory_persist_latency_ms": (trajectory_persist_ms / num_transitions) if num_transitions > 0 else 0.0,
             "state_locality_hit_rate": float(batch.runtime_profile.get("state_locality_hit_rate", 0.0)),
+            "auto_reset_count": float(batch.runtime_profile.get("auto_reset_count", 0)),
         }
 
 
 class SynchronousCollector(Collector):
-    """Synchronous rollout collector backed by batched env-session stepping."""
+    """Synchronous rollout collector backed by batched env-session stepping.
+
+    Auto-reset is collector-local. The northbound env/session API still keeps
+    explicit reset semantics after terminal or truncated steps.
+    """
 
     def __init__(self, manager: RLEnvironmentManager, spec: ExperimentSpec) -> None:
         self.manager = manager
@@ -262,6 +268,7 @@ class SynchronousCollector(Collector):
             "reward_stage_ms": 0.0,
             "trajectory_persist_ms": 0.0,
             "state_locality_hit_rate": 1.0,
+            "auto_reset_count": 0,
         }
 
         for step_idx in range(self.spec.horizon):
@@ -318,6 +325,8 @@ class SynchronousCollector(Collector):
                 if item.transition_id:
                     transition_ids.add(item.transition_id)
                 if item.terminated or item.truncated:
+                    if not self.spec.collector_auto_reset:
+                        continue
                     reset = self.manager.reset_session(
                         item.env_id,
                         seed=self.spec.seed + step_idx + index + 1,
@@ -329,6 +338,7 @@ class SynchronousCollector(Collector):
                             "reason": "auto_reset",
                         },
                     )
+                    runtime_profile["auto_reset_count"] += 1
                     next_obs[index] = torch.as_tensor(reset.observation, dtype=self.dtype, device=self.device)
 
             self.observations = next_obs

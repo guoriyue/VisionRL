@@ -35,6 +35,7 @@ def test_run_benchmark_emits_required_rl_metrics(tmp_path):
     assert summary["chunk_count"]["mean"] >= 1.0
     assert summary["max_chunk_size"]["max"] >= 1.0
     assert summary["state_locality_hit_rate"]["mean"] >= 0.0
+    assert summary["auto_reset_count"]["mean"] >= 0.0
     assert Path(tmp_path / "rl_benchmark.json").exists()
 
 
@@ -61,4 +62,5 @@ def test_run_benchmark_supports_genie_env_smoke(tmp_path):
     assert result["workload"]["backend_mode"] in {"stub", "real"}
     assert result["workload"]["env_name"] == "genie-token-grid-v0"
     assert result["summary"]["env_steps_per_sec"]["mean"] > 0.0
+    assert result["summary"]["auto_reset_count"]["mean"] >= 0.0
     assert Path(tmp_path / "rl_genie_benchmark.json").exists()

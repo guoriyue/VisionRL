@@ -31,6 +31,7 @@ def _summary_from_result(result: dict[str, Any]) -> dict[str, Any]:
     max_chunk_size = [float(item.get("max_chunk_size", 0.0)) for item in metrics]
     avg_chunk_size = [float(item.get("avg_chunk_size", 0.0)) for item in metrics]
     state_locality = [float(item.get("state_locality_hit_rate", 0.0)) for item in metrics]
+    auto_reset_count = [float(item.get("auto_reset_count", 0.0)) for item in metrics]
 
     return {
         "env_steps_per_sec": {
@@ -68,6 +69,10 @@ def _summary_from_result(result: dict[str, Any]) -> dict[str, Any]:
         "state_locality_hit_rate": {
             "mean": _mean(state_locality),
             "min": min(state_locality) if state_locality else 0.0,
+        },
+        "auto_reset_count": {
+            "mean": _mean(auto_reset_count),
+            "max": max(auto_reset_count) if auto_reset_count else 0.0,
         },
         "final_success_rate": float(result.get("final_success_rate", 0.0)),
         "best_mean_return": float(result.get("best_mean_return", 0.0)),
@@ -188,6 +193,7 @@ def main() -> None:
                 f"chunk_count={summary['chunk_count']['mean']:.3f}",
                 f"max_chunk_size={summary['max_chunk_size']['max']:.0f}",
                 f"state_locality_hit_rate={summary['state_locality_hit_rate']['mean']:.3f}",
+                f"auto_reset_count={summary['auto_reset_count']['mean']:.3f}",
                 f"final_success_rate={summary['final_success_rate']:.3f}",
             ]
         )
