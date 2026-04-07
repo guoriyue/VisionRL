@@ -3,7 +3,7 @@
 from wm_infra.runtime.env.catalog import LearnedEnvCatalog
 from wm_infra.runtime.env.async_runtime import AsyncTransitionDispatcher, TransitionDispatch
 from wm_infra.envs.genie import GenieRLSpec, GenieTokenReward, GenieWorldModelAdapter
-from wm_infra.runtime.env.manager import RLEnvironmentManager
+from wm_infra.runtime.env.manager import TemporalEnvManager
 from wm_infra.runtime.env.persistence import (
     TransitionCommitResult,
     TransitionExecutionResult,
@@ -51,7 +51,7 @@ __all__ = [
     "InitialStateSampler",
     "LearnedEnvCatalog",
     "LearnedEnvProtocol",
-    "RLEnvironmentManager",
+    "TemporalEnvManager",
     "RegisteredEnv",
     "RewardProtocol",
     "RuntimeStateView",

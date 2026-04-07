@@ -4,7 +4,7 @@ This module is a thin facade that composes :class:`SessionStore` (session
 CRUD) with :class:`TransitionExecutor` (pipeline execution) and
 :class:`LearnedEnvCatalog` (env registry).
 
-Northbound RL and HTTP surfaces should depend on this runtime rather than
+Northbound workload and HTTP surfaces should depend on this runtime rather than
 embedding transition execution logic directly.
 """
 
@@ -37,8 +37,8 @@ from wm_infra.runtime.env.transition import StatelessTransitionContext, build_st
 from wm_infra.runtime.env.transition_executor import TransitionExecutor
 
 
-class RLEnvironmentManager:
-    """Environment registry + stateless transition manager for trainer-facing RL APIs.
+class TemporalEnvManager:
+    """Environment registry + stateless transition manager for temporal workloads.
 
     Composes SessionStore + TransitionExecutor + LearnedEnvCatalog.
     """
@@ -410,4 +410,4 @@ class RLEnvironmentManager:
         return self._executor.execute_batch(items=items, policy_version=policy_version, checkpoint=checkpoint, metadata=metadata, dispatch_mode=dispatch_mode)
 
 
-__all__ = ["RLEnvironmentManager"]
+__all__ = ["TemporalEnvManager"]

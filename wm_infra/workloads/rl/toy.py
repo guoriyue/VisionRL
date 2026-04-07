@@ -1,4 +1,4 @@
-"""Consumer-side toy world models layered on top of runtime env primitives."""
+"""Toy RL workload models layered on top of runtime env primitives."""
 
 from wm_infra.envs.toy import (
     ToyContinuousWorldModel,

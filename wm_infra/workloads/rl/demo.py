@@ -1,11 +1,11 @@
-"""Compatibility wrappers for the local RL experiment entrypoint."""
+"""Local RL workload entrypoint wrappers."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from wm_infra.consumers.rl.training import ExperimentSpec
-from wm_infra.consumers.rl.training import run_local_experiment
+from wm_infra.workloads.rl.training import ExperimentSpec
+from wm_infra.workloads.rl.training import run_local_experiment
 
 
 DemoConfig = ExperimentSpec

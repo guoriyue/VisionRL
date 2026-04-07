@@ -41,7 +41,7 @@ def default_environment_specs() -> list[EnvironmentSpec]:
             supports_batch_step=True,
             supports_fork=True,
             metadata={
-                "runtime_family": "rl_env_session",
+                "runtime_family": "temporal_env_session",
                 "world_model_contract": "predict_next",
             },
         ),
@@ -63,7 +63,7 @@ def default_environment_specs() -> list[EnvironmentSpec]:
             supports_batch_step=True,
             supports_fork=True,
             metadata={
-                "runtime_family": "rl_env_session",
+                "runtime_family": "temporal_env_session",
                 "world_model_contract": "predict_next",
                 "action_conditioning": "latest_prompt_token_control",
             },

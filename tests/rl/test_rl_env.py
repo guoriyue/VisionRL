@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 import torch
 
-from wm_infra.consumers.rl.env import GoalReward, WorldModelEnv, WorldModelVectorEnv
-from wm_infra.consumers.rl.toy import ToyLineWorldModel
+from wm_infra.workloads.rl.env import GoalReward, WorldModelEnv, WorldModelVectorEnv
+from wm_infra.workloads.rl.toy import ToyLineWorldModel
 
 
 def _initial_sampler(
@@ -106,7 +106,7 @@ def test_world_model_vector_env_auto_reset_recycles_finished_slots() -> None:
 # ---------------------------------------------------------------------------
 
 from wm_infra.backends.genie_runner import GenieRunner
-from wm_infra.consumers.rl.genie_adapter import GenieRLSpec, GenieTokenReward, GenieWorldModelAdapter
+from wm_infra.workloads.rl.genie_adapter import GenieRLSpec, GenieTokenReward, GenieWorldModelAdapter
 
 
 def _stub_adapter() -> GenieWorldModelAdapter:

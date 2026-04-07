@@ -1,9 +1,9 @@
-"""Consumer-side RL adapters layered on top of wm-infra runtime primitives."""
+"""RL workloads layered on top of wm-infra runtime primitives."""
 
-from wm_infra.consumers.rl.demo import DemoConfig, run_reinforce_demo
-from wm_infra.consumers.rl.env import GoalReward, WorldModelEnv, WorldModelVectorEnv
-from wm_infra.consumers.rl.genie_adapter import GenieRLSpec, GenieTokenReward, GenieWorldModelAdapter
-from wm_infra.consumers.rl.training import (
+from wm_infra.workloads.rl.demo import DemoConfig, run_reinforce_demo
+from wm_infra.workloads.rl.env import GoalReward, WorldModelEnv, WorldModelVectorEnv
+from wm_infra.workloads.rl.genie_adapter import GenieRLSpec, GenieTokenReward, GenieWorldModelAdapter
+from wm_infra.workloads.rl.training import (
     Collector,
     Evaluator,
     ExperimentSpec,
@@ -12,8 +12,8 @@ from wm_infra.consumers.rl.training import (
     SynchronousCollector,
     run_local_experiment,
 )
-from wm_infra.consumers.rl.runtime import RLEnvironmentManager
-from wm_infra.consumers.rl.toy import ToyContinuousWorldModel, ToyLineWorldModel
+from wm_infra.workloads.rl.runtime import TemporalEnvManager
+from wm_infra.workloads.rl.toy import ToyContinuousWorldModel, ToyLineWorldModel
 
 __all__ = [
     "Collector",
@@ -26,7 +26,7 @@ __all__ = [
     "GenieWorldModelAdapter",
     "LearnerAdapter",
     "LocalActorCriticLearner",
-    "RLEnvironmentManager",
+    "TemporalEnvManager",
     "SynchronousCollector",
     "WorldModelEnv",
     "WorldModelVectorEnv",

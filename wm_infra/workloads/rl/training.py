@@ -20,7 +20,7 @@ from wm_infra.controlplane import (
     TemporalStatus,
     TemporalStore,
 )
-from wm_infra.consumers.rl.runtime import RLEnvironmentManager
+from wm_infra.workloads.rl.runtime import TemporalEnvManager
 
 
 @dataclass(slots=True)
@@ -219,7 +219,7 @@ class SynchronousCollector(Collector):
     explicit reset semantics after terminal or truncated steps.
     """
 
-    def __init__(self, manager: RLEnvironmentManager, spec: ExperimentSpec) -> None:
+    def __init__(self, manager: TemporalEnvManager, spec: ExperimentSpec) -> None:
         self.manager = manager
         self.spec = spec
         self.device = torch.device("cpu")
@@ -373,7 +373,7 @@ class SynchronousCollector(Collector):
 class FixedTaskEvaluator(Evaluator):
     """Deterministic evaluator that runs a fixed task split against current policy."""
 
-    def __init__(self, manager: RLEnvironmentManager, spec: ExperimentSpec, temporal_store: TemporalStore) -> None:
+    def __init__(self, manager: TemporalEnvManager, spec: ExperimentSpec, temporal_store: TemporalStore) -> None:
         self.manager = manager
         self.spec = spec
         self.temporal_store = temporal_store
@@ -529,8 +529,8 @@ def run_local_experiment(spec: ExperimentSpec | None = None) -> dict[str, Any]:
     cfg = spec or ExperimentSpec()
     temporal_root = Path(cfg.temporal_root) if cfg.temporal_root else Path("/tmp") / "wm_infra_rl" / cfg.experiment_name
     temporal_store = TemporalStore(temporal_root)
-    collector_manager = RLEnvironmentManager(temporal_store)
-    evaluator_manager = RLEnvironmentManager(temporal_store)
+    collector_manager = TemporalEnvManager(temporal_store)
+    evaluator_manager = TemporalEnvManager(temporal_store)
     collector = SynchronousCollector(collector_manager, cfg)
 
     try:
