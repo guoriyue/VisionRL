@@ -174,6 +174,10 @@ class ControlPlaneConfig:
     conda_sh_path: Optional[str] = None
     wan_max_queue_size: int = 64
     wan_max_concurrent_jobs: int = 1
+    wan_max_batch_size: int = 4
+    wan_batch_wait_ms: float = 2.0
+    wan_warm_pool_size: int = 16
+    wan_prewarm_common_signatures: bool = False
     wan_admission_max_units: Optional[float] = None
     wan_admission_max_vram_gb: Optional[float] = 32.0
     # Cosmos backend
@@ -258,6 +262,10 @@ def _env_overrides() -> dict:
         WM_CONDA_SH_PATH=/path/conda.sh → {"controlplane": {"conda_sh_path": "/path/conda.sh"}}
         WM_WAN_MAX_QUEUE_SIZE=32       → {"controlplane": {"wan_max_queue_size": 32}}
         WM_WAN_MAX_CONCURRENT_JOBS=1   → {"controlplane": {"wan_max_concurrent_jobs": 1}}
+        WM_WAN_MAX_BATCH_SIZE=4        → {"controlplane": {"wan_max_batch_size": 4}}
+        WM_WAN_BATCH_WAIT_MS=5         → {"controlplane": {"wan_batch_wait_ms": 5.0}}
+        WM_WAN_WARM_POOL_SIZE=16       → {"controlplane": {"wan_warm_pool_size": 16}}
+        WM_WAN_PREWARM_COMMON_SIGNATURES=true → {"controlplane": {"wan_prewarm_common_signatures": True}}
         WM_WAN_ADMISSION_MAX_UNITS=16  → {"controlplane": {"wan_admission_max_units": 16.0}}
         WM_WAN_ADMISSION_MAX_VRAM_GB=32 → {"controlplane": {"wan_admission_max_vram_gb": 32.0}}
         WM_SEED=123                    → {"seed": 123}
@@ -282,6 +290,10 @@ def _env_overrides() -> dict:
         "WM_CONDA_SH_PATH": (["controlplane", "conda_sh_path"], str),
         "WM_WAN_MAX_QUEUE_SIZE": (["controlplane", "wan_max_queue_size"], int),
         "WM_WAN_MAX_CONCURRENT_JOBS": (["controlplane", "wan_max_concurrent_jobs"], int),
+        "WM_WAN_MAX_BATCH_SIZE": (["controlplane", "wan_max_batch_size"], int),
+        "WM_WAN_BATCH_WAIT_MS": (["controlplane", "wan_batch_wait_ms"], float),
+        "WM_WAN_WARM_POOL_SIZE": (["controlplane", "wan_warm_pool_size"], int),
+        "WM_WAN_PREWARM_COMMON_SIGNATURES": (["controlplane", "wan_prewarm_common_signatures"], lambda value: value.lower() in {"1", "true", "yes", "on"}),
         "WM_WAN_ADMISSION_MAX_UNITS": (["controlplane", "wan_admission_max_units"], float),
         "WM_WAN_ADMISSION_MAX_VRAM_GB": (["controlplane", "wan_admission_max_vram_gb"], float),
         "WM_COSMOS_OUTPUT_ROOT": (["controlplane", "cosmos_output_root"], str),

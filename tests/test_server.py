@@ -138,6 +138,10 @@ class TestBackends:
         assert backends["wan-video"]["shell_runner_configured"] is False
         assert backends["wan-video"]["runner_mode"] == "stub"
         assert backends["wan-video"]["async_queue"] is True
+        assert backends["wan-video"]["max_batch_size"] == 4
+        assert backends["wan-video"]["batch_wait_ms"] == 2.0
+        assert backends["wan-video"]["prewarm_common_signatures"] is False
+        assert backends["wan-video"]["warm_pool"]["prewarmed_profiles"] == 0
         assert backends["wan-video"]["admission_max_vram_gb"] == 32.0
 
 
@@ -304,6 +308,7 @@ class TestSamples:
         assert data["runtime"]["status_history"][0]["status"] == "queued"
         assert data["runtime"]["admission"]["admitted"] is True
         assert data["runtime"]["queue_position"] >= 0
+        assert data["runtime"]["scheduler"]["max_batch_size"] == 4
         assert data["metadata"]["async"] is True
 
     @pytest.mark.asyncio
@@ -365,6 +370,7 @@ class TestSamples:
                 assert data["status"] == "rejected"
                 assert data["runtime"]["admission"]["admitted"] is False
                 assert "estimated_vram_gb" in " ".join(data["runtime"]["admission"]["reasons"])
+                assert data["runtime"]["admission"]["quality_cost_hints"]["suggested_adjustments"]
                 fetched = await c.get(f"/v1/samples/{data['sample_id']}")
                 assert fetched.status_code == 200
                 assert fetched.json()["status"] == "rejected"
@@ -659,6 +665,39 @@ class TestTemporalControlPlane:
             assert backend._transition_batcher.batch_wait_ms == 9.0
             assert app.state.genie_job_queue is not None
             assert app.state.genie_job_queue.snapshot()["max_batch_size"] == 2
+
+    @pytest.mark.asyncio
+    async def test_default_wan_backend_uses_controlplane_batching_config(self, tmp_path):
+        from asgi_lifespan import LifespanManager
+
+        config = _test_config()
+        config.controlplane.manifest_store_root = str(tmp_path / "manifests")
+        config.controlplane.wan_output_root = str(tmp_path / "wan")
+        config.controlplane.cosmos_output_root = str(tmp_path / "cosmos")
+        config.controlplane.genie_output_root = str(tmp_path / "genie")
+        config.controlplane.wan_max_batch_size = 3
+        config.controlplane.wan_batch_wait_ms = 7.5
+        config.controlplane.wan_warm_pool_size = 5
+        config.controlplane.wan_prewarm_common_signatures = False
+
+        temporal_store = TemporalStore(tmp_path / "temporal")
+        app = create_app(
+            config,
+            sample_store=SampleManifestStore(tmp_path / "manifests"),
+            temporal_store=temporal_store,
+        )
+
+        async with LifespanManager(app):
+            backend = app.state.backend_registry.get("wan-video")
+            assert backend is not None
+            assert backend.max_batch_size == 3
+            assert backend.batch_wait_ms == 7.5
+            assert backend.warm_pool_size == 5
+            assert backend.prewarm_common_signatures is False
+            assert app.state.wan_job_queue is not None
+            snapshot = app.state.wan_job_queue.snapshot()
+            assert snapshot["max_batch_size"] == 3
+            assert snapshot["batch_select_enabled"] is True
 
     @pytest.mark.asyncio
     async def test_genie_rollout_accepts_inline_raw_tokens(self, client):

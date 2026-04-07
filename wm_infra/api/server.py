@@ -177,6 +177,10 @@ def create_app(
                 shell_runner_timeout_s=config.controlplane.wan_shell_runner_timeout_s,
                 wan_admission_max_units=config.controlplane.wan_admission_max_units,
                 wan_admission_max_vram_gb=config.controlplane.wan_admission_max_vram_gb,
+                max_batch_size=config.controlplane.wan_max_batch_size,
+                batch_wait_ms=config.controlplane.wan_batch_wait_ms,
+                warm_pool_size=config.controlplane.wan_warm_pool_size,
+                prewarm_common_signatures=config.controlplane.wan_prewarm_common_signatures,
                 wan_repo_dir=config.controlplane.wan_repo_dir,
                 wan_conda_env=config.controlplane.wan_conda_env,
                 conda_sh_path=config.controlplane.conda_sh_path,
@@ -204,12 +208,18 @@ def create_app(
 
         wan_job_queue = None
         if isinstance(wan_backend, WanVideoBackend):
+            wan_queue_batch_size = wan_backend.queue_batch_size_limit(config.controlplane.wan_max_batch_size)
             wan_job_queue = WanJobQueue(
                 execute_fn=wan_backend.execute_job,
+                execute_many_fn=wan_backend.execute_job_batch,
+                batch_key_fn=wan_backend.queue_batch_key,
+                batch_select_fn=wan_backend.queue_batch_score,
                 store=sample_store,
                 queue_name="wan",
                 max_queue_size=config.controlplane.wan_max_queue_size,
                 max_concurrent=config.controlplane.wan_max_concurrent_jobs,
+                max_batch_size=wan_queue_batch_size,
+                batch_wait_ms=config.controlplane.wan_batch_wait_ms,
             )
             wan_backend._job_queue = wan_job_queue
             wan_job_queue.start()
@@ -321,6 +331,11 @@ def create_app(
                         "shell_runner_timeout_s": backend.shell_runner_timeout_s,
                         "output_root": str(backend.output_root),
                         "async_queue": backend._job_queue is not None,
+                        "max_batch_size": backend.max_batch_size,
+                        "batch_wait_ms": backend.batch_wait_ms,
+                        "warm_pool_size": backend.warm_pool_size,
+                        "prewarm_common_signatures": backend.prewarm_common_signatures,
+                        "warm_pool": backend._engine_pool.snapshot(),
                         "admission_max_units": backend.wan_admission_max_units,
                         "admission_max_vram_gb": backend.wan_admission_max_vram_gb,
                     }

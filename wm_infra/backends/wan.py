@@ -13,6 +13,7 @@ asynchronous submission (via submit_async → poll status).
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 import hashlib
 import json
 import os
@@ -33,6 +34,15 @@ from wm_infra.controlplane.schemas import (
     TaskType,
     WanTaskConfig,
 )
+from wm_infra.backends.wan_runtime import (
+    WarmedWanEnginePool,
+    build_quality_cost_hints,
+    build_wan_batch_key,
+    build_wan_batch_signature,
+    build_wan_scheduler_payload,
+    default_wan_prewarm_signatures,
+    wan_batch_compatibility_score,
+)
 
 
 class WanVideoBackend(ProduceSampleBackend):
@@ -47,6 +57,10 @@ class WanVideoBackend(ProduceSampleBackend):
         shell_runner_timeout_s: int | None = None,
         wan_admission_max_units: float | None = None,
         wan_admission_max_vram_gb: float | None = 32.0,
+        max_batch_size: int = 4,
+        batch_wait_ms: float = 2.0,
+        warm_pool_size: int = 16,
+        prewarm_common_signatures: bool = True,
         # Official runner config
         wan_repo_dir: str | None = None,
         wan_conda_env: str | None = None,
@@ -59,12 +73,24 @@ class WanVideoBackend(ProduceSampleBackend):
         self.shell_runner_timeout_s = shell_runner_timeout_s
         self.wan_admission_max_units = wan_admission_max_units
         self.wan_admission_max_vram_gb = wan_admission_max_vram_gb
+        self.max_batch_size = max(1, max_batch_size)
+        self.batch_wait_ms = max(batch_wait_ms, 0.0)
+        self.warm_pool_size = max(1, warm_pool_size)
+        self.prewarm_common_signatures = prewarm_common_signatures
 
         # Official runner: local Wan2.2 repo invocation
         self.wan_repo_dir = wan_repo_dir or os.environ.get("WM_WAN_REPO_DIR")
         self.wan_conda_env = wan_conda_env or os.environ.get("WM_WAN_CONDA_ENV", "kosen")
         self.conda_sh_path = conda_sh_path or os.environ.get(
             "WM_CONDA_SH_PATH", os.path.expanduser("~/miniconda3/etc/profile.d/conda.sh")
+        )
+        self._engine_pool = WarmedWanEnginePool(
+            max_profiles=self.warm_pool_size,
+            prewarmed_signatures=(
+                default_wan_prewarm_signatures(backend_name, self.runner_mode)
+                if self.prewarm_common_signatures
+                else None
+            ),
         )
 
         # Job queue is attached externally by the server lifespan
@@ -122,7 +148,42 @@ class WanVideoBackend(ProduceSampleBackend):
             "reasons": reasons,
             "max_units": self.wan_admission_max_units,
             "max_vram_gb": self.wan_admission_max_vram_gb,
+            "quality_cost_hints": build_quality_cost_hints(
+                wan_config,
+                max_units=self.wan_admission_max_units,
+                max_vram_gb=self.wan_admission_max_vram_gb,
+            ),
         }, estimate
+
+    def queue_batch_key(self, request: ProduceSampleRequest) -> tuple[Any, ...] | None:
+        self._validate_request(request)
+        wan_config = self._resolve_wan_config(request)
+        return build_wan_batch_key(request, wan_config, runner_mode=self.runner_mode)
+
+    def queue_batch_size_limit(self, configured_max_batch_size: int) -> int:
+        return max(1, min(configured_max_batch_size, self.max_batch_size))
+
+    def queue_batch_score(
+        self,
+        reference_request: ProduceSampleRequest,
+        candidate_request: ProduceSampleRequest,
+    ) -> float | None:
+        """Rank near-shape Wan requests when exact queue keys do not match."""
+
+        try:
+            self._validate_request(reference_request)
+            self._validate_request(candidate_request)
+        except ValueError:
+            return None
+        reference_config = self._resolve_wan_config(reference_request)
+        candidate_config = self._resolve_wan_config(candidate_request)
+        return wan_batch_compatibility_score(
+            reference_request,
+            reference_config,
+            candidate_request,
+            candidate_config,
+            runner_mode=self.runner_mode,
+        )
 
     def _build_request_payload(
         self,
@@ -300,11 +361,29 @@ class WanVideoBackend(ProduceSampleBackend):
             "error": error,
         }
 
-    async def execute_job(self, request: ProduceSampleRequest, sample_id: str) -> SampleRecord:
-        """Execute a Wan job synchronously (called by queue worker or produce_sample)."""
+    async def _execute_job_impl(
+        self,
+        request: ProduceSampleRequest,
+        sample_id: str,
+        *,
+        batch_size: int,
+        batch_index: int,
+        batch_sample_ids: list[str],
+        engine_profile: dict[str, Any] | None = None,
+    ) -> SampleRecord:
+        """Execute one Wan job with optional queue-batch metadata."""
         self._validate_request(request)
 
         wan_config = self._resolve_wan_config(request)
+        signature = build_wan_batch_signature(request, wan_config, runner_mode=self.runner_mode)
+        profile_claim = engine_profile or self._engine_pool.reserve(signature, batch_size=batch_size)
+        scheduler_payload = build_wan_scheduler_payload(
+            signature,
+            batch_size=batch_size,
+            batch_index=batch_index,
+            max_batch_size=self.max_batch_size,
+            sample_ids=batch_sample_ids,
+        )
         sample_dir = self._sample_dir(sample_id)
         plan_path = sample_dir / "request.json"
         log_path = sample_dir / "runner.log"
@@ -314,6 +393,8 @@ class WanVideoBackend(ProduceSampleBackend):
 
         estimate = estimate_wan_request(wan_config)
         request_payload = self._build_request_payload(sample_id, request, wan_config, estimate, plan_path, log_path, video_path)
+        request_payload["scheduler"] = scheduler_payload
+        request_payload["compiled_graph_pool"] = profile_claim
         plan_path.write_text(json.dumps(request_payload, indent=2, sort_keys=True))
 
         started_at = time.time()
@@ -330,6 +411,9 @@ class WanVideoBackend(ProduceSampleBackend):
                 {"status": SampleStatus.RUNNING.value, "timestamp": started_at},
             ],
             "started_at": started_at,
+            "scheduler": scheduler_payload,
+            "compiled_graph_pool": profile_claim,
+            "engine_pool_snapshot": self._engine_pool.snapshot(),
         }
         status = SampleStatus.ACCEPTED if mode == "stub" else SampleStatus.SUCCEEDED
         metadata: dict[str, Any] = {
@@ -338,6 +422,7 @@ class WanVideoBackend(ProduceSampleBackend):
             "labels": request.labels,
             "stubbed": mode == "stub",
             "runner_mode": mode,
+            "queue_batched": batch_size > 1,
         }
 
         stdout: bytes | None = None
@@ -363,6 +448,12 @@ class WanVideoBackend(ProduceSampleBackend):
                         "WM_REQUEST_PATH": str(plan_path),
                         "WM_OUTPUT_PATH": str(video_path),
                         "WM_LOG_PATH": str(log_path),
+                        "WM_WAN_BATCH_ID": scheduler_payload["batch_id"],
+                        "WM_WAN_BATCH_SIZE": str(batch_size),
+                        "WM_WAN_BATCH_INDEX": str(batch_index),
+                        "WM_WAN_COMPILED_PROFILE_ID": str(profile_claim["profile_id"]),
+                        "WM_WAN_COMPILE_STATE": str(profile_claim["compile_state"]),
+                        "WM_WAN_BATCH_SIGNATURE": json.dumps(asdict(signature), sort_keys=True),
                     },
                 )
                 try:
@@ -509,6 +600,49 @@ class WanVideoBackend(ProduceSampleBackend):
             metadata=metadata,
         )
 
+    async def execute_job(self, request: ProduceSampleRequest, sample_id: str) -> SampleRecord:
+        """Execute a Wan job synchronously (called by queue worker or produce_sample)."""
+
+        return await self._execute_job_impl(
+            request,
+            sample_id,
+            batch_size=1,
+            batch_index=0,
+            batch_sample_ids=[sample_id],
+        )
+
+    async def execute_job_batch(self, items: list[tuple[ProduceSampleRequest, str]]) -> list[SampleRecord]:
+        """Execute a queue batch of compatible Wan jobs under one warmed profile."""
+
+        if not items:
+            return []
+        if len(items) == 1:
+            request, sample_id = items[0]
+            return [await self.execute_job(request, sample_id)]
+
+        first_request, _first_sample_id = items[0]
+        wan_config = self._resolve_wan_config(first_request)
+        signature = build_wan_batch_signature(first_request, wan_config, runner_mode=self.runner_mode)
+        expected_key = build_wan_batch_key(first_request, wan_config, runner_mode=self.runner_mode)
+        for request, _sample_id in items[1:]:
+            if self.queue_batch_key(request) != expected_key:
+                raise ValueError("Wan execute_job_batch received incompatible requests")
+        shared_profile = self._engine_pool.reserve(signature, batch_size=len(items))
+        sample_ids = [sample_id for _request, sample_id in items]
+        records: list[SampleRecord] = []
+        for index, (request, sample_id) in enumerate(items):
+            records.append(
+                await self._execute_job_impl(
+                    request,
+                    sample_id,
+                    batch_size=len(items),
+                    batch_index=index,
+                    batch_sample_ids=sample_ids,
+                    engine_profile=shared_profile,
+                )
+            )
+        return records
+
     async def produce_sample(self, request: ProduceSampleRequest) -> SampleRecord:
         self._validate_request(request)
         sample_id = str(uuid.uuid4())
@@ -528,11 +662,17 @@ class WanVideoBackend(ProduceSampleBackend):
             self._job_queue.submit(sample_id, request)
             queue_position = self._job_queue.position(sample_id)
 
+        batch_key = self.queue_batch_key(request)
         runtime = {
             "runner": self.runner_mode,
             "async": True,
             "queued_at": queued_at,
             "admission": admission,
+            "scheduler": {
+                "queue_batch_key": list(batch_key) if isinstance(batch_key, tuple) else batch_key,
+                "max_batch_size": self.max_batch_size,
+                "batch_wait_ms": self.batch_wait_ms,
+            },
             "status_history": [
                 {"status": (SampleStatus.QUEUED if admitted else SampleStatus.REJECTED).value, "timestamp": queued_at},
             ],

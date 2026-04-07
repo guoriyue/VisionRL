@@ -47,12 +47,14 @@ class SampleJobQueue:
         max_concurrent: int = 2,
         execute_many_fn: Callable[[list[tuple[ProduceSampleRequest, str]]], Coroutine[Any, Any, list[SampleRecord]]] | None = None,
         batch_key_fn: Callable[[ProduceSampleRequest], str | tuple[Any, ...] | None] | None = None,
+        batch_select_fn: Callable[[ProduceSampleRequest, ProduceSampleRequest], float | None] | None = None,
         max_batch_size: int = 1,
         batch_wait_ms: float = 0.0,
     ) -> None:
         self._execute_fn = execute_fn
         self._execute_many_fn = execute_many_fn
         self._batch_key_fn = batch_key_fn
+        self._batch_select_fn = batch_select_fn
         self._store = store
         self._queue_name = queue_name
         self._max_queue_size = max_queue_size
@@ -101,6 +103,7 @@ class SampleJobQueue:
             "max_queue_size": self._max_queue_size,
             "max_concurrent": self._max_concurrent,
             "max_batch_size": self._max_batch_size,
+            "batch_select_enabled": self._batch_select_fn is not None,
             "queued_sample_ids": [job.sample_id for job in queued],
             "running_sample_ids": [job.sample_id for job in running],
         }
@@ -147,8 +150,8 @@ class SampleJobQueue:
 
             batch = [entry]
             batch_key = self._batch_key(entry.request) if self._execute_many_fn is not None else None
-            if self._execute_many_fn is not None and batch_key is not None and self._max_batch_size > 1:
-                batch.extend(await self._collect_batch(batch_key))
+            if self._execute_many_fn is not None and self._max_batch_size > 1:
+                batch.extend(await self._collect_batch(entry.request, batch_key))
             for batch_entry in batch:
                 batch_entry.status = "running"
                 batch_entry.started_at = time.time()
@@ -171,7 +174,7 @@ class SampleJobQueue:
                         queued_record.runtime["started_at"] = batch_entry.started_at
                         self._store.put(queued_record)
 
-                if self._execute_many_fn is not None and len(batch) > 1 and batch_key is not None:
+                if self._execute_many_fn is not None and len(batch) > 1:
                     records = await self._execute_many_fn([(batch_entry.request, batch_entry.sample_id) for batch_entry in batch])
                 else:
                     records = [await self._execute_fn(batch_entry.request, batch_entry.sample_id) for batch_entry in batch]
@@ -216,7 +219,11 @@ class SampleJobQueue:
             return None
         return self._batch_key_fn(request)
 
-    async def _collect_batch(self, batch_key: str | tuple[Any, ...]) -> list[JobEntry]:
+    async def _collect_batch(
+        self,
+        reference_request: ProduceSampleRequest,
+        batch_key: str | tuple[Any, ...] | None,
+    ) -> list[JobEntry]:
         collected: list[JobEntry] = []
         if self._max_batch_size <= 1:
             return collected
@@ -224,19 +231,33 @@ class SampleJobQueue:
         if self._batch_wait_s > 0:
             await asyncio.sleep(self._batch_wait_s)
 
-        deferred: list[JobEntry] = []
-        while len(collected) < self._max_batch_size - 1:
+        pending: list[JobEntry] = []
+        while True:
             try:
-                candidate = self._queue.get_nowait()
+                pending.append(self._queue.get_nowait())
             except asyncio.QueueEmpty:
                 break
-            if self._batch_key(candidate.request) == batch_key:
+
+        ranked: list[tuple[float, int, JobEntry]] = []
+        for index, candidate in enumerate(pending):
+            candidate_key = self._batch_key(candidate.request)
+            if batch_key is not None and candidate_key == batch_key:
+                ranked.append((10_000.0, index, candidate))
+                continue
+            if self._batch_select_fn is None:
+                continue
+            score = self._batch_select_fn(reference_request, candidate.request)
+            if score is None or score <= 0:
+                continue
+            ranked.append((float(score), index, candidate))
+
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        selected_ids = {entry.sample_id for _, _, entry in ranked[: self._max_batch_size - 1]}
+        for candidate in pending:
+            if candidate.sample_id in selected_ids:
                 collected.append(candidate)
             else:
-                deferred.append(candidate)
-
-        for candidate in deferred:
-            self._queue.put_nowait(candidate)
+                self._queue.put_nowait(candidate)
         return collected
 
 
