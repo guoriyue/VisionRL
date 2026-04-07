@@ -94,12 +94,97 @@ async def test_rl_catalog_endpoints_expose_default_env_and_tasks(client):
 
 
 @pytest.mark.asyncio
+async def test_stateless_initialize_and_predict_transition(client):
+    init_resp = await client.post(
+        "/v1/transitions/initialize",
+        json={"env_name": "toy-line-v0", "task_id": "toy-line-eval", "seed": 7, "policy_version": "pi-1"},
+    )
+    assert init_resp.status_code == 200
+    initialized = init_resp.json()
+    assert initialized["current_step"] == 0
+    assert initialized["trajectory_id"] is not None
+    assert initialized["state_handle_id"] is not None
+
+    step_resp = await client.post(
+        "/v1/transitions/predict",
+        json={
+            "state_handle_id": initialized["state_handle_id"],
+            "trajectory_id": initialized["trajectory_id"],
+            "action": [0.0, 0.0, 1.0],
+            "policy_version": "pi-1",
+        },
+    )
+    assert step_resp.status_code == 200
+    stepped = step_resp.json()
+    assert stepped["step_idx"] == 1
+    assert stepped["reward"] == pytest.approx(-0.16)
+    assert stepped["terminated"] is False
+    assert stepped["truncated"] is False
+    assert stepped["trajectory_id"] == initialized["trajectory_id"]
+    assert stepped["state_handle_id"] != initialized["state_handle_id"]
+
+    transitions_resp = await client.get("/v1/transitions", params={"trajectory_id": initialized["trajectory_id"]})
+    assert transitions_resp.status_code == 200
+    transitions = transitions_resp.json()["transitions"]
+    assert len(transitions) == 1
+    assert transitions[0]["reward"] == pytest.approx(-0.16)
+
+    trajectories_resp = await client.get("/v1/trajectories", params={"episode_id": initialized["episode_id"]})
+    assert trajectories_resp.status_code == 200
+    trajectories = trajectories_resp.json()["trajectories"]
+    assert len(trajectories) == 1
+    assert trajectories[0]["num_steps"] == 1
+    assert trajectories[0]["return_value"] == pytest.approx(-0.16)
+
+
+@pytest.mark.asyncio
+async def test_stateless_predict_many_batches_explicit_state_handles(client):
+    init_responses = []
+    for seed in (3, 9):
+        resp = await client.post(
+            "/v1/transitions/initialize",
+            json={"env_name": "toy-line-v0", "task_id": "toy-line-eval", "seed": seed},
+        )
+        assert resp.status_code == 200
+        init_responses.append(resp.json())
+
+    step_many_resp = await client.post(
+        "/v1/transitions/predict_many",
+        json={
+            "items": [
+                {
+                    "state_handle_id": init_responses[0]["state_handle_id"],
+                    "trajectory_id": init_responses[0]["trajectory_id"],
+                    "action": [0.0, 0.0, 1.0],
+                },
+                {
+                    "state_handle_id": init_responses[1]["state_handle_id"],
+                    "trajectory_id": init_responses[1]["trajectory_id"],
+                    "action": [1.0, 0.0, 0.0],
+                },
+            ],
+            "policy_version": "pi-batch",
+            "checkpoint": True,
+        },
+    )
+    assert step_many_resp.status_code == 200
+    payload = step_many_resp.json()
+    assert len(payload["results"]) == 2
+    assert payload["runtime"]["execution_path"] == "chunked_stateless_transition"
+    assert payload["runtime"]["chunk_count"] >= 1
+    assert payload["runtime"]["max_chunk_size"] >= 2
+    assert all(item["step_idx"] == 1 for item in payload["results"])
+    assert all(item["checkpoint_id"] is not None for item in payload["results"])
+
+
+@pytest.mark.asyncio
 async def test_create_step_and_persist_transition_and_trajectory(client):
     create_resp = await client.post(
         "/v1/envs",
         json={"env_name": "toy-line-v0", "task_id": "toy-line-eval", "seed": 7, "policy_version": "pi-1"},
     )
     assert create_resp.status_code == 200
+    assert create_resp.headers["Deprecation"] == "true"
     created = create_resp.json()
     assert created["current_step"] == 0
     assert created["task_id"] == "toy-line-eval"
