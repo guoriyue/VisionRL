@@ -193,7 +193,7 @@ def test_wan_request_can_hydrate_legacy_metadata_into_wan_config():
 
 def test_produce_sample_request_can_capture_temporal_refs():
     req = ProduceSampleRequest(
-        task_type=TaskType.GENIE_ROLLOUT,
+        task_type=TaskType.WORLD_MODEL_ROLLOUT,
         backend="genie-rollout",
         model="genie-local",
         sample_spec=SampleSpec(prompt="temporal step"),

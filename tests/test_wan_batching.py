@@ -33,7 +33,7 @@ def _wan_request(
 
 
 def test_queue_batch_score_allows_nearby_wan_shapes(tmp_path):
-    backend = WanVideoBackend(tmp_path / "wan")
+    backend = WanVideoBackend(tmp_path / "wan", wan_engine_adapter="stub")
 
     reference = _wan_request(num_steps=4, guidance_scale=4.0)
     nearby = _wan_request(num_steps=5, guidance_scale=4.5)
@@ -45,7 +45,7 @@ def test_queue_batch_score_allows_nearby_wan_shapes(tmp_path):
 
 @pytest.mark.asyncio
 async def test_execute_job_batch_records_scheduler_and_warm_pool_metadata(tmp_path):
-    backend = WanVideoBackend(tmp_path / "wan", prewarm_common_signatures=True)
+    backend = WanVideoBackend(tmp_path / "wan", prewarm_common_signatures=True, wan_engine_adapter="stub")
 
     records = await backend.execute_job_batch(
         [
@@ -63,10 +63,11 @@ async def test_execute_job_batch_records_scheduler_and_warm_pool_metadata(tmp_pa
         assert record.runtime["engine_pool_snapshot"]["prewarmed_profiles"] >= 1
         assert record.runtime["scheduler"]["batch_signature"]["width"] == 832
         assert record.runtime["scheduler"]["batch_signature"]["num_steps"] == 4
+        assert record.runtime["pipeline"]["compiled_graph_lifecycle"]["graph_count"] >= 1
 
 
 def test_queue_batch_size_limit_respects_backend_cap(tmp_path):
-    backend = WanVideoBackend(tmp_path / "wan", max_batch_size=3)
+    backend = WanVideoBackend(tmp_path / "wan", max_batch_size=3, wan_engine_adapter="stub")
 
     assert backend.queue_batch_size_limit(1) == 1
     assert backend.queue_batch_size_limit(3) == 3

@@ -46,7 +46,7 @@ The raw sample-production backend did not expose those semantics directly.
 ## What Is Implemented Now
 
 The current repo now includes an explicit `GenieWorldModelAdapter` in
-`wm_infra/rl/genie_adapter.py`.
+`wm_infra/consumers/rl/genie_adapter.py`.
 
 It does three concrete things:
 

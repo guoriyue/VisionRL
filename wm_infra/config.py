@@ -171,7 +171,10 @@ class ControlPlaneConfig:
     wan_shell_runner_timeout_s: Optional[int] = None
     wan_repo_dir: Optional[str] = None
     wan_conda_env: Optional[str] = None
+    wan_ckpt_dir: Optional[str] = None
+    wan_i2v_diffusers_dir: Optional[str] = None
     conda_sh_path: Optional[str] = None
+    wan_engine_adapter: Optional[str] = None
     wan_max_queue_size: int = 64
     wan_max_concurrent_jobs: int = 1
     wan_max_batch_size: int = 4
@@ -259,7 +262,10 @@ def _env_overrides() -> dict:
         WM_WAN_SHELL_RUNNER_TIMEOUT_S=600 → {"controlplane": {"wan_shell_runner_timeout_s": 600}}
         WM_WAN_REPO_DIR=/path/to/Wan2.2 → {"controlplane": {"wan_repo_dir": "/path/to/Wan2.2"}}
         WM_WAN_CONDA_ENV=kosen         → {"controlplane": {"wan_conda_env": "kosen"}}
+        WM_WAN_CKPT_DIR=/path/to/ckpt  → {"controlplane": {"wan_ckpt_dir": "/path/to/ckpt"}}
+        WM_WAN_I2V_DIFFUSERS_DIR=/path/to/diffusers → {"controlplane": {"wan_i2v_diffusers_dir": "/path/to/diffusers"}}
         WM_CONDA_SH_PATH=/path/conda.sh → {"controlplane": {"conda_sh_path": "/path/conda.sh"}}
+        WM_WAN_ENGINE_ADAPTER=module:factory → {"controlplane": {"wan_engine_adapter": "module:factory"}}
         WM_WAN_MAX_QUEUE_SIZE=32       → {"controlplane": {"wan_max_queue_size": 32}}
         WM_WAN_MAX_CONCURRENT_JOBS=1   → {"controlplane": {"wan_max_concurrent_jobs": 1}}
         WM_WAN_MAX_BATCH_SIZE=4        → {"controlplane": {"wan_max_batch_size": 4}}
@@ -287,7 +293,10 @@ def _env_overrides() -> dict:
         "WM_WAN_SHELL_RUNNER_TIMEOUT_S": (["controlplane", "wan_shell_runner_timeout_s"], int),
         "WM_WAN_REPO_DIR": (["controlplane", "wan_repo_dir"], str),
         "WM_WAN_CONDA_ENV": (["controlplane", "wan_conda_env"], str),
+        "WM_WAN_CKPT_DIR": (["controlplane", "wan_ckpt_dir"], str),
+        "WM_WAN_I2V_DIFFUSERS_DIR": (["controlplane", "wan_i2v_diffusers_dir"], str),
         "WM_CONDA_SH_PATH": (["controlplane", "conda_sh_path"], str),
+        "WM_WAN_ENGINE_ADAPTER": (["controlplane", "wan_engine_adapter"], str),
         "WM_WAN_MAX_QUEUE_SIZE": (["controlplane", "wan_max_queue_size"], int),
         "WM_WAN_MAX_CONCURRENT_JOBS": (["controlplane", "wan_max_concurrent_jobs"], int),
         "WM_WAN_MAX_BATCH_SIZE": (["controlplane", "wan_max_batch_size"], int),

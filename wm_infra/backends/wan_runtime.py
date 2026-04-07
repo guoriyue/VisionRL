@@ -7,6 +7,15 @@ from dataclasses import asdict, dataclass, field
 from math import sqrt
 from typing import Any
 
+from wm_infra.backends.serving_primitives import (
+    CompiledProfile,
+    ExecutionFamily,
+    ResidencyRecord,
+    ResidencyTier,
+    TransferPlan,
+    batch_size_family,
+    stable_graph_key,
+)
 from wm_infra.controlplane.resource_estimator import estimate_wan_request
 from wm_infra.controlplane.schemas import ProduceSampleRequest, TaskType, WanTaskConfig
 
@@ -36,7 +45,9 @@ class WanBatchSignature:
     frame_count: int
     num_steps: int
     guidance_bucket: float
+    high_noise_guidance_bucket: float
     shift_bucket: float
+    sample_solver: str
     offload_model: bool
     convert_model_dtype: bool
     t5_cpu: bool
@@ -57,6 +68,112 @@ class WarmedWanProfile:
     last_used_at: float = field(default_factory=time.time)
     reuse_count: int = 0
     compiled_batch_sizes: set[int] = field(default_factory=set)
+
+
+def _wan_memory_mode(signature: WanBatchSignature) -> str:
+    flags: list[str] = []
+    if signature.offload_model:
+        flags.append("offload_model")
+    if signature.convert_model_dtype:
+        flags.append("convert_model_dtype")
+    if signature.t5_cpu:
+        flags.append("t5_cpu")
+    return "+".join(flags) if flags else "default"
+
+
+def build_wan_execution_family(
+    signature: WanBatchSignature,
+    *,
+    batch_size: int,
+    stage: str = "pipeline",
+) -> ExecutionFamily:
+    return ExecutionFamily(
+        backend=signature.backend,
+        model=signature.model,
+        stage=stage,
+        device="cuda" if not signature.t5_cpu else "hybrid",
+        dtype="float16" if signature.convert_model_dtype else "float32",
+        runner_mode=signature.runner_mode,
+        batch_size_family=batch_size_family(batch_size),
+        width=signature.width,
+        height=signature.height,
+        frame_count=signature.frame_count,
+        num_steps=signature.num_steps,
+        prompt_frames=0,
+        memory_mode=_wan_memory_mode(signature),
+        layout_key=f"latent:{signature.width}x{signature.height}:{signature.frame_count}f",
+        execution_kind=signature.task_type,
+    )
+
+
+def build_wan_transfer_plan(
+    *,
+    wan_config: WanTaskConfig,
+    request: ProduceSampleRequest,
+    artifact_io_bytes: int = 0,
+) -> TransferPlan:
+    input_bytes = 0
+    for reference in request.sample_spec.references:
+        if isinstance(reference, str) and reference.startswith("file://"):
+            input_bytes += 0
+    if request.task_type != TaskType.TEXT_TO_VIDEO:
+        input_bytes = max(
+            input_bytes,
+            int(wan_config.width * wan_config.height * max(wan_config.frame_count, 1) * 3),
+        )
+    plan = TransferPlan(
+        overlap_h2d_with_compute=request.task_type != TaskType.TEXT_TO_VIDEO,
+        overlap_d2h_with_io=True,
+        staging_tier=ResidencyTier.CPU_PINNED_WARM,
+        notes=[
+            "Wan fast path tries to keep latent state on device until final artifact handoff.",
+        ],
+    )
+    plan.add_h2d(input_bytes)
+    plan.add_artifact_io(artifact_io_bytes)
+    return plan
+
+
+def build_wan_residency_records(
+    signature: WanBatchSignature,
+    *,
+    batch_size: int,
+    artifact_io_bytes: int = 0,
+) -> list[dict[str, Any]]:
+    latent_bytes = max(signature.width * signature.height * signature.frame_count * 4, 0)
+    records = [
+        ResidencyRecord(
+            object_id=f"{signature.model}:compiled-profile:{signature.width}x{signature.height}:{signature.num_steps}",
+            tier=ResidencyTier.GPU_HOT,
+            bytes_size=latent_bytes,
+            layout_key=f"latent:{signature.width}x{signature.height}:{signature.frame_count}f",
+            pinned=False,
+            reusable=True,
+            source="wan_pipeline_latent",
+        ),
+        ResidencyRecord(
+            object_id=f"{signature.model}:staging-batch:{batch_size}",
+            tier=ResidencyTier.CPU_PINNED_WARM,
+            bytes_size=max(signature.width * signature.height * 4, 0),
+            layout_key="artifact_staging",
+            pinned=True,
+            reusable=True,
+            source="artifact_handoff",
+        ),
+    ]
+    if artifact_io_bytes > 0:
+        records.append(
+            ResidencyRecord(
+                object_id=f"{signature.model}:artifact-output",
+                tier=ResidencyTier.DURABLE_ONLY,
+                bytes_size=artifact_io_bytes,
+                layout_key="video/mp4",
+                pinned=False,
+                reusable=False,
+                source="artifact_store",
+            )
+        )
+    return [record.as_dict() for record in records]
 
 
 class WarmedWanEnginePool:
@@ -123,6 +240,25 @@ class WarmedWanEnginePool:
         else:
             compile_state = "warm_profile_batch_hit"
 
+        execution_family = build_wan_execution_family(signature, batch_size=batch_size)
+        compiled_profile = CompiledProfile(
+            profile_id=profile.profile_id,
+            execution_family=execution_family,
+            graph_key=stable_graph_key(
+                [
+                    profile.profile_id,
+                    execution_family.cache_key,
+                    batch_size_family(batch_size),
+                ]
+            ),
+            compile_state=compile_state,
+            warm_profile_hit=warm_profile_hit,
+            compiled_batch_size_hit=compiled_batch_size_hit,
+            compiled_batch_sizes=sorted(profile.compiled_batch_sizes),
+            reuse_count=profile.reuse_count,
+            prewarmed=profile.prewarmed,
+        )
+
         return {
             "profile_id": profile.profile_id,
             "compile_state": compile_state,
@@ -132,6 +268,9 @@ class WarmedWanEnginePool:
             "compiled_batch_sizes": sorted(profile.compiled_batch_sizes),
             "reuse_count": profile.reuse_count,
             "last_used_at": profile.last_used_at,
+            "graph_family_key": execution_family.cache_key,
+            "execution_family": execution_family.as_dict(),
+            "compiled_profile": compiled_profile.as_dict(),
         }
 
     def snapshot(self) -> dict[str, Any]:
@@ -161,7 +300,14 @@ def build_wan_batch_signature(
         frame_count=wan_config.frame_count,
         num_steps=wan_config.num_steps,
         guidance_bucket=_round_bucket(wan_config.guidance_scale, 0.5),
+        high_noise_guidance_bucket=_round_bucket(
+            wan_config.guidance_scale
+            if wan_config.high_noise_guidance_scale is None
+            else wan_config.high_noise_guidance_scale,
+            0.5,
+        ),
         shift_bucket=_round_bucket(wan_config.shift, 0.5),
+        sample_solver=wan_config.sample_solver,
         offload_model=wan_config.offload_model,
         convert_model_dtype=wan_config.convert_model_dtype,
         t5_cpu=wan_config.t5_cpu,
@@ -188,7 +334,9 @@ def default_wan_prewarm_signatures(
             frame_count=frame_count,
             num_steps=num_steps,
             guidance_bucket=_round_bucket(guidance_scale, 0.5),
+            high_noise_guidance_bucket=_round_bucket(guidance_scale, 0.5),
             shift_bucket=_round_bucket(shift, 0.5),
+            sample_solver="unipc",
             offload_model=True,
             convert_model_dtype=True,
             t5_cpu=True,
@@ -214,7 +362,9 @@ def build_wan_batch_key(
         signature.frame_count,
         signature.num_steps,
         signature.guidance_bucket,
+        signature.high_noise_guidance_bucket,
         signature.shift_bucket,
+        signature.sample_solver,
         signature.offload_model,
         signature.convert_model_dtype,
         signature.t5_cpu,
@@ -244,6 +394,7 @@ def wan_batch_compatibility_score(
         or reference_signature.model != candidate_signature.model
         or reference_signature.runner_mode != candidate_signature.runner_mode
         or reference_signature.task_type != candidate_signature.task_type
+        or reference_signature.sample_solver != candidate_signature.sample_solver
     ):
         return None
 
@@ -252,7 +403,10 @@ def wan_batch_compatibility_score(
     frame_delta = abs(reference_signature.frame_count - candidate_signature.frame_count) / max(reference_signature.frame_count, 1)
     step_delta = abs(reference_signature.num_steps - candidate_signature.num_steps) / max(reference_signature.num_steps, 1)
     guidance_delta = abs(reference_signature.guidance_bucket - candidate_signature.guidance_bucket) / max(reference_signature.guidance_bucket, 1.0)
-    shape_penalty = width_delta + height_delta + frame_delta + step_delta + guidance_delta
+    high_noise_guidance_delta = abs(
+        reference_signature.high_noise_guidance_bucket - candidate_signature.high_noise_guidance_bucket
+    ) / max(reference_signature.high_noise_guidance_bucket, 1.0)
+    shape_penalty = width_delta + height_delta + frame_delta + step_delta + guidance_delta + high_noise_guidance_delta
     return round(max(0.0, 1.0 - shape_penalty), 4)
 
 
@@ -277,6 +431,8 @@ def score_wan_batch_compatibility(
     if anchor_config.convert_model_dtype != candidate_config.convert_model_dtype:
         return None
     if anchor_config.t5_cpu != candidate_config.t5_cpu:
+        return None
+    if anchor_config.sample_solver != candidate_config.sample_solver:
         return None
     if bool(anchor_request.sample_spec.references) != bool(candidate_request.sample_spec.references):
         return None
@@ -307,6 +463,12 @@ def score_wan_batch_compatibility(
     guidance_delta = abs(anchor_config.guidance_scale - candidate_config.guidance_scale)
     if guidance_delta > 1.0:
         return None
+    high_noise_guidance_delta = abs(
+        (anchor_config.high_noise_guidance_scale or anchor_config.guidance_scale)
+        - (candidate_config.high_noise_guidance_scale or candidate_config.guidance_scale)
+    )
+    if high_noise_guidance_delta > 1.0:
+        return None
 
     score = 100.0
     score -= (area_ratio - 1.0) * 35.0
@@ -314,6 +476,7 @@ def score_wan_batch_compatibility(
     score -= frame_delta * 2.0
     score -= step_delta * 6.0
     score -= guidance_delta * 8.0
+    score -= high_noise_guidance_delta * 8.0
     return round(max(score, 0.0), 3)
 
 

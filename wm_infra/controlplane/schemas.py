@@ -15,11 +15,9 @@ from pydantic import BaseModel, Field, model_validator
 
 class TaskType(str, Enum):
     WORLD_MODEL_ROLLOUT = "world_model_rollout"
-    GENIE_ROLLOUT = "genie_rollout"
     TEXT_TO_VIDEO = "text_to_video"
     IMAGE_TO_VIDEO = "image_to_video"
     VIDEO_TO_VIDEO = "video_to_video"
-    POSTPROCESS = "postprocess"
 
 
 class SampleStatus(str, Enum):
@@ -147,7 +145,13 @@ class WanTaskConfig(BaseModel):
     width: int = Field(default=832, ge=1, description="Output width")
     height: int = Field(default=480, ge=1, description="Output height")
     guidance_scale: float = Field(default=4.0, ge=0, description="Classifier-free guidance scale (sample_guide_scale)")
+    high_noise_guidance_scale: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Optional high-noise guidance scale override for official Wan I2V",
+    )
     shift: float = Field(default=12.0, ge=0, description="Noise schedule shift (sample_shift)")
+    sample_solver: str = Field(default="unipc", description="Sampling solver (sample_solver)")
     offload_model: bool = Field(default=True, description="Offload model weights to CPU between stages")
     convert_model_dtype: bool = Field(default=True, description="Enable reduced-precision model conversion")
     t5_cpu: bool = Field(default=True, description="Keep T5 text encoder on CPU")
@@ -287,7 +291,7 @@ class ProduceSampleRequest(BaseModel):
         used_legacy_metadata = False
 
         if self.contract_mode == "legacy":
-            if self.task_type in {TaskType.WORLD_MODEL_ROLLOUT, TaskType.GENIE_ROLLOUT}:
+            if self.task_type == TaskType.WORLD_MODEL_ROLLOUT:
                 if task_config.num_steps == 1 and metadata.get("num_steps") is not None:
                     task_config.num_steps = int(metadata["num_steps"])
                     used_legacy_metadata = True

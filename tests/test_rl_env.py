@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 import torch
 
-from wm_infra.rl.demo import DemoConfig, run_reinforce_demo
-from wm_infra.rl.env import GoalReward, WorldModelEnv, WorldModelVectorEnv
-from wm_infra.rl.toy import ToyLineWorldModel
+from wm_infra.consumers.rl.demo import DemoConfig, run_reinforce_demo
+from wm_infra.consumers.rl.env import GoalReward, WorldModelEnv, WorldModelVectorEnv
+from wm_infra.consumers.rl.toy import ToyLineWorldModel
 
 
 def _initial_sampler(

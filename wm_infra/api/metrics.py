@@ -89,6 +89,34 @@ VRAM_USED_BYTES = Gauge(
     "GPU memory used by the state cache (bytes)",
 )
 
+# ─── Low-level serving metrics ───
+
+SERVING_COMPILED_PROFILE_EVENTS = Counter(
+    "wm_serving_compiled_profile_events_total",
+    "Compiled profile lifecycle events for low-level serving runtimes",
+    ["backend", "event"],
+)
+
+SERVING_GRAPH_COMPILE_SECONDS = Histogram(
+    "wm_serving_graph_compile_seconds",
+    "Latency of graph/profile compilation or capture",
+    ["backend", "stage"],
+    buckets=[0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
+)
+
+SERVING_TRANSFER_BYTES = Histogram(
+    "wm_serving_transfer_bytes",
+    "Bytes moved across low-level serving transfer boundaries",
+    ["backend", "kind"],
+    buckets=[0, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864, 268435456],
+)
+
+SERVING_STAGING_BYTES = Gauge(
+    "wm_serving_staging_bytes",
+    "Bytes reserved in staging buffers for low-level serving",
+    ["backend"],
+)
+
 # ─── Genie stage runtime metrics ───
 
 GENIE_STAGE_DURATION = Histogram(

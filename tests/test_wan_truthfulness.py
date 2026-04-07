@@ -8,7 +8,7 @@ from wm_infra.controlplane import ArtifactKind, ProduceSampleRequest, SampleSpec
 
 @pytest.mark.asyncio
 async def test_stub_mode_does_not_emit_video_artifact(tmp_path):
-    backend = WanVideoBackend(str(tmp_path / "wan"))
+    backend = WanVideoBackend(str(tmp_path / "wan"), wan_engine_adapter="stub")
     request = ProduceSampleRequest(
         task_type=TaskType.TEXT_TO_VIDEO,
         backend="wan-video",
@@ -34,6 +34,7 @@ async def test_stub_batch_records_scheduler_and_warm_pool_state(tmp_path):
         str(tmp_path / "wan"),
         max_batch_size=4,
         prewarm_common_signatures=False,
+        wan_engine_adapter="stub",
     )
     request = ProduceSampleRequest(
         task_type=TaskType.TEXT_TO_VIDEO,
@@ -55,6 +56,8 @@ async def test_stub_batch_records_scheduler_and_warm_pool_state(tmp_path):
     assert records[0].runtime["scheduler"]["batched_across_requests"] is True
     assert records[0].runtime["compiled_graph_pool"]["warm_profile_hit"] is False
     assert records[0].runtime["engine_pool_snapshot"]["profiles"] == 1
+    assert records[0].runtime["compiled_graph_pool"]["execution_family"]["batch_size_family"] == "pair"
+    assert records[0].runtime["transfer_plan"]["total_bytes"] >= records[0].runtime["transfer_plan"]["artifact_io_bytes"]
 
     warm_followup = await backend.execute_job(request.model_copy(deep=True), "sample-c")
     assert warm_followup.runtime["compiled_graph_pool"]["warm_profile_hit"] is True

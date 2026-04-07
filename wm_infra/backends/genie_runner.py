@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,9 +27,83 @@ from typing import Any, Optional
 import numpy as np
 import torch
 
+from wm_infra.api.metrics import SERVING_STAGING_BYTES
+
 logger = logging.getLogger("wm_infra.genie_runner")
 
 _GENIE_AVAILABLE: bool | None = None
+
+
+def _maybe_pin_host_tensor(array: np.ndarray) -> torch.Tensor | None:
+    if not torch.cuda.is_available():
+        return None
+    try:
+        return torch.from_numpy(np.ascontiguousarray(array)).pin_memory()
+    except RuntimeError:
+        return None
+
+
+@dataclass(slots=True)
+class GenieHostStagingReservation:
+    """Best-effort staging slot metadata for one prompt/state materialization."""
+
+    alloc_id: int
+    offset: int
+    bytes_size: int
+    pinned: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "alloc_id": self.alloc_id,
+            "offset": self.offset,
+            "bytes": self.bytes_size,
+            "pinned": self.pinned,
+        }
+
+
+class GenieHostStagingPool:
+    """Small ring-style host staging pool inspired by disaggregated staging buffers."""
+
+    def __init__(self, total_size_bytes: int = 64 * 1024 * 1024) -> None:
+        self.total_size_bytes = max(int(total_size_bytes), 0)
+        self._head = 0
+        self._next_alloc_id = 0
+        self._allocations: dict[int, GenieHostStagingReservation] = {}
+        self._lock = threading.Lock()
+
+    def reserve(self, bytes_size: int, *, pinned: bool) -> GenieHostStagingReservation | None:
+        required = max(int(bytes_size), 0)
+        if required <= 0 or required > self.total_size_bytes:
+            return None
+        with self._lock:
+            if self._head + required > self.total_size_bytes:
+                self._head = 0
+            reservation = GenieHostStagingReservation(
+                alloc_id=self._next_alloc_id,
+                offset=self._head,
+                bytes_size=required,
+                pinned=pinned,
+            )
+            self._next_alloc_id += 1
+            self._head += required
+            self._allocations[reservation.alloc_id] = reservation
+            return reservation
+
+    def release(self, alloc_id: int | None) -> None:
+        if alloc_id is None:
+            return
+        with self._lock:
+            self._allocations.pop(int(alloc_id), None)
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            used_bytes = sum(reservation.bytes_size for reservation in self._allocations.values())
+            return {
+                "total_size_bytes": self.total_size_bytes,
+                "used_bytes": used_bytes,
+                "free_bytes": max(self.total_size_bytes - used_bytes, 0),
+                "allocations": len(self._allocations),
+            }
 
 
 def genie_available() -> bool:
@@ -88,6 +163,7 @@ class GeniePreparedRun:
     dtype: str = "uint32"
     error: Optional[str] = None
     elapsed_s: float = 0.0
+    host_staging_buffer: object | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -125,12 +201,14 @@ class GenieRunner:
         num_prompt_frames: int = 8,
         maskgit_steps: int = 2,
         temperature: float = 0.0,
+        host_staging_pool_bytes: int = 64 * 1024 * 1024,
     ) -> None:
         self.model_name_or_path = model_name_or_path
         self.device = device
         self.num_prompt_frames = num_prompt_frames
         self.maskgit_steps = maskgit_steps
         self.temperature = temperature
+        self.host_staging_pool = GenieHostStagingPool(host_staging_pool_bytes)
 
         self._model = None
         self._mode: str = "stub"
@@ -195,6 +273,33 @@ class GenieRunner:
         temp = self.temperature if temperature is None else temperature
         return prompt_frames, steps, temp
 
+    def _build_host_staging_metadata(self, array: np.ndarray) -> tuple[torch.Tensor | None, dict[str, Any]]:
+        pinned_tensor = _maybe_pin_host_tensor(array)
+        reservation = None
+        if pinned_tensor is not None:
+            reservation = self.host_staging_pool.reserve(int(array.nbytes), pinned=True)
+        metadata = {
+            "enabled": pinned_tensor is not None and reservation is not None,
+            "eligible": bool(torch.cuda.is_available()),
+            "pinned": pinned_tensor is not None,
+            "bytes": int(array.nbytes),
+            "non_blocking_h2d": pinned_tensor is not None and reservation is not None,
+            "layout_key": "token_frames_contiguous",
+            "alloc_id": None if reservation is None else reservation.alloc_id,
+            "offset": None if reservation is None else reservation.offset,
+            "pool": self.host_staging_pool.snapshot(),
+        }
+        return pinned_tensor, metadata
+
+    def _release_host_staging(self, prepared: GeniePreparedRun) -> None:
+        host_staging = prepared.extra.get("host_staging")
+        if not isinstance(host_staging, dict):
+            return
+        alloc_id = host_staging.get("alloc_id")
+        self.host_staging_pool.release(alloc_id if isinstance(alloc_id, int) else None)
+        host_staging["released"] = True
+        host_staging["pool"] = self.host_staging_pool.snapshot()
+
     def prepare_inputs(
         self,
         *,
@@ -242,7 +347,7 @@ class GenieRunner:
                 )
 
             torch.manual_seed(seed)
-            prompt_THW = torch.full((1, T, h, w), mask_id, dtype=torch.long, device=self.device)
+            prompt_cpu = np.full((T, h, w), mask_id, dtype=np.int64)
             if input_tokens is not None:
                 prompt_np = np.asarray(input_tokens, dtype=np.int64)
                 if prompt_np.ndim == 1:
@@ -254,18 +359,23 @@ class GenieRunner:
                         f"Genie real-mode input_tokens must have spatial shape {(h, w)}, got {tuple(prompt_np.shape[1:])}"
                     )
                 available_prompt_frames = min(prompt_np.shape[0], requested_T)
-                prompt_THW[:, :available_prompt_frames] = (
-                    torch.from_numpy(prompt_np[:available_prompt_frames]).unsqueeze(0).to(self.device)
-                )
+                prompt_cpu[:available_prompt_frames] = prompt_np[:available_prompt_frames]
             else:
                 rng = np.random.RandomState(seed)
                 prompt_np = rng.randint(0, model.config.image_vocab_size, size=(T, h, w)).astype(np.int64)
-                prompt_THW = torch.from_numpy(prompt_np).unsqueeze(0).to(self.device)
+                prompt_cpu = prompt_np
 
             num_prompt = min(max(prompt_frames, 0), requested_T - 1)
             if input_tokens is not None:
                 num_prompt = min(num_prompt, prompt_np.shape[0])
-            prompt_THW[:, num_prompt:] = mask_id
+            prompt_cpu[num_prompt:] = mask_id
+            pinned_prompt, host_staging = self._build_host_staging_metadata(prompt_cpu)
+            if pinned_prompt is not None:
+                SERVING_STAGING_BYTES.labels(backend="genie-rollout").set(int(prompt_cpu.nbytes))
+                prompt_THW = pinned_prompt.unsqueeze(0).to(self.device, non_blocking=True)
+            else:
+                SERVING_STAGING_BYTES.labels(backend="genie-rollout").set(0)
+                prompt_THW = torch.from_numpy(prompt_cpu).unsqueeze(0).to(self.device)
 
             return GeniePreparedRun(
                 mode="real",
@@ -283,6 +393,8 @@ class GenieRunner:
                 tokens_buffer=prompt_THW,
                 generated_until=num_prompt,
                 dtype=str(next(model.parameters()).dtype).replace("torch.", ""),
+                host_staging_buffer=pinned_prompt,
+                extra={"host_staging": host_staging},
             )
 
         T, h, w = min(max(num_frames, 1), 16), 16, 16
@@ -302,6 +414,8 @@ class GenieRunner:
             if prompt_frames_available > 0:
                 tokens[:prompt_frames_available] = prompt_np[:prompt_frames_available]
 
+        pinned_stub, host_staging = self._build_host_staging_metadata(tokens)
+        SERVING_STAGING_BYTES.labels(backend="genie-rollout").set(int(tokens.nbytes) if pinned_stub is not None else 0)
         return GeniePreparedRun(
             mode="stub",
             prompt=prompt,
@@ -317,6 +431,8 @@ class GenieRunner:
             device="cpu",
             tokens_buffer=tokens,
             generated_until=num_prompt,
+            host_staging_buffer=pinned_stub,
+            extra={"host_staging": host_staging},
         )
 
     def run_window(self, prepared: GeniePreparedRun, *, frame_start: int, frame_end: int) -> GenieWindowResult:
@@ -621,12 +737,15 @@ class GenieRunner:
             "dtype": prepared.dtype,
             "elapsed_s": round(prepared.elapsed_s, 4),
             "error": prepared.error,
+            "host_staging": prepared.extra.get("host_staging"),
         }
         if prepared.mode == "stub":
             state_payload["note"] = "Stub mode — synthetic tokens generated from prompt hash, no real model execution."
 
         state_path = output_dir / "state.json"
         state_path.write_text(json.dumps(state_payload, indent=2, sort_keys=True))
+        self._release_host_staging(prepared)
+        SERVING_STAGING_BYTES.labels(backend="genie-rollout").set(0)
 
         return GenieRunResult(
             mode=prepared.mode,

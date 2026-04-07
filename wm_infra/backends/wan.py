@@ -1,13 +1,15 @@
-"""Wan 2.2 video backend with async job queue and official runner support.
+"""Wan 2.2 video backend with queue shaping, warm profiles, and stage scheduling.
 
-This backend supports three execution modes:
-- **stub**: No runner configured — materializes request/log paths only.
-- **shell**: A shell command template is executed (WM_WAN_SHELL_RUNNER).
-- **official**: Builds and executes the real Wan2.2 generate.py command using
-  the local repo path and conda env from WAN22_BASELINE.md.
+This backend keeps the northbound ``wan-video`` contract stable while supporting
+two execution families:
+- **in-process scheduler**: the request is executed through an engine adapter and
+  explicit stages such as text encoding, diffusion, VAE decode, safety, and
+  artifact persistence.
+- **external runner**: a shell command or the official Wan ``generate.py``
+  command is launched as a subprocess for compatibility.
 
-All modes support both synchronous execution (via produce_sample) and
-asynchronous submission (via submit_async → poll status).
+All modes support both synchronous execution (via ``produce_sample``) and
+asynchronous submission (via ``submit_async`` → queue worker).
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from wm_infra.backends.base import ProduceSampleBackend
+from wm_infra.api.metrics import SERVING_COMPILED_PROFILE_EVENTS, SERVING_TRANSFER_BYTES
 from wm_infra.controlplane.resource_estimator import estimate_wan_request
 from wm_infra.controlplane.schemas import (
     ArtifactKind,
@@ -36,17 +39,47 @@ from wm_infra.controlplane.schemas import (
 )
 from wm_infra.backends.wan_runtime import (
     WarmedWanEnginePool,
+    build_wan_execution_family,
+    build_wan_residency_records,
     build_quality_cost_hints,
     build_wan_batch_key,
     build_wan_batch_signature,
     build_wan_scheduler_payload,
+    build_wan_transfer_plan,
     default_wan_prewarm_signatures,
     wan_batch_compatibility_score,
 )
+from wm_infra.backends.wan_engine import (
+    DiffusersWanI2VAdapter,
+    HybridWanInProcessAdapter,
+    OfficialWanInProcessAdapter,
+    WanEngineAdapter,
+    WanExecutionContext,
+    WanStageScheduler,
+    load_wan_engine_adapter,
+    resolve_wan_reference_path,
+)
+
+
+def _autodetect_wan_i2v_diffusers_dir() -> str | None:
+    snapshot_root = (
+        Path.home()
+        / ".cache"
+        / "huggingface"
+        / "hub"
+        / "models--Wan-AI--Wan2.2-I2V-A14B-Diffusers"
+        / "snapshots"
+    )
+    if not snapshot_root.exists():
+        return None
+    snapshots = sorted(path for path in snapshot_root.iterdir() if path.is_dir() and (path / "model_index.json").exists())
+    if not snapshots:
+        return None
+    return str(snapshots[-1])
 
 
 class WanVideoBackend(ProduceSampleBackend):
-    """Wan 2.2 video generation backend with stub, shell, and official runner modes."""
+    """Wan 2.2 video generation backend with in-process and external execution."""
 
     def __init__(
         self,
@@ -61,9 +94,13 @@ class WanVideoBackend(ProduceSampleBackend):
         batch_wait_ms: float = 2.0,
         warm_pool_size: int = 16,
         prewarm_common_signatures: bool = False,
+        engine_adapter: WanEngineAdapter | None = None,
+        wan_engine_adapter: str | None = None,
         # Official runner config
         wan_repo_dir: str | None = None,
         wan_conda_env: str | None = None,
+        wan_ckpt_dir: str | None = None,
+        wan_i2v_diffusers_dir: str | None = None,
         conda_sh_path: str | None = None,
     ) -> None:
         self.backend_name = backend_name
@@ -81,9 +118,44 @@ class WanVideoBackend(ProduceSampleBackend):
         # Official runner: local Wan2.2 repo invocation
         self.wan_repo_dir = wan_repo_dir or os.environ.get("WM_WAN_REPO_DIR")
         self.wan_conda_env = wan_conda_env or os.environ.get("WM_WAN_CONDA_ENV", "kosen")
+        self.wan_ckpt_dir = wan_ckpt_dir or os.environ.get("WM_WAN_CKPT_DIR")
+        self.wan_i2v_diffusers_dir = (
+            wan_i2v_diffusers_dir
+            or os.environ.get("WM_WAN_I2V_DIFFUSERS_DIR")
+            or _autodetect_wan_i2v_diffusers_dir()
+        )
         self.conda_sh_path = conda_sh_path or os.environ.get(
             "WM_CONDA_SH_PATH", os.path.expanduser("~/miniconda3/etc/profile.d/conda.sh")
         )
+        self.wan_engine_adapter_spec = wan_engine_adapter or os.environ.get("WM_WAN_ENGINE_ADAPTER")
+        engine_adapter_disabled = self.wan_engine_adapter_spec == "disabled"
+        resolved_engine_adapter = engine_adapter or load_wan_engine_adapter(
+            self.wan_engine_adapter_spec,
+            repo_dir=self.wan_repo_dir,
+            default_checkpoint_dir=self.wan_ckpt_dir,
+            i2v_diffusers_dir=self.wan_i2v_diffusers_dir,
+        )
+        if resolved_engine_adapter is None and not engine_adapter_disabled and self.shell_runner is None:
+            official_adapter = None
+            if self.wan_repo_dir is not None:
+                official_adapter = OfficialWanInProcessAdapter(
+                    repo_dir=self.wan_repo_dir,
+                    default_checkpoint_dir=self.wan_ckpt_dir,
+                )
+            image_to_video_adapter = None
+            if self.wan_i2v_diffusers_dir is not None:
+                image_to_video_adapter = DiffusersWanI2VAdapter(default_model_dir=self.wan_i2v_diffusers_dir)
+            if official_adapter is not None and image_to_video_adapter is not None:
+                resolved_engine_adapter = HybridWanInProcessAdapter(
+                    official_adapter=official_adapter,
+                    image_to_video_adapter=image_to_video_adapter,
+                )
+            elif official_adapter is not None:
+                resolved_engine_adapter = official_adapter
+            elif image_to_video_adapter is not None:
+                resolved_engine_adapter = image_to_video_adapter
+        self.engine_adapter = resolved_engine_adapter
+        self._stage_scheduler = WanStageScheduler(self.engine_adapter) if self.engine_adapter is not None else None
         self._engine_pool = WarmedWanEnginePool(
             max_profiles=self.warm_pool_size,
             prewarmed_signatures=(
@@ -98,11 +170,19 @@ class WanVideoBackend(ProduceSampleBackend):
 
     @property
     def runner_mode(self) -> str:
+        if self.engine_adapter is not None:
+            return self.engine_adapter.mode
         if self.wan_repo_dir:
             return "official"
         if self.shell_runner:
             return "shell"
         return "stub"
+
+    @property
+    def execution_backend(self) -> str:
+        if self._stage_scheduler is not None and self.engine_adapter is not None:
+            return self.engine_adapter.execution_backend
+        return "external_runner"
 
     def _sample_dir(self, sample_id: str) -> Path:
         path = self.output_root / sample_id
@@ -215,6 +295,8 @@ class WanVideoBackend(ProduceSampleBackend):
                 "labels": request.labels,
                 "experiment": request.experiment.model_dump(mode="json") if request.experiment else None,
             },
+            "execution_backend": self.execution_backend,
+            "engine_adapter": None if self.engine_adapter is None else self.engine_adapter.describe(),
         }
 
     def _format_shell_command(
@@ -246,7 +328,11 @@ class WanVideoBackend(ProduceSampleBackend):
             seed="" if request.sample_spec.seed is None else request.sample_spec.seed,
             fps="" if request.sample_spec.fps is None else request.sample_spec.fps,
             duration_seconds="" if request.sample_spec.duration_seconds is None else request.sample_spec.duration_seconds,
-            reference_path=shlex.quote(request.sample_spec.references[0]) if request.sample_spec.references else "",
+            reference_path=(
+                shlex.quote(resolve_wan_reference_path(request.sample_spec.references[0]))
+                if request.sample_spec.references
+                else ""
+            ),
             references_json=shlex.quote(json.dumps(request.sample_spec.references)),
             controls_json=shlex.quote(json.dumps(request.sample_spec.controls, sort_keys=True)),
             metadata_json=shlex.quote(json.dumps(request.sample_spec.metadata, sort_keys=True)),
@@ -290,9 +376,10 @@ class WanVideoBackend(ProduceSampleBackend):
         if wan_config.t5_cpu:
             parts.append("  --t5_cpu")
         if request.task_type == TaskType.IMAGE_TO_VIDEO and request.sample_spec.references:
-            parts.append(f"  --image {shlex.quote(request.sample_spec.references[0])}")
+            parts.append(f"  --image {shlex.quote(resolve_wan_reference_path(request.sample_spec.references[0]))}")
         parts.extend([
             f"  --sample_steps {wan_config.num_steps}",
+            f"  --sample_solver {shlex.quote(wan_config.sample_solver)}",
             f"  --sample_shift {wan_config.shift}",
             f"  --sample_guide_scale {wan_config.guidance_scale}",
             f"  --prompt {shlex.quote(request.sample_spec.prompt or '')}",
@@ -377,6 +464,12 @@ class WanVideoBackend(ProduceSampleBackend):
         wan_config = self._resolve_wan_config(request)
         signature = build_wan_batch_signature(request, wan_config, runner_mode=self.runner_mode)
         profile_claim = engine_profile or self._engine_pool.reserve(signature, batch_size=batch_size)
+        compile_state = str(profile_claim.get("compile_state") or "unknown")
+        SERVING_COMPILED_PROFILE_EVENTS.labels(backend=self.backend_name, event=compile_state).inc()
+        execution_family = profile_claim.get("execution_family") or build_wan_execution_family(
+            signature,
+            batch_size=batch_size,
+        ).as_dict()
         scheduler_payload = build_wan_scheduler_payload(
             signature,
             batch_size=batch_size,
@@ -395,10 +488,14 @@ class WanVideoBackend(ProduceSampleBackend):
         request_payload = self._build_request_payload(sample_id, request, wan_config, estimate, plan_path, log_path, video_path)
         request_payload["scheduler"] = scheduler_payload
         request_payload["compiled_graph_pool"] = profile_claim
+        request_payload["execution_family"] = execution_family
         plan_path.write_text(json.dumps(request_payload, indent=2, sort_keys=True))
 
         started_at = time.time()
         mode = self.runner_mode
+        transfer_plan = build_wan_transfer_plan(wan_config=wan_config, request=request)
+        if transfer_plan.h2d_bytes:
+            SERVING_TRANSFER_BYTES.labels(backend=self.backend_name, kind="h2d").observe(transfer_plan.h2d_bytes)
         runtime: dict[str, Any] = {
             "runner": mode,
             "request_path": str(plan_path),
@@ -413,6 +510,9 @@ class WanVideoBackend(ProduceSampleBackend):
             "started_at": started_at,
             "scheduler": scheduler_payload,
             "compiled_graph_pool": profile_claim,
+            "execution_family": execution_family,
+            "transfer_plan": transfer_plan.as_dict(),
+            "residency": build_wan_residency_records(signature, batch_size=batch_size),
             "engine_pool_snapshot": self._engine_pool.snapshot(),
         }
         status = SampleStatus.ACCEPTED if mode == "stub" else SampleStatus.SUCCEEDED
@@ -424,12 +524,60 @@ class WanVideoBackend(ProduceSampleBackend):
             "runner_mode": mode,
             "queue_batched": batch_size > 1,
         }
+        runtime["execution_backend"] = self.execution_backend
+        runtime["engine"] = None if self.engine_adapter is None else self.engine_adapter.describe()
 
         stdout: bytes | None = None
         returncode: int | None = None
         timed_out = False
         command: str | None = None
-        if mode in ("shell", "official"):
+        if self._stage_scheduler is not None and self.engine_adapter is not None:
+            pipeline_context = WanExecutionContext(
+                sample_id=sample_id,
+                request=request,
+                wan_config=wan_config,
+                sample_dir=sample_dir,
+                plan_path=plan_path,
+                log_path=log_path,
+                video_path=video_path,
+                runtime_path=runtime_path,
+                batch_size=batch_size,
+                batch_index=batch_index,
+                batch_sample_ids=batch_sample_ids,
+                scheduler_payload=scheduler_payload,
+                engine_profile=profile_claim,
+            )
+            pipeline_run = await self._stage_scheduler.run(pipeline_context)
+            runtime["pipeline"] = pipeline_run.pipeline_metadata
+            runtime["stages"] = pipeline_run.stage_records
+            runtime["stage_state"] = pipeline_run.stage_state
+            metadata["engine_adapter"] = self.engine_adapter.adapter_name
+            log_path.write_text(pipeline_run.log_text)
+            if video_path.exists():
+                status = SampleStatus.SUCCEEDED
+            elif self.engine_adapter.supports_output_video:
+                status = SampleStatus.FAILED
+                metadata["runner_error"] = "in-process Wan adapter completed without persisting an output video"
+                failure_path.write_text(
+                    json.dumps(
+                        self._failure_payload(
+                            sample_id=sample_id,
+                            status=status,
+                            command=None,
+                            log_path=log_path,
+                            video_path=video_path,
+                            stdout=pipeline_run.log_text.encode("utf-8"),
+                            returncode=None,
+                            timed_out=False,
+                            error=metadata["runner_error"],
+                        ),
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+            else:
+                status = SampleStatus.ACCEPTED
+        elif mode in ("shell", "official"):
             command = (
                 self._build_official_command(request, sample_id, wan_config, video_path)
                 if mode == "official"
@@ -532,9 +680,24 @@ class WanVideoBackend(ProduceSampleBackend):
                     )
                 )
         else:
-            log_path.write_text("Wan 2.2 backend scaffold executed in stub mode. No runner configured.\n")
+            log_path.write_text("Wan 2.2 backend scaffold executed without a configured engine adapter or runner.\n")
 
         completed_at = time.time()
+        artifact_io_bytes = 0
+        for path in (plan_path, log_path, runtime_path, video_path, failure_path):
+            if path.exists():
+                artifact_io_bytes += path.stat().st_size
+        transfer_plan.add_artifact_io(artifact_io_bytes)
+        if transfer_plan.artifact_io_bytes:
+            SERVING_TRANSFER_BYTES.labels(backend=self.backend_name, kind="artifact_io").observe(
+                transfer_plan.artifact_io_bytes
+            )
+        runtime["transfer_plan"] = transfer_plan.as_dict()
+        runtime["residency"] = build_wan_residency_records(
+            signature,
+            batch_size=batch_size,
+            artifact_io_bytes=artifact_io_bytes,
+        )
         runtime["completed_at"] = completed_at
         runtime["elapsed_ms"] = round((completed_at - started_at) * 1000, 2)
         runtime["status_history"].append({"status": status.value, "timestamp": completed_at})
@@ -625,7 +788,8 @@ class WanVideoBackend(ProduceSampleBackend):
         signature = build_wan_batch_signature(first_request, wan_config, runner_mode=self.runner_mode)
         expected_key = build_wan_batch_key(first_request, wan_config, runner_mode=self.runner_mode)
         for request, _sample_id in items[1:]:
-            if self.queue_batch_key(request) != expected_key:
+            candidate_key = self.queue_batch_key(request)
+            if candidate_key != expected_key and self.queue_batch_score(first_request, request) is None:
                 raise ValueError("Wan 2.2 execute_job_batch received incompatible requests")
         shared_profile = self._engine_pool.reserve(signature, batch_size=len(items))
         sample_ids = [sample_id for _request, sample_id in items]
@@ -666,6 +830,7 @@ class WanVideoBackend(ProduceSampleBackend):
         runtime = {
             "runner": self.runner_mode,
             "async": True,
+            "execution_backend": self.execution_backend,
             "queued_at": queued_at,
             "admission": admission,
             "scheduler": {
@@ -677,6 +842,19 @@ class WanVideoBackend(ProduceSampleBackend):
                 {"status": (SampleStatus.QUEUED if admitted else SampleStatus.REJECTED).value, "timestamp": queued_at},
             ],
         }
+        signature = build_wan_batch_signature(request, wan_config, runner_mode=self.runner_mode)
+        runtime["execution_family"] = build_wan_execution_family(signature, batch_size=1).as_dict()
+        transfer_plan = build_wan_transfer_plan(wan_config=wan_config, request=request)
+        if transfer_plan.h2d_bytes:
+            SERVING_TRANSFER_BYTES.labels(backend=self.backend_name, kind="h2d").observe(transfer_plan.h2d_bytes)
+        runtime["transfer_plan"] = transfer_plan.as_dict()
+        runtime["residency"] = build_wan_residency_records(signature, batch_size=1)
+        if self.engine_adapter is not None:
+            runtime["engine"] = self.engine_adapter.describe()
+            runtime["pipeline"] = {
+                "execution_backend": self.execution_backend,
+                "adapter": self.engine_adapter.describe(),
+            }
         if queue_position is not None:
             runtime["queue_position"] = queue_position
             runtime["queue_snapshot"] = self._job_queue.snapshot()
@@ -689,6 +867,8 @@ class WanVideoBackend(ProduceSampleBackend):
             "async": True,
             "runner_mode": self.runner_mode,
         }
+        if self.engine_adapter is not None:
+            metadata["engine_adapter"] = self.engine_adapter.adapter_name
         if not admitted:
             metadata["runner_error"] = "; ".join(admission["reasons"])
 

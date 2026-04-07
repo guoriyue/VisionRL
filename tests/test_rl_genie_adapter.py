@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 
 from wm_infra.backends.genie_runner import GenieRunner
-from wm_infra.rl.genie_adapter import GenieRLSpec, GenieTokenReward, GenieWorldModelAdapter
+from wm_infra.consumers.rl.genie_adapter import GenieRLSpec, GenieTokenReward, GenieWorldModelAdapter
 
 
 def _stub_adapter() -> GenieWorldModelAdapter:

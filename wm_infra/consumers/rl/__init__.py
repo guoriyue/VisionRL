@@ -1,30 +1,19 @@
-"""Compatibility namespace for RL consumers.
+"""Consumer-side RL adapters layered on top of wm-infra runtime primitives."""
 
-Canonical consumer-side RL modules now live under ``wm_infra.consumers.rl``.
-This package stays as a thin import shim for compatibility.
-"""
-
-from wm_infra.consumers.rl import (
+from wm_infra.consumers.rl.demo import DemoConfig, run_reinforce_demo
+from wm_infra.consumers.rl.env import GoalReward, WorldModelEnv, WorldModelVectorEnv
+from wm_infra.consumers.rl.genie_adapter import GenieRLSpec, GenieTokenReward, GenieWorldModelAdapter
+from wm_infra.consumers.rl.training import (
     Collector,
-    DemoConfig,
     Evaluator,
     ExperimentSpec,
-    GenieRLSpec,
-    GenieTokenReward,
-    GenieWorldModelAdapter,
-    GoalReward,
-    LearnedEnvRuntimeManager,
     LearnerAdapter,
     LocalActorCriticLearner,
-    RLEnvironmentManager,
     SynchronousCollector,
-    ToyContinuousWorldModel,
-    ToyLineWorldModel,
-    WorldModelEnv,
-    WorldModelVectorEnv,
     run_local_experiment,
-    run_reinforce_demo,
 )
+from wm_infra.consumers.rl.runtime import LearnedEnvRuntimeManager, RLEnvironmentManager
+from wm_infra.consumers.rl.toy import ToyContinuousWorldModel, ToyLineWorldModel
 
 __all__ = [
     "Collector",

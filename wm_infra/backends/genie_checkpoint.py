@@ -10,6 +10,12 @@ from typing import Any
 import numpy as np
 
 
+def _page_layout(token_count: int, page_size_tokens: int = 1024) -> tuple[int, int]:
+    page_size = max(int(page_size_tokens), 1)
+    pages = int((max(int(token_count), 0) + page_size - 1) // page_size)
+    return page_size, pages
+
+
 @dataclass(slots=True)
 class GenieCheckpointDelta:
     """Replayable checkpoint delta for a bounded generated frame window."""
@@ -69,6 +75,7 @@ def build_checkpoint_delta(
     safe_end = min(end_frame, int(all_tokens.shape[0]))
     total_frames = int(all_tokens.shape[0])
     delta = np.asarray(all_tokens[safe_start:safe_end], dtype=np.uint32).copy()
+    page_size_tokens, page_count = _page_layout(delta.size)
     return GenieCheckpointDelta(
         rollout_id=rollout_id,
         sample_id=sample_id,
@@ -89,6 +96,9 @@ def build_checkpoint_delta(
             "frame_count": max(safe_end - safe_start, 0),
             "total_frames": total_frames,
             "bytes": int(delta.nbytes),
+            "layout_key": "paged_token_delta",
+            "page_size_tokens": page_size_tokens,
+            "page_count": page_count,
         },
     )
 

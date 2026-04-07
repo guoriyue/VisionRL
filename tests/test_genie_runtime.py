@@ -4,6 +4,7 @@ from wm_infra.backends.genie_checkpoint import build_checkpoint_delta, checkpoin
 from wm_infra.backends.genie_runtime import (
     GenieBatchSignature,
     GenieExecutionEntity,
+    GeniePagedStateStore,
     GenieResidencyTier,
     GenieRuntimeState,
     build_benchmark_profile,
@@ -178,3 +179,72 @@ def test_stage_and_scheduler_profiles_are_stable():
     assert benchmark_profile["batched_across_requests"] is True
     assert runtime_state_profile["dirty_since_checkpoint"] is True
     assert runtime_state_profile["source_cache_key"] == "state_handle:1"
+    assert runtime_state_profile["layout_key"] == "token_frames_contiguous"
+    assert runtime_state_profile["page_size_tokens"] == 1024
+    assert runtime_state_profile["transfer_plan"] is None
+
+
+def test_runtime_state_profile_exposes_residency_and_transfer_plan():
+    runtime_state = GenieRuntimeState(
+        rollout_id="rollout-2",
+        resident_tier=GenieResidencyTier.WARM_PINNED_CPU,
+        materialized_bytes=8192,
+        page_size_tokens=512,
+        page_count=4,
+    )
+    profile = build_runtime_state_profile(runtime_state)
+
+    assert profile["resident_tier"] == "warm_pinned_cpu"
+    assert profile["page_size_tokens"] == 512
+    assert profile["page_count"] == 4
+    assert profile["residency"] == []
+
+
+def test_paged_state_store_updates_window_and_reports_page_span():
+    tokens = np.arange(6 * 4 * 4, dtype=np.uint32).reshape(6, 4, 4)
+    store = GeniePagedStateStore.from_tokens(
+        store_id="rollout-1:paged-state",
+        tokens=tokens,
+        page_size_tokens=16,
+    )
+
+    assert store.page_count > 0
+    left, right = store.page_span_for_frames(2, 4)
+    assert left <= right
+
+    replacement = np.zeros((2, 4, 4), dtype=np.uint32)
+    store.update_window(frame_start=2, frame_end=4, tokens=replacement)
+    materialized = store.materialize()
+    window = store.window_tokens(2, 4)
+    snapshot = store.snapshot()
+
+    assert materialized.shape == tokens.shape
+    assert np.all(materialized[2:4] == 0)
+    assert window.shape == (2, 4, 4)
+    assert np.all(window == 0)
+    assert snapshot["page_pool"]["physical_bytes"] >= store.bytes_size
+    assert snapshot["page_pool"]["dirty_page_count"] >= 1
+    assert snapshot["page_pool"]["hot_page_count"] >= 1
+    assert snapshot["page_pool"]["host_pool"]["page_count"] == store.page_count
+    assert snapshot["page_pool"]["gpu_pool"]["page_count"] >= 1
+
+    prefetch = store.prefetch_window(frame_start=0, frame_end=2, async_requested=True)
+    assert prefetch["transfer"]["direction"] == "host_to_gpu"
+    assert prefetch["transfer"]["async_requested"] is True
+    assert prefetch["transfer"]["status"] == "pending"
+    assert prefetch["prefetched_page_ids"]
+    assert store.snapshot()["page_pool"]["hot_page_count"] >= 1
+    assert store.transfer_queue_snapshot()["pending"] >= 1
+
+    completed = store.poll_transfers()
+    assert completed
+    assert completed[0]["status"] == "completed"
+    reclaimed = store.reclaim_completed_transfers()
+    assert reclaimed
+
+    evict = store.evict_window(frame_start=0, frame_end=2, async_requested=True)
+    assert evict["transfer"]["direction"] == "gpu_to_host"
+    assert not set(evict["evicted_page_ids"]) & set(store.snapshot()["hot_page_ids"])
+    assert store.snapshot()["page_pool"]["hot_page_count"] <= store.gpu_hot_page_limit
+    assert len(store.snapshot()["transfer_history"]) >= 2
+    assert "transfer_queue" in store.snapshot()

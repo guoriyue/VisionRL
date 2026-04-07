@@ -162,3 +162,112 @@ def test_observed_runtime_fields_remote_omit_unverified_server_runtime():
         "requested_runtime_execution_mode": "legacy",
     }
     assert workload_fields == {}
+
+
+def test_runtime_accounting_extracts_compile_cache_transfer_and_residency():
+    bench = _load_benchmark_module()
+
+    wan_payload = {
+        "backend": "wan-video",
+        "runtime": {
+            "execution_family": {"backend": "wan-video", "stage": "pipeline"},
+            "compiled_graph_pool": {
+                "profile_id": "wan-profile-1",
+                "compile_state": "warm_profile_batch_hit",
+                "warm_profile_hit": True,
+                "compiled_batch_size_hit": True,
+                "compiled_batch_sizes": [1, 2],
+                "reuse_count": 3,
+                "prewarmed": True,
+                "compiled_profile": {"graph_key": "wan-graph-abc"},
+            },
+            "transfer_plan": {
+                "h2d_bytes": 1024,
+                "d2h_bytes": 2048,
+                "device_to_device_bytes": 128,
+                "artifact_io_bytes": 4096,
+                "staging_bytes": 512,
+                "overlap_h2d_with_compute": True,
+                "overlap_d2h_with_io": True,
+                "staging_tier": "cpu_pinned_warm",
+            },
+            "residency": [
+                {"tier": "gpu_hot", "bytes_size": 1024},
+                {"tier": "cpu_pinned_warm", "bytes_size": 512},
+            ],
+        },
+    }
+    wan_accounting = bench._runtime_accounting(wan_payload)
+    assert wan_accounting["compile"]["graph_key"] == "wan-graph-abc"
+    assert wan_accounting["compile"]["warm_profile_hit"] is True
+    assert wan_accounting["transfer"]["total_bytes"] == 7296
+    assert wan_accounting["residency"]["tier_counts"]["gpu_hot"] == 1
+
+    genie_payload = {
+        "backend": "genie-rollout",
+        "runtime": {
+            "runtime_state": {
+                "prompt_reuse_hit": True,
+                "resident_tier": "hot_gpu",
+                "reuse_hits": 2,
+                "reuse_misses": 1,
+                "source_cache_key": "state_handle:1",
+                "checkpoint_delta_ref": "delta:1",
+                "page_size_tokens": 512,
+                "page_count": 4,
+                "transfer_plan": {
+                    "h2d_bytes": 256,
+                    "d2h_bytes": 0,
+                    "device_to_device_bytes": 0,
+                    "artifact_io_bytes": 128,
+                    "staging_bytes": 64,
+                    "overlap_h2d_with_compute": False,
+                    "overlap_d2h_with_io": True,
+                    "staging_tier": "cpu_pinned_warm",
+                },
+                "residency": [
+                    {"tier": "gpu_hot", "bytes_size": 4096},
+                    {"tier": "cpu_pinned_warm", "bytes_size": 2048},
+                ],
+            }
+        },
+    }
+    genie_accounting = bench._runtime_accounting(genie_payload)
+    assert genie_accounting["cache"]["prompt_reuse_hit"] is True
+    assert genie_accounting["cache"]["page_count"] == 4
+    assert genie_accounting["transfer"]["artifact_io_bytes"] == 128
+
+
+def test_profile_samples_aggregates_runtime_accounting():
+    bench = _load_benchmark_module()
+
+    samples = [
+        {
+            "backend": "wan-video",
+            "accounting": {
+                "backend": "wan-video",
+                "compile": {"compile_state": "warm_profile_batch_hit", "warm_profile_hit": True},
+                "cache": {"prompt_reuse_hit": False, "page_count": None},
+                "transfer": {"total_bytes": 7296, "h2d_bytes": 1024, "d2h_bytes": 2048, "artifact_io_bytes": 4096},
+                "residency": {"total_bytes": 1536, "tier_counts": {"gpu_hot": 1, "cpu_pinned_warm": 1}},
+            },
+        },
+        {
+            "backend": "genie-rollout",
+            "accounting": {
+                "backend": "genie-rollout",
+                "compile": {"compile_state": "cold_start", "warm_profile_hit": False},
+                "cache": {"prompt_reuse_hit": True, "page_count": 4},
+                "transfer": {"total_bytes": 384, "h2d_bytes": 256, "d2h_bytes": 0, "artifact_io_bytes": 128},
+                "residency": {"total_bytes": 6144, "tier_counts": {"gpu_hot": 1, "cpu_pinned_warm": 1}},
+            },
+        },
+    ]
+
+    profile = bench._profile_samples(samples)
+    assert profile["compile"]["warm_profile_hits"] == 1
+    assert profile["compile"]["backend_hits"] == {"wan-video": 1, "genie-rollout": 1}
+    assert profile["cache"]["prompt_cache_hits"] == 1
+    assert profile["cache"]["mean_page_count"] == 4.0
+    assert profile["transfer"]["total_bytes"] == 7680
+    assert profile["residency"]["tier_counts"]["gpu_hot"] == 2

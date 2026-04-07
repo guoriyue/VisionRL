@@ -185,8 +185,11 @@ def create_app(
                 batch_wait_ms=config.controlplane.wan_batch_wait_ms,
                 warm_pool_size=config.controlplane.wan_warm_pool_size,
                 prewarm_common_signatures=config.controlplane.wan_prewarm_common_signatures,
+                wan_engine_adapter=config.controlplane.wan_engine_adapter,
                 wan_repo_dir=config.controlplane.wan_repo_dir,
                 wan_conda_env=config.controlplane.wan_conda_env,
+                wan_ckpt_dir=config.controlplane.wan_ckpt_dir,
+                wan_i2v_diffusers_dir=config.controlplane.wan_i2v_diffusers_dir,
                 conda_sh_path=config.controlplane.conda_sh_path,
             )
             registry.register(wan_backend)
@@ -335,6 +338,11 @@ def create_app(
                         "shell_runner_timeout_s": backend.shell_runner_timeout_s,
                         "output_root": str(backend.output_root),
                         "async_queue": backend._job_queue is not None,
+                        "execution_backend": backend.execution_backend,
+                        "engine_adapter": None if backend.engine_adapter is None else backend.engine_adapter.describe(),
+                        "wan_engine_adapter_spec": backend.wan_engine_adapter_spec,
+                        "wan_ckpt_dir": backend.wan_ckpt_dir,
+                        "wan_i2v_diffusers_dir": backend.wan_i2v_diffusers_dir,
                         "max_batch_size": backend.max_batch_size,
                         "batch_wait_ms": backend.batch_wait_ms,
                         "warm_pool_size": backend.warm_pool_size,

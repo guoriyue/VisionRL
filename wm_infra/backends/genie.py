@@ -19,10 +19,15 @@ from wm_infra.backends.genie_runner import GenieRunResult, GenieRunner
 from wm_infra.backends.genie_runtime import (
     GENIE_STAGE_GRAPH,
     GenieExecutionEntity,
+    GeniePagedStateStore,
     GeniePromptStateCache,
     GenieQueueLane,
     GenieResidencyTier,
     GenieRuntimeState,
+    build_genie_execution_family,
+    build_genie_residency_records,
+    build_genie_transfer_fast_path,
+    build_genie_transfer_plan,
     build_benchmark_profile,
     build_runtime_state_profile,
     build_scheduler_profile,
@@ -30,6 +35,7 @@ from wm_infra.backends.genie_runtime import (
     build_transition_entities,
     frame_windows,
     make_stage_signature,
+    page_layout,
     prompt_cache_key,
 )
 from wm_infra.backends.genie_scheduler import GenieScheduler
@@ -54,6 +60,22 @@ from wm_infra.controlplane import (
     TokenizerKind,
     estimate_rollout_request,
 )
+
+
+def _observe_genie_transfer_plan(transfer_plan: Any | None) -> None:
+    if transfer_plan is None:
+        return
+
+    from wm_infra.api.metrics import SERVING_TRANSFER_BYTES
+
+    if int(transfer_plan.h2d_bytes) > 0:
+        SERVING_TRANSFER_BYTES.labels(backend="genie-rollout", kind="h2d").observe(transfer_plan.h2d_bytes)
+    if int(transfer_plan.d2h_bytes) > 0:
+        SERVING_TRANSFER_BYTES.labels(backend="genie-rollout", kind="d2h").observe(transfer_plan.d2h_bytes)
+    if int(transfer_plan.artifact_io_bytes) > 0:
+        SERVING_TRANSFER_BYTES.labels(backend="genie-rollout", kind="artifact_io").observe(
+            transfer_plan.artifact_io_bytes
+        )
 
 
 class GenieRolloutBackend(ProduceSampleBackend):
@@ -310,9 +332,162 @@ class GenieRolloutBackend(ProduceSampleBackend):
         if min_seen < 0 or max_seen > max_token_id:
             raise ValueError(f"Genie real mode token ids must be in [0,{max_token_id}], got [{min_seen},{max_seen}]")
 
+    @staticmethod
+    def _host_staging_metadata(prepared: Any) -> dict[str, Any] | None:
+        host_staging = prepared.extra.get("host_staging")
+        return dict(host_staging) if isinstance(host_staging, dict) else None
+
+    def _build_paged_runtime_state(
+        self,
+        *,
+        rollout_id: str,
+        prepared: Any,
+        resident_tier: GenieResidencyTier,
+        materialized_bytes: int,
+        prompt_reuse_hit: bool,
+        cache_key: str | None,
+        ancestor_state_ref: str | None,
+    ) -> tuple[GenieRuntimeState, GeniePagedStateStore]:
+        host_staging = self._host_staging_metadata(prepared)
+        page_size_tokens, page_count = page_layout(materialized_bytes // 4)
+        runtime_state = GenieRuntimeState(
+            rollout_id=rollout_id,
+            prompt_tokens_ref=cache_key,
+            generated_tokens_ref=None,
+            last_completed_frame=prepared.prompt_frames,
+            resident_tier=resident_tier,
+            ancestor_state_ref=ancestor_state_ref,
+            checkpoint_delta_ref=None,
+            materialized_bytes=materialized_bytes,
+            dirty_since_checkpoint=False,
+            prompt_reuse_hit=prompt_reuse_hit,
+            source_cache_key=cache_key,
+            reuse_hits=1 if prompt_reuse_hit else 0,
+            reuse_misses=0 if prompt_reuse_hit else 1,
+            page_size_tokens=page_size_tokens,
+            page_count=page_count,
+            transfer_plan=build_genie_transfer_plan(
+                materialized_bytes=materialized_bytes,
+                prompt_state_hot=resident_tier == GenieResidencyTier.HOT_GPU,
+                host_staging=host_staging,
+            ),
+        )
+        paged_state = GeniePagedStateStore.from_tokens(
+            store_id=f"{rollout_id}:paged-state",
+            tokens=prepared.current_tokens_numpy(),
+            page_size_tokens=runtime_state.page_size_tokens,
+        )
+        runtime_state.paged_state_key = paged_state.store_id
+        runtime_state.page_size_tokens = paged_state.page_size_tokens
+        runtime_state.page_count = paged_state.page_count
+        prompt_window_end = prepared.prompt_frames if prepared.prompt_frames > 0 else min(prepared.total_frames, 1)
+        transfer_fast_path = self._touch_runtime_window(
+            runtime_state=runtime_state,
+            paged_state=paged_state,
+            prepared=prepared,
+            frame_start=0,
+            frame_end=prompt_window_end,
+            resident_tier=resident_tier,
+            mark_dirty=False,
+        )
+        runtime_state.transfer_fast_path = transfer_fast_path
+        runtime_state.residency_records = build_genie_residency_records(
+            rollout_id=rollout_id,
+            resident_tier=resident_tier,
+            materialized_bytes=materialized_bytes,
+            page_size_tokens=runtime_state.page_size_tokens,
+            page_count=runtime_state.page_count,
+            cache_key=cache_key,
+            host_staging=host_staging,
+            state_store_key=paged_state.store_id,
+        )
+        return runtime_state, paged_state
+
+    def _touch_runtime_window(
+        self,
+        *,
+        runtime_state: GenieRuntimeState,
+        paged_state: GeniePagedStateStore,
+        prepared: Any,
+        frame_start: int,
+        frame_end: int,
+        resident_tier: GenieResidencyTier,
+        mark_dirty: bool,
+    ) -> dict[str, Any]:
+        host_staging = self._host_staging_metadata(prepared)
+        transfer_fast_path = build_genie_transfer_fast_path(
+            paged_state=paged_state,
+            host_staging=host_staging,
+            frame_start=frame_start,
+            frame_end=frame_end,
+            resident_tier=resident_tier,
+        )
+        page_window = paged_state.touch_window(
+            frame_start=frame_start,
+            frame_end=frame_end,
+            resident_tier=resident_tier,
+            mark_dirty=mark_dirty,
+            transfer_fast_path=transfer_fast_path,
+        )
+        completed = paged_state.poll_transfers()
+        reclaimed = paged_state.reclaim_completed_transfers()
+        transfer_fast_path["page_window"] = page_window
+        transfer_fast_path["transfer_completion"] = {
+            "completed": completed,
+            "reclaimed_ids": reclaimed,
+            "queue": paged_state.transfer_queue_snapshot(),
+        }
+        runtime_state.paged_state_snapshot = paged_state.snapshot()
+        runtime_state.transfer_fast_path = transfer_fast_path
+        return transfer_fast_path
+
+    def _apply_checkpoint_delta_to_paged_state(
+        self,
+        *,
+        runtime_state: GenieRuntimeState,
+        paged_state: GeniePagedStateStore,
+        prepared: Any,
+        delta: Any,
+        frame_start: int,
+        frame_end: int,
+    ) -> dict[str, Any]:
+        host_staging = self._host_staging_metadata(prepared)
+        transfer_fast_path = build_genie_transfer_fast_path(
+            paged_state=paged_state,
+            host_staging=host_staging,
+            frame_start=frame_start,
+            frame_end=frame_end,
+            resident_tier=GenieResidencyTier.HOT_GPU,
+        )
+        page_window = paged_state.update_window(
+            frame_start=frame_start,
+            frame_end=frame_end,
+            tokens=delta.tokens_delta,
+            resident_tier=GenieResidencyTier.HOT_GPU,
+            transfer_fast_path=transfer_fast_path,
+        )
+        completed = paged_state.poll_transfers()
+        reclaimed = paged_state.reclaim_completed_transfers()
+        transfer_fast_path["page_window"] = page_window
+        transfer_fast_path["transfer_completion"] = {
+            "completed": completed,
+            "reclaimed_ids": reclaimed,
+            "queue": paged_state.transfer_queue_snapshot(),
+        }
+        runtime_state.paged_state_snapshot = paged_state.snapshot()
+        runtime_state.transfer_fast_path = transfer_fast_path
+        delta.metadata.update(
+            {
+                "page_span": page_window["page_span"],
+                "pages_touched": page_window["pages_touched"],
+                "state_store_key": paged_state.store_id,
+            }
+        )
+        return transfer_fast_path
+
     async def execute_job(self, request: ProduceSampleRequest, sample_id: str) -> SampleRecord:
-        if request.task_type not in {TaskType.GENIE_ROLLOUT, TaskType.WORLD_MODEL_ROLLOUT}:
-            raise ValueError(f"Backend {self.backend_name} only supports rollout-style temporal tasks")
+        if request.task_type != TaskType.WORLD_MODEL_ROLLOUT:
+            raise ValueError(f"Backend {self.backend_name} only supports world_model_rollout tasks")
 
         from wm_infra.api.metrics import (
             GENIE_CHECKPOINT_BUILD_SECONDS,
@@ -492,20 +667,14 @@ class GenieRolloutBackend(ProduceSampleBackend):
             status=TemporalStatus.ACTIVE,
         )
 
-        runtime_state = GenieRuntimeState(
+        runtime_state, paged_state = self._build_paged_runtime_state(
             rollout_id=rollout.rollout_id,
-            prompt_tokens_ref=cache_key,
-            generated_tokens_ref=None,
-            last_completed_frame=prepared.prompt_frames,
+            prepared=prepared,
             resident_tier=resident_tier,
-            ancestor_state_ref=temporal.state_handle_id,
-            checkpoint_delta_ref=None,
             materialized_bytes=materialized_bytes,
-            dirty_since_checkpoint=False,
             prompt_reuse_hit=prompt_reuse_hit,
-            source_cache_key=cache_key,
-            reuse_hits=1 if prompt_reuse_hit else 0,
-            reuse_misses=0 if prompt_reuse_hit else 1,
+            cache_key=cache_key,
+            ancestor_state_ref=temporal.state_handle_id,
         )
 
         root_signature = make_stage_signature(
@@ -636,8 +805,18 @@ class GenieRolloutBackend(ProduceSampleBackend):
                 )
                 persist_checkpoint_delta(sample_dir, delta)
                 checkpoint_deltas.append(delta)
+                self._apply_checkpoint_delta_to_paged_state(
+                    runtime_state=runtime_state,
+                    paged_state=paged_state,
+                    prepared=prepared,
+                    delta=delta,
+                    frame_start=window_result.frame_start,
+                    frame_end=window_result.frame_end,
+                )
                 runtime_state.checkpoint_delta_ref = delta.artifact_id
                 runtime_state.dirty_since_checkpoint = False
+                if runtime_state.transfer_plan is not None:
+                    runtime_state.transfer_plan.add_artifact_io(delta.bytes_size)
                 GENIE_CHECKPOINT_DELTA_BYTES.observe(delta.bytes_size)
                 GENIE_CHECKPOINT_BUILD_SECONDS.observe(time.perf_counter() - checkpoint_start)
                 checkpoint_elapsed_ms = round((time.perf_counter() - checkpoint_start) * 1000.0, 3)
@@ -839,6 +1018,22 @@ class GenieRolloutBackend(ProduceSampleBackend):
 
         total_elapsed_ms = round((time.perf_counter() - total_start) * 1000.0, 3)
         stage_timings_ms["total_elapsed_ms"] = total_elapsed_ms
+        artifact_io_bytes = 0
+        for path in (
+            request_path,
+            log_path,
+            runtime_path,
+            checkpoint_path,
+            recovery_path,
+            Path(run_result.tokens_path),
+            Path(run_result.state_path),
+        ):
+            if path.exists():
+                artifact_io_bytes += path.stat().st_size
+        if runtime_state.transfer_plan is not None:
+            runtime_state.transfer_plan.add_d2h(run_result.total_frames * run_result.spatial_h * run_result.spatial_w * 4)
+            runtime_state.transfer_plan.add_artifact_io(artifact_io_bytes)
+            _observe_genie_transfer_plan(runtime_state.transfer_plan)
         scheduler_profile = build_scheduler_profile(
             execution_path="transition_batcher",
             transition_entities=len(transition_entities),
@@ -854,6 +1049,10 @@ class GenieRolloutBackend(ProduceSampleBackend):
             stage_timings_ms=stage_timings_ms,
             scheduler_profile=scheduler_profile,
         )
+        execution_family = build_genie_execution_family(
+            root_signature,
+            batch_size=max(scheduler_profile["max_observed_batch_size"], 1),
+        ).as_dict()
 
         runtime: dict[str, Any] = {
             "runner": f"genie-{mode}",
@@ -894,6 +1093,7 @@ class GenieRolloutBackend(ProduceSampleBackend):
             "benchmark_profile": benchmark_profile,
             "scheduler": scheduler_profile,
             "queue_lane": queue_lane,
+            "execution_family": execution_family,
             "runtime_state": runtime_state_profile,
             "checkpoint_deltas": [{**delta.metadata, "path": delta.path} for delta in checkpoint_deltas],
         }
@@ -1160,8 +1360,8 @@ class GenieRolloutBackend(ProduceSampleBackend):
         entity_to_context: dict[str, dict[str, Any]] = {}
         total_materialized_bytes = 0
         for request, sample_id in items:
-            if request.task_type not in {TaskType.GENIE_ROLLOUT, TaskType.WORLD_MODEL_ROLLOUT}:
-                raise ValueError(f"Backend {self.backend_name} only supports rollout-style temporal tasks")
+            if request.task_type != TaskType.WORLD_MODEL_ROLLOUT:
+                raise ValueError(f"Backend {self.backend_name} only supports world_model_rollout tasks")
             temporal = request.temporal
             if temporal is None or not temporal.episode_id:
                 raise ValueError("genie-rollout requests require temporal.episode_id")
@@ -1334,20 +1534,14 @@ class GenieRolloutBackend(ProduceSampleBackend):
                 status=TemporalStatus.ACTIVE,
             )
 
-            runtime_state = GenieRuntimeState(
+            runtime_state, paged_state = self._build_paged_runtime_state(
                 rollout_id=rollout.rollout_id,
-                prompt_tokens_ref=cache_key,
-                generated_tokens_ref=None,
-                last_completed_frame=prepared.prompt_frames,
+                prepared=prepared,
                 resident_tier=resident_tier,
-                ancestor_state_ref=temporal.state_handle_id,
-                checkpoint_delta_ref=None,
                 materialized_bytes=materialized_bytes,
-                dirty_since_checkpoint=False,
                 prompt_reuse_hit=prompt_reuse_hit,
-                source_cache_key=cache_key,
-                reuse_hits=1 if prompt_reuse_hit else 0,
-                reuse_misses=0 if prompt_reuse_hit else 1,
+                cache_key=cache_key,
+                ancestor_state_ref=temporal.state_handle_id,
             )
             root_signature = make_stage_signature(
                 backend=self.backend_name,
@@ -1397,6 +1591,7 @@ class GenieRolloutBackend(ProduceSampleBackend):
                     "request_payload": request_payload,
                     "rollout": rollout,
                     "runtime_state": runtime_state,
+                    "paged_state": paged_state,
                     "transition_entities": transition_entities,
                     "cache_key": cache_key,
                 }
@@ -1496,8 +1691,18 @@ class GenieRolloutBackend(ProduceSampleBackend):
                     )
                     persist_checkpoint_delta(ctx["sample_dir"], delta)
                     ctx["checkpoint_deltas"].append(delta)
+                    self._apply_checkpoint_delta_to_paged_state(
+                        runtime_state=ctx["runtime_state"],
+                        paged_state=ctx["paged_state"],
+                        prepared=ctx["prepared"],
+                        delta=delta,
+                        frame_start=result.frame_start,
+                        frame_end=result.frame_end,
+                    )
                     ctx["runtime_state"].checkpoint_delta_ref = delta.artifact_id
                     ctx["runtime_state"].dirty_since_checkpoint = False
+                    if ctx["runtime_state"].transfer_plan is not None:
+                        ctx["runtime_state"].transfer_plan.add_artifact_io(delta.bytes_size)
                     GENIE_CHECKPOINT_DELTA_BYTES.observe(delta.bytes_size)
                     GENIE_CHECKPOINT_BUILD_SECONDS.observe(time.perf_counter() - checkpoint_start)
                     checkpoint_elapsed_ms = round((time.perf_counter() - checkpoint_start) * 1000.0, 3)
@@ -1704,12 +1909,34 @@ class GenieRolloutBackend(ProduceSampleBackend):
                 batched_across_requests=any(size > 1 for size in ctx["observed_batch_sizes"]),
                 cross_request_batcher=None,
             )
+            artifact_io_bytes = 0
+            for path in (
+                ctx["request_path"],
+                ctx["log_path"],
+                ctx["runtime_path"],
+                ctx["checkpoint_path"],
+                ctx["recovery_path"],
+                Path(run_result.tokens_path),
+                Path(run_result.state_path),
+            ):
+                if path.exists():
+                    artifact_io_bytes += path.stat().st_size
+            if ctx["runtime_state"].transfer_plan is not None:
+                ctx["runtime_state"].transfer_plan.add_d2h(
+                    run_result.total_frames * run_result.spatial_h * run_result.spatial_w * 4
+                )
+                ctx["runtime_state"].transfer_plan.add_artifact_io(artifact_io_bytes)
+                _observe_genie_transfer_plan(ctx["runtime_state"].transfer_plan)
             runtime_state_profile = build_runtime_state_profile(ctx["runtime_state"])
             stage_profile = build_stage_profile(ctx["stage_history"], ctx["stage_timings_ms"])
             benchmark_profile = build_benchmark_profile(
                 stage_timings_ms=ctx["stage_timings_ms"],
                 scheduler_profile=scheduler_profile,
             )
+            execution_family = build_genie_execution_family(
+                ctx["transition_entities"][0].batch_signature,
+                batch_size=max(scheduler_profile["max_observed_batch_size"], 1),
+            ).as_dict()
 
             runtime: dict[str, Any] = {
                 "runner": f"genie-{mode}",
@@ -1750,6 +1977,7 @@ class GenieRolloutBackend(ProduceSampleBackend):
                 "benchmark_profile": benchmark_profile,
                 "scheduler": scheduler_profile,
                 "queue_lane": ctx["queue_lane"],
+                "execution_family": execution_family,
                 "runtime_state": runtime_state_profile,
                 "checkpoint_deltas": [{**delta.metadata, "path": delta.path} for delta in ctx["checkpoint_deltas"]],
                 "batched_transition": scheduler_profile["batched_across_requests"],

@@ -1,11 +1,6 @@
-"""Compatibility exports for runtime toy world models."""
+"""Compatibility shim for consumer-side toy world models."""
 
-from wm_infra.runtime.env.toy import (
-    ToyContinuousWorldModel,
-    ToyLineWorldModel,
-    ToyLineWorldSpec,
-    ToyWorldSpec,
-)
+from wm_infra.consumers.rl.toy import ToyContinuousWorldModel, ToyLineWorldModel, ToyLineWorldSpec, ToyWorldSpec
 
 __all__ = [
     "ToyContinuousWorldModel",

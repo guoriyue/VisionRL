@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from wm_infra.controlplane import TemporalStore
-from wm_infra.rl.runtime import RLEnvironmentManager
+from wm_infra.consumers.rl.runtime import RLEnvironmentManager
 
 
 def test_step_many_splits_into_multiple_chunks_when_batch_exceeds_limit(tmp_path) -> None:
