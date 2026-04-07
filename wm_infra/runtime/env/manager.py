@@ -362,7 +362,7 @@ class RLEnvironmentManager:
         runtime = dict(prediction.runtime)
         runtime["execution_path"] = "chunked_env_step"
         runtime["env_step_chunk_total"] = runtime.get("chunk_count", 0)
-        runtime["state_locality_mode"] = "legacy_env_wrapper"
+        runtime["state_locality_mode"] = "explicit_state_transition"
         runtime["step_semantics"] = "sync_step_many"
         runtime["northbound_reset_policy"] = "explicit_reset_required"
         return EnvironmentStepManyResponse(
@@ -981,9 +981,4 @@ class RLEnvironmentManager:
         )
 
 
-# Preserve the old class name for compatibility while exposing a runtime-native
-# name that better matches the module's role.
-LearnedEnvRuntimeManager = RLEnvironmentManager
-
-
-__all__ = ["LearnedEnvRuntimeManager", "RLEnvironmentManager"]
+__all__ = ["RLEnvironmentManager"]

@@ -14,7 +14,7 @@ from wm_infra.controlplane import SampleManifestStore, TemporalStore
 
 
 def _load_benchmark_module():
-    module_path = Path(__file__).resolve().parents[1] / "benchmarks" / "bench_samples_api.py"
+    module_path = Path(__file__).resolve().parents[2] / "benchmarks" / "bench_samples_api.py"
     spec = importlib.util.spec_from_file_location("bench_samples_api_test_module", module_path)
     assert spec is not None
     assert spec.loader is not None
@@ -112,11 +112,18 @@ def test_test_config_respects_requested_device(tmp_path):
     assert config.device == "cuda"
 
 
-def test_parse_args_accepts_execution_mode(monkeypatch):
+def test_parse_args_accepts_chunked_execution_mode(monkeypatch):
+    bench = _load_benchmark_module()
+    monkeypatch.setattr("sys.argv", ["bench_samples_api.py", "--in-process", "--execution-mode", "chunked"])
+    args = bench.parse_args()
+    assert args.execution_mode == "chunked"
+
+
+def test_parse_args_rejects_legacy_execution_mode(monkeypatch):
     bench = _load_benchmark_module()
     monkeypatch.setattr("sys.argv", ["bench_samples_api.py", "--in-process", "--execution-mode", "legacy"])
-    args = bench.parse_args()
-    assert args.execution_mode == "legacy"
+    with pytest.raises(SystemExit):
+        bench.parse_args()
 
 
 def test_load_payload_supports_cosmos(monkeypatch):
@@ -154,12 +161,12 @@ def test_observed_runtime_fields_remote_omit_unverified_server_runtime():
         in_process=False,
         resolved_device="cpu",
         requested_device="cpu",
-        requested_execution_mode="legacy",
+        requested_execution_mode="chunked",
     )
 
     assert execution_fields == {
         "requested_device": "cpu",
-        "requested_runtime_execution_mode": "legacy",
+        "requested_runtime_execution_mode": "chunked",
     }
     assert workload_fields == {}
 

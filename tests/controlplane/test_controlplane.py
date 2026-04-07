@@ -1,11 +1,14 @@
 """Tests for control-plane schemas and storage."""
 
+import pytest
+
 from wm_infra.controlplane import (
     ArtifactKind,
     BranchCreate,
     CheckpointCreate,
     EvaluationRecord,
     EvaluationStatus,
+    ExecutionResidencyRef,
     ExecutionStateRef,
     EpisodeCreate,
     ExperimentRef,
@@ -23,10 +26,10 @@ from wm_infra.controlplane import (
     TaskType,
     TemporalRefs,
     TemporalStore,
-    VideoMemoryProfile,
     WanTaskConfig,
     estimate_wan_request,
 )
+from wm_infra.runtime.env.state import split_state_handle_refs
 
 
 def test_produce_sample_request_defaults():
@@ -44,7 +47,7 @@ def test_produce_sample_request_defaults():
 
 def test_produce_sample_request_accepts_typed_rollout_task_config():
     req = ProduceSampleRequest(
-        task_type=TaskType.WORLD_MODEL_ROLLOUT,
+        task_type=TaskType.TEMPORAL_ROLLOUT,
         backend="rollout-engine",
         model="latent_dynamics",
         sample_spec=SampleSpec(prompt="roll forward"),
@@ -58,9 +61,9 @@ def test_produce_sample_request_accepts_typed_rollout_task_config():
     assert req.task_config.height == 480
 
 
-def test_produce_sample_request_backfills_legacy_rollout_fields_from_sample_metadata():
+def test_produce_sample_request_does_not_hydrate_rollout_fields_from_sample_metadata():
     req = ProduceSampleRequest(
-        task_type=TaskType.WORLD_MODEL_ROLLOUT,
+        task_type=TaskType.TEMPORAL_ROLLOUT,
         backend="rollout-engine",
         model="latent_dynamics",
         sample_spec=SampleSpec(
@@ -76,13 +79,7 @@ def test_produce_sample_request_backfills_legacy_rollout_fields_from_sample_meta
         ),
     )
 
-    assert req.task_config is not None
-    assert req.task_config.num_steps == 4
-    assert req.task_config.frame_count == 9
-    assert req.task_config.offload_model is True
-    assert req.task_config.convert_model_dtype is True
-    assert req.task_config.t5_cpu is True
-    assert req.task_config.memory_profile == VideoMemoryProfile.LOW_VRAM
+    assert req.task_config is None
 
 
 def test_sample_record_can_capture_lineage_evaluation_and_resource_estimate():
@@ -124,7 +121,7 @@ def test_sample_manifest_store_round_trip(tmp_path):
     store = SampleManifestStore(tmp_path)
     record = SampleRecord(
         sample_id="sample_roundtrip",
-        task_type=TaskType.WORLD_MODEL_ROLLOUT,
+        task_type=TaskType.TEMPORAL_ROLLOUT,
         backend="rollout-engine",
         model="latent_dynamics",
         status=SampleStatus.SUCCEEDED,
@@ -163,7 +160,7 @@ def test_wan_request_accepts_first_class_wan_config_and_estimates_resources():
     assert estimate.estimated_vram_gb > 0
 
 
-def test_wan_request_can_hydrate_legacy_metadata_into_wan_config():
+def test_wan_request_does_not_hydrate_metadata_into_wan_config():
     req = ProduceSampleRequest(
         task_type=TaskType.TEXT_TO_VIDEO,
         backend="wan-video",
@@ -182,18 +179,12 @@ def test_wan_request_can_hydrate_legacy_metadata_into_wan_config():
         ),
     )
 
-    assert req.wan_config is not None
-    assert req.wan_config.frame_count == 9
-    assert req.wan_config.num_steps == 4
-    assert req.wan_config.guidance_scale == 5.0
-    assert req.wan_config.shift == 8.0
-    assert req.wan_config.width == 832
-    assert req.wan_config.height == 480
+    assert req.wan_config is None
 
 
 def test_produce_sample_request_can_capture_temporal_refs():
     req = ProduceSampleRequest(
-        task_type=TaskType.WORLD_MODEL_ROLLOUT,
+        task_type=TaskType.TEMPORAL_ROLLOUT,
         backend="genie-rollout",
         model="genie-local",
         sample_spec=SampleSpec(prompt="temporal step"),
@@ -208,6 +199,27 @@ def test_produce_sample_request_can_capture_temporal_refs():
     assert req.temporal is not None
     assert req.temporal.episode_id == "ep_1"
     assert req.temporal.state_handle_id == "state_1"
+
+
+def test_produce_sample_request_rejects_legacy_rollout_task_types():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        ProduceSampleRequest(
+            task_type="world_model_rollout",
+            backend="rollout-engine",
+            model="latent_dynamics",
+            sample_spec=SampleSpec(prompt="legacy world model"),
+        )
+
+    with pytest.raises(ValidationError):
+        ProduceSampleRequest(
+            task_type="genie_rollout",
+            backend="genie-rollout",
+            model="genie-local",
+            sample_spec=SampleSpec(prompt="legacy genie"),
+            temporal=TemporalRefs(episode_id="ep_1"),
+        )
 
 
 def test_temporal_store_round_trip(tmp_path):
@@ -260,8 +272,10 @@ def test_state_handle_can_separate_execution_state_from_lineage(tmp_path):
         StateHandleCreate(
             episode_id=episode.episode_id,
             branch_id=branch.branch_id,
+            rollout_id="rollout-1",
+            checkpoint_id="checkpoint-1",
             kind="latent",
-            execution_state_ref=ExecutionStateRef(
+            execution_state_ref=ExecutionResidencyRef(
                 residency=StateResidency.INLINE,
                 storage_backend="state_handle_metadata",
                 state_key="latent_state",
@@ -274,6 +288,9 @@ def test_state_handle_can_separate_execution_state_from_lineage(tmp_path):
                 task_id="toy-line-train",
                 trajectory_id="traj-1",
                 step_idx=3,
+                branch_id=branch.branch_id,
+                rollout_id="rollout-1",
+                checkpoint_id="checkpoint-1",
                 parent_state_handle_id="parent-1",
             ),
             metadata={
@@ -290,5 +307,14 @@ def test_state_handle_can_separate_execution_state_from_lineage(tmp_path):
     assert loaded.execution_state_ref is not None
     assert loaded.execution_state_ref.residency == StateResidency.INLINE
     assert loaded.lineage_ref is not None
+    assert loaded.lineage_ref.branch_id == branch.branch_id
+    assert loaded.lineage_ref.rollout_id == "rollout-1"
+    assert loaded.lineage_ref.checkpoint_id == "checkpoint-1"
     assert loaded.lineage_ref.trajectory_id == "traj-1"
     assert loaded.lineage_ref.parent_state_handle_id == "parent-1"
+
+    refs = split_state_handle_refs(loaded)
+    assert refs.execution_residency_ref.residency == StateResidency.INLINE
+    assert refs.lineage_ref.branch_id == branch.branch_id
+    assert refs.lineage_ref.rollout_id == "rollout-1"
+    assert refs.lineage_ref.checkpoint_id == "checkpoint-1"

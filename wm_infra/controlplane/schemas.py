@@ -10,11 +10,17 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 
 class TaskType(str, Enum):
-    WORLD_MODEL_ROLLOUT = "world_model_rollout"
+    """Product-level task semantics for persisted sample requests.
+
+    Backend identifiers such as ``genie-rollout`` belong in the separate
+    ``backend`` field, not in this enum.
+    """
+
+    TEMPORAL_ROLLOUT = "temporal_rollout"
     TEXT_TO_VIDEO = "text_to_video"
     IMAGE_TO_VIDEO = "image_to_video"
     VIDEO_TO_VIDEO = "video_to_video"
@@ -240,7 +246,6 @@ class ProduceSampleRequest(BaseModel):
     backend: str = Field(..., description="Backend/runtime identifier")
     model: str = Field(..., description="Logical model identifier")
     model_revision: Optional[str] = None
-    contract_mode: Literal["legacy", "strict"] = "legacy"
     experiment: Optional[ExperimentRef] = None
     sample_spec: SampleSpec
     temporal: Optional[TemporalRefs] = None
@@ -283,91 +288,6 @@ class ProduceSampleRequest(BaseModel):
     evaluation_policy: Optional[str] = Field(default=None, description="Policy name for auto-QC / review")
     priority: float = 0.0
     labels: dict[str, str] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def _hydrate_legacy_rollout_config(self) -> "ProduceSampleRequest":
-        metadata = self.sample_spec.metadata
-        task_config = self.task_config or RolloutTaskConfig()
-        used_legacy_metadata = False
-
-        if self.contract_mode == "legacy":
-            if self.task_type == TaskType.WORLD_MODEL_ROLLOUT:
-                if task_config.num_steps == 1 and metadata.get("num_steps") is not None:
-                    task_config.num_steps = int(metadata["num_steps"])
-                    used_legacy_metadata = True
-
-            legacy_map = {
-                "frame_count": ("frame_count", int),
-                "frame_num": ("frame_count", int),
-                "sample_steps": ("num_steps", int),
-                "width": ("width", int),
-                "height": ("height", int),
-                "offload_model": ("offload_model", bool),
-                "convert_model_dtype": ("convert_model_dtype", bool),
-                "t5_cpu": ("t5_cpu", bool),
-                "memory_profile": ("memory_profile", VideoMemoryProfile),
-            }
-            for legacy_key, (field_name, coercer) in legacy_map.items():
-                current = getattr(task_config, field_name)
-                if current is None and metadata.get(legacy_key) is not None:
-                    value = metadata[legacy_key]
-                    if coercer is bool and isinstance(value, str):
-                        value = value.lower() in {"1", "true", "yes", "on"}
-                    elif coercer is VideoMemoryProfile:
-                        value = VideoMemoryProfile(value)
-                    else:
-                        value = coercer(value)
-                    setattr(task_config, field_name, value)
-                    used_legacy_metadata = True
-
-        if task_config.width is None and self.sample_spec.width is not None:
-            task_config.width = self.sample_spec.width
-        if task_config.height is None and self.sample_spec.height is not None:
-            task_config.height = self.sample_spec.height
-
-        if self.task_config is None or used_legacy_metadata:
-            self.task_config = task_config
-
-        wan_types = {TaskType.TEXT_TO_VIDEO, TaskType.IMAGE_TO_VIDEO}
-        if self.contract_mode == "legacy" and self.task_type in wan_types and self.wan_config is None:
-            wan_meta_keys = {"guidance_scale", "shift", "model_size", "ckpt_dir"}
-            if metadata.keys() & wan_meta_keys:
-                wan_kwargs: dict[str, Any] = {}
-                for key in ("guidance_scale", "shift"):
-                    if key in metadata:
-                        wan_kwargs[key] = float(metadata[key])
-                for key in ("model_size", "ckpt_dir"):
-                    if key in metadata:
-                        wan_kwargs[key] = str(metadata[key])
-                if task_config.num_steps != 1:
-                    wan_kwargs.setdefault("num_steps", task_config.num_steps)
-                if task_config.frame_count is not None:
-                    wan_kwargs.setdefault("frame_count", task_config.frame_count)
-                if task_config.width is not None:
-                    wan_kwargs.setdefault("width", task_config.width)
-                if task_config.height is not None:
-                    wan_kwargs.setdefault("height", task_config.height)
-                if task_config.memory_profile is not None:
-                    wan_kwargs.setdefault("memory_profile", task_config.memory_profile)
-                self.wan_config = WanTaskConfig(**wan_kwargs)
-
-        if self.contract_mode == "legacy":
-            if self.temporal is None and any(metadata.get(k) for k in ("episode_id", "rollout_id", "branch_id", "checkpoint_id", "state_handle_id")):
-                self.temporal = TemporalRefs(
-                    episode_id=metadata.get("episode_id"),
-                    rollout_id=metadata.get("rollout_id"),
-                    branch_id=metadata.get("branch_id"),
-                    checkpoint_id=metadata.get("checkpoint_id"),
-                    state_handle_id=metadata.get("state_handle_id"),
-                    parent_state_handle_id=metadata.get("parent_state_handle_id"),
-                )
-
-        if self.contract_mode == "legacy" and self.token_input is None:
-            token_input_meta = metadata.get("token_input")
-            if isinstance(token_input_meta, dict):
-                self.token_input = TokenInputSpec(**token_input_meta)
-
-        return self
 
 
 class SampleRecord(BaseModel):

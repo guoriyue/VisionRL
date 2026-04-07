@@ -195,7 +195,6 @@ class ExpertCache:
     def remap_expert_ids(
         self,
         topk_ids: torch.Tensor,
-        expert_to_slot: Dict[int, int] = None,
     ) -> torch.Tensor:
         """Remap original expert IDs in topk_ids to GPU slot indices.
 
@@ -204,7 +203,6 @@ class ExpertCache:
 
         Args:
             topk_ids: [num_tokens, top_k] — original expert IDs from the router.
-            expert_to_slot: deprecated, ignored. Kept for backward compatibility.
 
         Returns:
             remapped_ids: [num_tokens, top_k] — slot indices, same shape/device.
@@ -311,4 +309,3 @@ class ExpertCache:
     def num_free_slots(self) -> int:
         """Number of available GPU slots."""
         return len(self._free_slots)
-

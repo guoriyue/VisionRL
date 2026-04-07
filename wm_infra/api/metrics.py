@@ -197,8 +197,3 @@ GENIE_GPU_OCCUPANCY_ESTIMATE = Gauge(
     "wm_genie_gpu_occupancy_estimate",
     "Best-effort Genie runtime occupancy estimate for the selected chunk",
 )
-
-# Backward-compatible aliases for older Genie metric call sites.
-GENIE_PROMPT_REUSE_HITS_TOTAL = GENIE_PROMPT_REUSE_EVENTS.labels(outcome="hit")
-GENIE_PROMPT_REUSE_MISSES_TOTAL = GENIE_PROMPT_REUSE_EVENTS.labels(outcome="miss")
-GENIE_RESIDENCY_EVENTS_TOTAL = GENIE_RESIDENCY_EVENTS

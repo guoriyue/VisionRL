@@ -13,6 +13,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
+import wm_infra.api.server as server_module
 from wm_infra.api.server import create_app
 from wm_infra.backends import BackendRegistry, GenieRolloutBackend
 from wm_infra.backends.genie_runner import GenieRunner
@@ -48,6 +49,63 @@ def _test_config() -> EngineConfig:
         ),
         controlplane=ControlPlaneConfig(wan_engine_adapter="stub"),
     )
+
+
+def test_create_async_engine_uses_strict_state_loading(monkeypatch):
+    calls = {}
+
+    class DummyDynamics:
+        def __init__(self, config):
+            self.config = config
+
+        def load_state_dict(self, state_dict, strict=True):
+            calls["dynamics_strict"] = strict
+            calls["dynamics_state_dict"] = state_dict
+
+        def to(self, *args, **kwargs):
+            return self
+
+        def eval(self):
+            return self
+
+    class DummyTokenizer:
+        def __init__(self, config):
+            self.config = config
+
+        def load_state_dict(self, state_dict, strict=True):
+            calls["tokenizer_strict"] = strict
+            calls["tokenizer_state_dict"] = state_dict
+
+        def to(self, *args, **kwargs):
+            return self
+
+        def eval(self):
+            return self
+
+    class DummyEngine:
+        def __init__(self, config, dynamics, tokenizer, execution_mode="chunked"):
+            calls["execution_mode"] = execution_mode
+            calls["config"] = config
+            calls["dynamics"] = dynamics
+            calls["tokenizer"] = tokenizer
+
+    monkeypatch.setattr(server_module, "LatentDynamicsModel", DummyDynamics)
+    monkeypatch.setattr(server_module, "VideoTokenizer", DummyTokenizer)
+    monkeypatch.setattr(server_module, "AsyncWorldModelEngine", DummyEngine)
+    monkeypatch.setattr(
+        server_module.torch,
+        "load",
+        lambda *args, **kwargs: {"dynamics": {"weights": 1}, "tokenizer": {"vocab": 2}},
+    )
+
+    config = _test_config()
+    config.model_path = "dummy-model.pt"
+    engine = server_module._create_async_engine(config)
+
+    assert isinstance(engine, DummyEngine)
+    assert calls["dynamics_strict"] is True
+    assert calls["tokenizer_strict"] is True
+    assert calls["execution_mode"] == "chunked"
 
 
 @pytest_asyncio.fixture
@@ -210,7 +268,7 @@ class TestSamples:
     @pytest.mark.asyncio
     async def test_create_and_get_sample_manifest(self, client):
         resp = await client.post("/v1/samples", json={
-            "task_type": "world_model_rollout",
+            "task_type": "temporal_rollout",
             "backend": "rollout-engine",
             "model": "latent_dynamics",
             "return_artifacts": [ArtifactKind.LATENT.value],
@@ -237,9 +295,9 @@ class TestSamples:
         assert get_resp.json()["sample_id"] == sample_id
 
     @pytest.mark.asyncio
-    async def test_create_sample_supports_legacy_num_steps_in_sample_metadata(self, client):
+    async def test_create_sample_does_not_hydrate_num_steps_from_sample_metadata(self, client):
         resp = await client.post("/v1/samples", json={
-            "task_type": "world_model_rollout",
+            "task_type": "temporal_rollout",
             "backend": "rollout-engine",
             "model": "latent_dynamics",
             "return_artifacts": [ArtifactKind.LATENT.value],
@@ -249,6 +307,9 @@ class TestSamples:
             },
         })
         assert resp.status_code == 200
+        assert resp.json()["task_type"] == "temporal_rollout"
+        assert resp.json()["task_config"] is None
+        assert resp.json()["runtime"]["steps_completed"] == 1
 
     @pytest.mark.asyncio
     async def test_create_cosmos_sample_queues_and_completes(self, client):
@@ -274,7 +335,7 @@ class TestSamples:
     @pytest.mark.asyncio
     async def test_create_sample_persists_under_experiment_directory(self, client, tmp_path):
         resp = await client.post("/v1/samples", json={
-            "task_type": "world_model_rollout",
+            "task_type": "temporal_rollout",
             "backend": "rollout-engine",
             "model": "latent_dynamics",
             "task_config": {"num_steps": 1},
@@ -384,7 +445,7 @@ class TestSamples:
     @pytest.mark.asyncio
     async def test_create_sample_rejects_unknown_backend(self, client):
         resp = await client.post("/v1/samples", json={
-            "task_type": "world_model_rollout",
+            "task_type": "temporal_rollout",
             "backend": "missing-backend",
             "model": "latent_dynamics",
             "sample_spec": {"prompt": "bad backend"},
@@ -516,7 +577,7 @@ class TestTemporalControlPlane:
         state = state_resp.json()
 
         sample_resp = await client.post("/v1/samples", json={
-            "task_type": "world_model_rollout",
+            "task_type": "temporal_rollout",
             "backend": "genie-rollout",
             "model": "genie-local",
             "sample_spec": {"prompt": "roll forward in time"},
@@ -614,7 +675,7 @@ class TestTemporalControlPlane:
         state = state_resp.json()
 
         sample_resp = await client.post("/v1/samples", json={
-            "task_type": "world_model_rollout",
+            "task_type": "temporal_rollout",
             "backend": "genie-rollout",
             "model": "genie-local",
             "sample_spec": {"prompt": "download test"},
@@ -721,7 +782,7 @@ class TestTemporalControlPlane:
 
         inline_tokens = list(range(4 * 16 * 16))
         sample_resp = await client.post("/v1/samples", json={
-            "task_type": "world_model_rollout",
+            "task_type": "temporal_rollout",
             "backend": "genie-rollout",
             "model": "genie-local",
             "sample_spec": {"prompt": "raw tokens path"},

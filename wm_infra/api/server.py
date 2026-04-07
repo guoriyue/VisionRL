@@ -34,16 +34,9 @@ from urllib.parse import unquote
 
 import numpy as np
 import torch
-from fastapi import Response
 
 from wm_infra.api.metrics import ACTIVE_ROLLOUTS, API_AUTH_FAILURES, QUEUE_DEPTH, REQUEST_DURATION, REQUEST_TOTAL, SAMPLE_DURATION, SAMPLE_TOTAL
 from wm_infra.api.protocol import (
-    EnvironmentCheckpointRequest,
-    EnvironmentCreateRequest,
-    EnvironmentForkRequest,
-    EnvironmentResetRequest,
-    EnvironmentStepManyRequest,
-    EnvironmentStepRequest,
     HealthResponse,
     RolloutRequest,
     RolloutResponse,
@@ -69,7 +62,7 @@ from wm_infra.controlplane import (
 )
 from wm_infra.core.engine import AsyncWorldModelEngine, RolloutJob
 from wm_infra.models.dynamics import LatentDynamicsModel
-from wm_infra.runtime.env import LearnedEnvRuntimeManager
+from wm_infra.runtime.env import RLEnvironmentManager
 from wm_infra.tokenizer.video_tokenizer import VideoTokenizer
 
 logger = logging.getLogger("wm_infra")
@@ -82,9 +75,9 @@ def _create_async_engine(config: EngineConfig, execution_mode: str = "chunked") 
 
     if config.model_path:
         state_dict = torch.load(config.model_path, map_location="cpu", weights_only=True)
-        dynamics.load_state_dict(state_dict.get("dynamics", state_dict), strict=False)
+        dynamics.load_state_dict(state_dict.get("dynamics", state_dict))
         if "tokenizer" in state_dict:
-            tokenizer.load_state_dict(state_dict["tokenizer"], strict=False)
+            tokenizer.load_state_dict(state_dict["tokenizer"])
 
     return AsyncWorldModelEngine(config, dynamics, tokenizer, execution_mode=execution_mode)
 
@@ -267,7 +260,7 @@ def create_app(
         app.state.wan_job_queue = wan_job_queue
         app.state.cosmos_job_queue = cosmos_job_queue
         app.state.genie_job_queue = genie_job_queue
-        app.state.rl_env_manager = LearnedEnvRuntimeManager(temporal_store)
+        app.state.rl_env_manager = RLEnvironmentManager(temporal_store)
 
         device_str = config.device.value if hasattr(config.device, "value") else str(config.device)
         logger.info(
@@ -724,26 +717,19 @@ def create_app(
 
     @app.get("/v1/env-specs")
     async def list_environment_specs():
-        manager: LearnedEnvRuntimeManager = app.state.rl_env_manager
+        manager: RLEnvironmentManager = app.state.rl_env_manager
         items = manager.list_environment_specs()
         return {"environment_specs": [item.model_dump(mode="json") for item in items], "count": len(items)}
 
     @app.get("/v1/task-specs")
     async def list_task_specs(env_name: str | None = None):
-        manager: LearnedEnvRuntimeManager = app.state.rl_env_manager
+        manager: RLEnvironmentManager = app.state.rl_env_manager
         items = manager.list_task_specs(env_name=env_name)
         return {"task_specs": [item.model_dump(mode="json") for item in items], "count": len(items)}
 
-    def _mark_env_session_deprecated(response) -> None:
-        response.headers["Deprecation"] = "true"
-        response.headers["Warning"] = (
-            '299 - "The /v1/envs session API is deprecated; use /v1/transitions/initialize and '
-            '/v1/transitions/predict(_many) with explicit state_handle_id/trajectory_id."'
-        )
-
     @app.post("/v1/transitions/initialize")
     async def initialize_transition_context(request: TransitionInitializeRequest):
-        manager: LearnedEnvRuntimeManager = app.state.rl_env_manager
+        manager: RLEnvironmentManager = app.state.rl_env_manager
         try:
             response = manager.initialize_transition_context(
                 env_name=request.env_name,
@@ -761,7 +747,7 @@ def create_app(
 
     @app.post("/v1/transitions/predict")
     async def predict_transition(request: TransitionPredictRequest):
-        manager: LearnedEnvRuntimeManager = app.state.rl_env_manager
+        manager: RLEnvironmentManager = app.state.rl_env_manager
         try:
             response = manager.predict_transition(
                 state_handle_id=request.state_handle_id,
@@ -780,7 +766,7 @@ def create_app(
 
     @app.post("/v1/transitions/predict_many")
     async def predict_many_transitions(request: TransitionPredictManyRequest):
-        manager: LearnedEnvRuntimeManager = app.state.rl_env_manager
+        manager: RLEnvironmentManager = app.state.rl_env_manager
         try:
             response = manager.predict_many_transitions(
                 items=[item.model_dump(mode="python") for item in request.items],
@@ -794,150 +780,21 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return response.model_dump(mode="json")
 
-    @app.post("/v1/envs", deprecated=True)
-    async def create_env_session(request: EnvironmentCreateRequest, response: Response):
-        _mark_env_session_deprecated(response)
-        manager: LearnedEnvRuntimeManager = app.state.rl_env_manager
-        try:
-            session_response = manager.create_session(
-                env_name=request.env_name,
-                task_id=request.task_id,
-                seed=request.seed,
-                policy_version=request.policy_version,
-                max_episode_steps=request.max_episode_steps,
-                labels=request.labels,
-                metadata=request.metadata,
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=f"Unknown env or task: {exc.args[0]}") from exc
-        return session_response.model_dump(mode="json")
-
-    @app.get("/v1/envs", deprecated=True)
-    async def list_env_sessions(response: Response, status: str | None = None, task_id: str | None = None):
-        _mark_env_session_deprecated(response)
-        manager: LearnedEnvRuntimeManager = app.state.rl_env_manager
-        items = manager.list_sessions()
-        if status is not None:
-            items = [item for item in items if item.status.value == status]
-        if task_id is not None:
-            items = [item for item in items if item.task_id == task_id]
-        return {"envs": [item.model_dump(mode="json") for item in items], "count": len(items)}
-
-    @app.get("/v1/envs/{env_id}", deprecated=True)
-    async def get_env_session(env_id: str, response: Response):
-        _mark_env_session_deprecated(response)
-        manager: LearnedEnvRuntimeManager = app.state.rl_env_manager
-        try:
-            session = manager.get_session(env_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Environment session not found") from exc
-        return session.model_dump(mode="json")
-
-    @app.post("/v1/envs/{env_id}/reset", deprecated=True)
-    async def reset_env_session(env_id: str, request: EnvironmentResetRequest, response: Response):
-        _mark_env_session_deprecated(response)
-        manager: LearnedEnvRuntimeManager = app.state.rl_env_manager
-        try:
-            reset_response = manager.reset_session(
-                env_id,
-                seed=request.seed,
-                policy_version=request.policy_version,
-                metadata=request.metadata,
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Environment session not found") from exc
-        return reset_response.model_dump(mode="json")
-
-    @app.post("/v1/envs/{env_id}/step", deprecated=True)
-    async def step_env_session(env_id: str, request: EnvironmentStepRequest, response: Response):
-        _mark_env_session_deprecated(response)
-        manager: LearnedEnvRuntimeManager = app.state.rl_env_manager
-        try:
-            step_response = manager.step_session(
-                env_id,
-                action=request.action,
-                policy_version=request.policy_version,
-                checkpoint=request.checkpoint,
-                metadata=request.metadata,
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Environment session not found") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return step_response.model_dump(mode="json")
-
-    @app.post("/v1/envs/{env_id}/step_many", deprecated=True)
-    async def step_many_env_sessions(env_id: str, request: EnvironmentStepManyRequest, response: Response):
-        _mark_env_session_deprecated(response)
-        manager: LearnedEnvRuntimeManager = app.state.rl_env_manager
-        try:
-            step_many_response = manager.step_many(
-                env_id,
-                env_ids=request.env_ids,
-                actions=request.actions,
-                policy_version=request.policy_version,
-                checkpoint=request.checkpoint,
-                metadata=request.metadata,
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=f"Environment session not found: {exc.args[0]}") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return step_many_response.model_dump(mode="json")
-
-    @app.post("/v1/envs/{env_id}/fork", deprecated=True)
-    async def fork_env_session(env_id: str, request: EnvironmentForkRequest, response: Response):
-        _mark_env_session_deprecated(response)
-        manager: LearnedEnvRuntimeManager = app.state.rl_env_manager
-        try:
-            fork_response = manager.fork_session(
-                env_id,
-                branch_name=request.branch_name,
-                policy_version=request.policy_version,
-                metadata=request.metadata,
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Environment session not found") from exc
-        return fork_response.model_dump(mode="json")
-
-    @app.post("/v1/envs/{env_id}/checkpoint", deprecated=True)
-    async def checkpoint_env_session(env_id: str, request: EnvironmentCheckpointRequest, response: Response):
-        _mark_env_session_deprecated(response)
-        manager: LearnedEnvRuntimeManager = app.state.rl_env_manager
-        try:
-            checkpoint_id = manager.checkpoint_session(env_id, tag=request.tag, metadata=request.metadata)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Environment session not found") from exc
-        store: TemporalStore = app.state.temporal_store
-        checkpoint = store.checkpoints.get(checkpoint_id)
-        assert checkpoint is not None
-        return checkpoint.model_dump(mode="json")
-
-    @app.delete("/v1/envs/{env_id}", deprecated=True)
-    async def delete_env_session(env_id: str, response: Response):
-        _mark_env_session_deprecated(response)
-        manager: LearnedEnvRuntimeManager = app.state.rl_env_manager
-        try:
-            manager.delete_session(env_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Environment session not found") from exc
-        return {"deleted": True, "env_id": env_id}
-
     @app.get("/v1/transitions")
     async def list_transitions(env_id: str | None = None, trajectory_id: str | None = None):
-        manager: LearnedEnvRuntimeManager = app.state.rl_env_manager
+        manager: RLEnvironmentManager = app.state.rl_env_manager
         items = manager.list_transitions(env_id=env_id, trajectory_id=trajectory_id)
         return {"transitions": [item.model_dump(mode="json") for item in items], "count": len(items)}
 
     @app.get("/v1/trajectories")
     async def list_trajectories(env_id: str | None = None, episode_id: str | None = None):
-        manager: LearnedEnvRuntimeManager = app.state.rl_env_manager
+        manager: RLEnvironmentManager = app.state.rl_env_manager
         items = manager.list_trajectories(env_id=env_id, episode_id=episode_id)
         return {"trajectories": [item.model_dump(mode="json") for item in items], "count": len(items)}
 
     @app.get("/v1/evaluations")
     async def list_evaluation_runs():
-        manager: LearnedEnvRuntimeManager = app.state.rl_env_manager
+        manager: RLEnvironmentManager = app.state.rl_env_manager
         items = manager.list_evaluation_runs()
         return {"evaluation_runs": [item.model_dump(mode="json") for item in items], "count": len(items)}
 

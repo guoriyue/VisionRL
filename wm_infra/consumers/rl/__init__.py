@@ -12,7 +12,7 @@ from wm_infra.consumers.rl.training import (
     SynchronousCollector,
     run_local_experiment,
 )
-from wm_infra.consumers.rl.runtime import LearnedEnvRuntimeManager, RLEnvironmentManager
+from wm_infra.consumers.rl.runtime import RLEnvironmentManager
 from wm_infra.consumers.rl.toy import ToyContinuousWorldModel, ToyLineWorldModel
 
 __all__ = [
@@ -25,7 +25,6 @@ __all__ = [
     "GenieTokenReward",
     "GenieWorldModelAdapter",
     "LearnerAdapter",
-    "LearnedEnvRuntimeManager",
     "LocalActorCriticLearner",
     "RLEnvironmentManager",
     "SynchronousCollector",

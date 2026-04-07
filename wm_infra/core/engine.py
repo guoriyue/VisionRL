@@ -90,7 +90,7 @@ class WorldModelEngine:
         self.config = config
         self.dynamics_model = dynamics_model
         self.tokenizer = tokenizer
-        if execution_mode not in {"legacy", "chunked"}:
+        if execution_mode != "chunked":
             raise ValueError(f"Unsupported execution_mode: {execution_mode}")
         self.execution_mode = execution_mode
 
@@ -227,8 +227,6 @@ class WorldModelEngine:
 
     def _execute_batch(self, batch: ScheduledBatch) -> list[str]:
         """Execute one prediction step for a batch of rollouts."""
-        if self.execution_mode == "legacy":
-            return self._execute_batch_legacy(batch)
         return self._execute_batch_chunked(batch)
 
     def _transition_signature(self, current_state: torch.Tensor, action: torch.Tensor) -> BatchSignature:
@@ -304,64 +302,6 @@ class WorldModelEngine:
         if logical_batch_size > 0:
             BATCH_FILL_RATIO.observe(size / logical_batch_size)
         self._execution_stats.record_transition_chunk(size)
-
-    def _execute_batch_legacy(self, batch: ScheduledBatch) -> list[str]:
-        """Legacy per-job execution path kept for benchmarking."""
-        completed = []
-        protected_ids = set(batch.request_ids)
-        transition_updates: list[tuple[str, int, torch.Tensor, torch.Tensor]] = []
-
-        for i, job_id in enumerate(batch.request_ids):
-            step_idx = batch.step_indices[i]
-            job = self._jobs[job_id]
-            state = self.state_manager.get(job_id)
-
-            # Get action for this step
-            if job.actions is not None and step_idx < job.actions.shape[0]:
-                action = job.actions[step_idx].unsqueeze(0).to(self.device, self.dtype)
-            else:
-                # Zero action if not provided
-                action_dim = self.config.dynamics.action_dim
-                action = torch.zeros(1, action_dim, device=self.device, dtype=self.dtype)
-
-            # Get current latent state
-            current_state = state.latent_states[-1]
-            if current_state.ndim == 2:
-                current_state = current_state.unsqueeze(0)
-
-            # Predict next state
-            next_state = self.dynamics_model.predict_next(current_state, action)
-            self._record_transition_chunk(1, batch.size)
-            transition_updates.append((job_id, step_idx, action.squeeze(0), next_state.squeeze(0)))
-
-        tensors_to_track = []
-        for _, _, action, next_state in transition_updates:
-            tensors_to_track.extend([action, next_state])
-        if tensors_to_track:
-            self.state_manager.ensure_capacity_for_tensors(tensors_to_track, protected_ids=protected_ids)
-
-        for job_id, step_idx, action, next_state in transition_updates:
-            job = self._jobs[job_id]
-            self.state_manager.append_step(
-                job_id,
-                action,
-                next_state,
-                protected_ids=protected_ids,
-            )
-
-            # Per-step callback for streaming
-            if job.step_callback is not None:
-                try:
-                    job.step_callback(job_id, step_idx, next_state)
-                except Exception:
-                    logger.exception("Step callback failed for job %s step %d", job_id, step_idx)
-
-            # Check completion
-            if self.scheduler.step_completed(job_id):
-                self.scheduler.complete(job_id)
-                completed.append(job_id)
-
-        return completed
 
     def _execute_batch_chunked(self, batch: ScheduledBatch) -> list[str]:
         """Chunked execution path that batches homogeneous transition work."""

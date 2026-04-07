@@ -20,8 +20,8 @@ class RolloutBackend(ProduceSampleBackend):
         self.backend_name = backend_name
 
     async def produce_sample(self, request: ProduceSampleRequest) -> SampleRecord:
-        if request.task_type != TaskType.WORLD_MODEL_ROLLOUT:
-            raise ValueError(f"Backend {self.backend_name} only supports world_model_rollout")
+        if request.task_type != TaskType.TEMPORAL_ROLLOUT:
+            raise ValueError(f"Backend {self.backend_name} only supports temporal_rollout")
 
         sample_id = str(uuid.uuid4())
         task_config = request.task_config

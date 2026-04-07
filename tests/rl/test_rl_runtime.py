@@ -3,7 +3,8 @@ from __future__ import annotations
 import pytest
 
 from wm_infra.controlplane import TemporalStore
-from wm_infra.consumers.rl.runtime import RLEnvironmentManager
+from wm_infra.runtime.env.manager import RLEnvironmentManager
+from wm_infra.runtime.env.state import load_runtime_state_view, split_state_handle_refs
 
 
 def test_step_many_splits_into_multiple_chunks_when_batch_exceeds_limit(tmp_path) -> None:
@@ -161,6 +162,32 @@ def test_stateless_genie_predict_many_uses_genie_action_contract(tmp_path) -> No
     assert response.runtime["chunk_sizes"] == [2, 1]
     assert all("token_l1" in item.info for item in response.results)
     assert all(len(item.observation) == manager.genie_world_model.spec.state_token_count for item in response.results)
+
+
+def test_runtime_state_view_splits_execution_residency_from_lineage(tmp_path) -> None:
+    store = TemporalStore(tmp_path / "temporal")
+    manager = RLEnvironmentManager(store)
+    context = manager.initialize_transition_context(
+        env_name="toy-line-v0",
+        task_id="toy-line-train",
+        seed=123,
+        policy_version="pi-state-split",
+        max_episode_steps=4,
+        branch_name="main",
+        labels={},
+        metadata={},
+    )
+    state_handle = store.state_handles.get(context.state_handle_id)
+    assert state_handle is not None
+
+    view = load_runtime_state_view(state_handle, dtype=manager.dtype, device=manager.device)
+    refs = split_state_handle_refs(state_handle)
+
+    assert view.execution_residency_ref.residency.value == "inline"
+    assert view.lineage_ref.branch_id == context.branch_id
+    assert refs.execution_residency_ref.residency.value == "inline"
+    assert refs.lineage_ref.branch_id == context.branch_id
+    assert refs.lineage_ref.trajectory_id == context.trajectory_id
 
 
 @pytest.mark.asyncio

@@ -1006,7 +1006,7 @@ def build_genie_execution_family(
         prompt_frames=signature.num_prompt_frames,
         memory_mode="persist" if signature.needs_persist else "runtime_hot",
         layout_key=f"token_frames:{signature.spatial_h}x{signature.spatial_w}",
-        execution_kind="world_model_rollout",
+        execution_kind="temporal_rollout",
         tokenizer_kind=signature.tokenizer_kind,
     )
 
@@ -1261,21 +1261,6 @@ def default_window_num_frames(
     if checkpoint_every_n_frames > 0:
         return max(1, min(checkpoint_every_n_frames, remaining))
     return remaining
-
-
-def default_window_size(
-    *,
-    total_frames: int,
-    prompt_frames: int,
-    checkpoint_every_n_frames: int,
-) -> int:
-    """Backward-compatible alias used by runtime tests."""
-
-    return default_window_num_frames(
-        total_frames=total_frames,
-        num_prompt_frames=prompt_frames,
-        checkpoint_every_n_frames=checkpoint_every_n_frames,
-    )
 
 
 def frame_windows(

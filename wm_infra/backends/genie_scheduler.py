@@ -86,27 +86,6 @@ class GenieChunkScheduler:
         decisions.sort(key=self._sort_key)
         return decisions
 
-    def build_chunks(
-        self,
-        entities: Iterable[GenieExecutionEntity],
-        runtime_state,
-        *,
-        persist_backlog: int = 0,
-    ) -> list[GenieExecutionChunk]:
-        """Backward-compatible wrapper used by backend and runtime tests."""
-
-        prompt_state_hot = str(getattr(runtime_state, "resident_tier", "")) == GenieQueueLane.HOT_CONTINUATION or str(
-            getattr(runtime_state, "resident_tier", "")
-        ) == "hot_gpu"
-        estimated_transfer_bytes = int(getattr(runtime_state, "materialized_bytes", 0))
-        decisions = self.schedule(
-            entities,
-            persist_backlog=persist_backlog,
-            prompt_state_hot=prompt_state_hot,
-            estimated_transfer_bytes=estimated_transfer_bytes,
-        )
-        return [decision.chunk for decision in decisions]
-
     def _build_chunk(
         self,
         signature: GenieBatchSignature,
@@ -146,6 +125,3 @@ class GenieChunkScheduler:
             lane_priority(chunk.queue_lane),
             -chunk.expected_occupancy,
         )
-
-
-GenieScheduler = GenieChunkScheduler

@@ -777,7 +777,7 @@ class GenieRunner:
         maskgit_steps: Optional[int] = None,
         temperature: Optional[float] = None,
     ) -> GenieRunResult:
-        """Backward-compatible single-call wrapper around the stage APIs."""
+        """Single-call entrypoint around the stage APIs."""
 
         output_dir.mkdir(parents=True, exist_ok=True)
 

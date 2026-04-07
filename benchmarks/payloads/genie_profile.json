@@ -1,5 +1,5 @@
 {
-  "task_type": "world_model_rollout",
+  "task_type": "temporal_rollout",
   "backend": "genie-rollout",
   "model": "genie-local",
   "sample_spec": {

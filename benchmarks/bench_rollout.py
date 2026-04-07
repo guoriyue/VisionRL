@@ -191,7 +191,7 @@ def main():
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"])
     parser.add_argument("--steps", type=int, default=16)
     parser.add_argument("--batch", type=int, default=4)
-    parser.add_argument("--execution-mode", choices=["legacy", "chunked"], default="chunked")
+    parser.add_argument("--execution-mode", choices=["chunked"], default="chunked")
     parser.add_argument("--hidden", type=int, default=256)
     parser.add_argument("--layers", type=int, default=6)
     parser.add_argument("--tokens", type=int, default=64)

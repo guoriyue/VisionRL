@@ -236,7 +236,7 @@ DEFAULT_WAN_PAYLOAD = {
 }
 
 DEFAULT_ROLLOUT_PAYLOAD = {
-    "task_type": "world_model_rollout",
+    "task_type": "temporal_rollout",
     "backend": "rollout-engine",
     "model": "latent_dynamics",
     "sample_spec": {"prompt": "predict the next robot movement", "width": 256, "height": 256},
@@ -244,7 +244,7 @@ DEFAULT_ROLLOUT_PAYLOAD = {
 }
 
 DEFAULT_GENIE_PAYLOAD = {
-    "task_type": "world_model_rollout",
+    "task_type": "temporal_rollout",
     "backend": "genie-rollout",
     "model": "genie-local",
     "sample_spec": {"prompt": "roll forward in time", "width": 256, "height": 256},
@@ -274,7 +274,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--timeout-s", type=float, default=30.0)
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
-    parser.add_argument("--execution-mode", choices=["legacy", "chunked"], default="chunked")
+    parser.add_argument("--execution-mode", choices=["chunked"], default="chunked")
     parser.add_argument("--gpu-sample-interval-ms", type=float, default=100.0)
     parser.add_argument("--persist-root", help="Optional root directory to keep in-process sample manifests and backend outputs")
     parser.add_argument("--genie-max-concurrent-jobs", type=int, default=1)

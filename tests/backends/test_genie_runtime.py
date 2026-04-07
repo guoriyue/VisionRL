@@ -12,10 +12,10 @@ from wm_infra.backends.genie_runtime import (
     build_scheduler_profile,
     build_stage_profile,
     build_transition_entities,
-    default_window_size,
+    default_window_num_frames,
     temperature_bucket,
 )
-from wm_infra.backends.genie_scheduler import GenieScheduler
+from wm_infra.backends.genie_scheduler import GenieChunkScheduler
 
 
 def _root_entity() -> GenieExecutionEntity:
@@ -57,9 +57,9 @@ def _root_entity() -> GenieExecutionEntity:
     )
 
 
-def test_default_window_size_respects_checkpoint_cadence():
-    assert default_window_size(total_frames=16, prompt_frames=4, checkpoint_every_n_frames=0) == 12
-    assert default_window_size(total_frames=16, prompt_frames=4, checkpoint_every_n_frames=4) == 4
+def test_default_window_num_frames_respects_checkpoint_cadence():
+    assert default_window_num_frames(total_frames=16, num_prompt_frames=4, checkpoint_every_n_frames=0) == 12
+    assert default_window_num_frames(total_frames=16, num_prompt_frames=4, checkpoint_every_n_frames=4) == 4
 
 
 def test_build_transition_entities_splits_by_checkpoint_window():
@@ -85,8 +85,15 @@ def test_scheduler_prefers_hot_continuation_lane():
         reuse_hits=1,
         reuse_misses=0,
     )
-    scheduler = GenieScheduler(max_chunk_size=8)
-    chunks = scheduler.build_chunks(build_transition_entities(_root_entity()), runtime_state)
+    scheduler = GenieChunkScheduler(max_chunk_size=8)
+    chunks = [
+        decision.chunk
+        for decision in scheduler.schedule(
+            build_transition_entities(_root_entity()),
+            prompt_state_hot=str(runtime_state.resident_tier) == "hot_gpu",
+            estimated_transfer_bytes=runtime_state.materialized_bytes,
+        )
+    ]
     assert len(chunks) == 3
     assert chunks[0].queue_lane == "checkpoint_heavy"
     assert chunks[0].expected_occupancy > 0

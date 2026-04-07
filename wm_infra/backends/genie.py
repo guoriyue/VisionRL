@@ -38,7 +38,7 @@ from wm_infra.backends.genie_runtime import (
     page_layout,
     prompt_cache_key,
 )
-from wm_infra.backends.genie_scheduler import GenieScheduler
+from wm_infra.backends.genie_scheduler import GenieChunkScheduler
 from wm_infra.controlplane import (
     ArtifactKind,
     ArtifactRecord,
@@ -486,8 +486,8 @@ class GenieRolloutBackend(ProduceSampleBackend):
         return transfer_fast_path
 
     async def execute_job(self, request: ProduceSampleRequest, sample_id: str) -> SampleRecord:
-        if request.task_type != TaskType.WORLD_MODEL_ROLLOUT:
-            raise ValueError(f"Backend {self.backend_name} only supports world_model_rollout tasks")
+        if request.task_type != TaskType.TEMPORAL_ROLLOUT:
+            raise ValueError(f"Backend {self.backend_name} only supports temporal_rollout tasks")
 
         from wm_infra.api.metrics import (
             GENIE_CHECKPOINT_BUILD_SECONDS,
@@ -715,7 +715,7 @@ class GenieRolloutBackend(ProduceSampleBackend):
         )
 
         transition_entities = build_transition_entities(root_entity)
-        scheduler = GenieScheduler(max_chunk_size=max(1, len(transition_entities) or 1))
+        scheduler = GenieChunkScheduler(max_chunk_size=max(1, len(transition_entities) or 1))
         decisions = scheduler.schedule(
             transition_entities,
             persist_backlog=0,
@@ -1360,8 +1360,8 @@ class GenieRolloutBackend(ProduceSampleBackend):
         entity_to_context: dict[str, dict[str, Any]] = {}
         total_materialized_bytes = 0
         for request, sample_id in items:
-            if request.task_type != TaskType.WORLD_MODEL_ROLLOUT:
-                raise ValueError(f"Backend {self.backend_name} only supports world_model_rollout tasks")
+            if request.task_type != TaskType.TEMPORAL_ROLLOUT:
+                raise ValueError(f"Backend {self.backend_name} only supports temporal_rollout tasks")
             temporal = request.temporal
             if temporal is None or not temporal.episode_id:
                 raise ValueError("genie-rollout requests require temporal.episode_id")
@@ -1599,7 +1599,7 @@ class GenieRolloutBackend(ProduceSampleBackend):
             contexts.append(ctx)
 
         all_entities = [entity for ctx in contexts for entity in ctx["transition_entities"]]
-        scheduler = GenieScheduler(max_chunk_size=max(1, len(contexts)))
+        scheduler = GenieChunkScheduler(max_chunk_size=max(1, len(contexts)))
         decisions = scheduler.schedule(
             all_entities,
             persist_backlog=0,
