@@ -20,8 +20,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable, Hashable
 
-from wm_infra.engine._types import EngineRunConfig, EntityRequest, StepResult
-from wm_infra.engine.loop import EngineLoop
+from wm_infra.engine.types import EngineRunConfig, EntityRequest, StepResult
+from wm_infra.engine.managers.engine_loop import EngineLoop
 
 
 # ------------------------------------------------------------------

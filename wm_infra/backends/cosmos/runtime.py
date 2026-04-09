@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from wm_infra.execution import ExecutionRuntimeTrace, ExecutionStageRecord
+from wm_infra.engine.types import ExecutionRuntimeTrace, ExecutionStageRecord
 
 
 class CosmosQueueLane(str, Enum):

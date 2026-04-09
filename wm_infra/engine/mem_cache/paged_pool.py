@@ -70,7 +70,7 @@ class PagedLatentPool:
         self._ref_count: dict[int, int] = {}
         self._page_tables: dict[str, PageTable] = {}
 
-        # Per-entity swap storage: entity_id → {original_block_id → cpu tensor}
+        # Per-entity swap storage: entity_id -> {original_block_id -> cpu tensor}
         # Using per-entity dicts avoids corruption when freed block IDs are
         # reused by another entity before swap-in.
         self._swap_store: dict[str, dict[int, torch.Tensor]] = {}
@@ -226,7 +226,7 @@ class PagedLatentPool:
         pt.block_ids[logical_idx] = new_bid
 
     # ------------------------------------------------------------------
-    # Swap (GPU ↔ CPU)
+    # Swap (GPU <-> CPU)
     # ------------------------------------------------------------------
 
     def swap_out(self, entity_id: str) -> tuple[int, ...]:

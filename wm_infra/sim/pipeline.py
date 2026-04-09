@@ -17,7 +17,7 @@ from typing import Any
 
 import torch
 
-from wm_infra.execution import ExecutionBatchPolicy, ExecutionChunk, chunk_fill_ratio, summarize_execution_chunks
+from wm_infra.engine.types import ExecutionBatchPolicy, ExecutionChunk, chunk_fill_ratio, summarize_execution_chunks
 from wm_infra.sim.transition import StatelessTransitionContext, build_stateless_step_chunks
 
 

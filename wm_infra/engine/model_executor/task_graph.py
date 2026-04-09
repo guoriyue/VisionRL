@@ -109,7 +109,7 @@ class TaskGraph:
     def execute(self) -> dict[str, Any]:
         """Execute all nodes in topological order.
 
-        Returns a dict mapping node name → result. On CPU (or when
+        Returns a dict mapping node name -> result. On CPU (or when
         ``use_cuda_streams=False``), execution is strictly sequential.
         When CUDA streams are enabled, nodes on different streams may
         overlap (with event-based synchronization on edges).

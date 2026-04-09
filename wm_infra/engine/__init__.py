@@ -3,7 +3,7 @@
 Public API re-exports for the engine module.
 """
 
-from wm_infra.engine._types import (
+from wm_infra.engine.types import (
     EngineRunConfig,
     EntityRequest,
     Phase,
@@ -11,38 +11,41 @@ from wm_infra.engine._types import (
     StepResult,
     SwapHandle,
 )
-from wm_infra.engine.loop import EngineLoop
-from wm_infra.engine.pipeline.stage import (
+from wm_infra.engine.managers.engine_loop import EngineLoop
+from wm_infra.engine.engine import create_async_engine
+from wm_infra.engine.model_executor.worker import (
     DynamicsStage,
     EncodeStage,
     StageRunner,
     StageSpec,
 )
-from wm_infra.engine.pipeline.task_graph import TaskEdge, TaskGraph, TaskNode
-from wm_infra.engine.scheduler import ContinuousBatchingScheduler, EntityState
-from wm_infra.engine.state.paged_pool import PagedLatentPool, PageTable
-from wm_infra.engine.state.radix_cache import RadixNode, RadixStateCache
-from wm_infra.engine.workers.queues import AsyncQueue, RequestQueue, ResultQueue
-from wm_infra.engine.workers.worker import Worker
+from wm_infra.engine.model_executor.task_graph import TaskEdge, TaskGraph, TaskNode
+from wm_infra.engine.managers.scheduler import ContinuousBatchingScheduler, EntityState
+from wm_infra.engine.mem_cache.paged_pool import PagedLatentPool, PageTable
+from wm_infra.engine.mem_cache.radix_cache import RadixNode, RadixStateCache
+from wm_infra.engine.model_executor.worker import AsyncQueue, RequestQueue, ResultQueue
+from wm_infra.engine.model_executor.worker import Worker
 
 # Rollout engine (high-level world model engine API)
-from wm_infra.engine.rollout import (
+from wm_infra.engine.engine import (
     AsyncWorldModelEngine,
+    WorldModelEngine,
+)
+from wm_infra.engine.types import (
     DEFAULT_FRAME_COUNT,
     DEFAULT_HEIGHT,
     DEFAULT_RESOURCE_UNITS_PER_GB,
     DEFAULT_WIDTH,
     HIGH_QUALITY_MEMORY_MULTIPLIER,
     LOW_VRAM_MEMORY_MULTIPLIER,
-    LatentStateManager,
     RolloutJob,
     RolloutRequest,
     RolloutResult,
-    RolloutScheduler,
     RolloutState,
     ScheduledBatch,
-    WorldModelEngine,
 )
+from wm_infra.engine.managers.scheduler import RolloutScheduler
+from wm_infra.engine.managers.state_manager import LatentStateManager
 
 __all__ = [
     # Types
@@ -54,6 +57,7 @@ __all__ = [
     "SwapHandle",
     # Loop
     "EngineLoop",
+    "create_async_engine",
     # Scheduler
     "ContinuousBatchingScheduler",
     "EntityState",

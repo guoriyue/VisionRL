@@ -1,4 +1,4 @@
-"""Engine loop — persistent async loop that drives drain → schedule → execute → output.
+"""Engine loop — persistent async loop that drives drain -> schedule -> execute -> output.
 
 The ``EngineLoop`` is the top-level orchestrator. It owns a scheduler and
 a worker, pulls requests from a queue, runs the scheduling/execution cycle
@@ -11,16 +11,15 @@ import asyncio
 import logging
 from typing import Any
 
-from wm_infra.engine._types import (
+from wm_infra.engine.types import (
     EngineRunConfig,
     EntityRequest,
     StepResult,
 )
-from wm_infra.engine.scheduler import ContinuousBatchingScheduler
-from wm_infra.engine.state.paged_pool import PagedLatentPool
-from wm_infra.engine.state.radix_cache import RadixStateCache
-from wm_infra.engine.workers.queues import RequestQueue
-from wm_infra.engine.workers.worker import Worker
+from wm_infra.engine.managers.scheduler import ContinuousBatchingScheduler
+from wm_infra.engine.mem_cache.paged_pool import PagedLatentPool
+from wm_infra.engine.mem_cache.radix_cache import RadixStateCache
+from wm_infra.engine.model_executor.worker import RequestQueue, Worker
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +141,7 @@ class EngineLoop:
     # ------------------------------------------------------------------
 
     async def _run(self) -> None:
-        """Persistent loop: drain → schedule → execute → output."""
+        """Persistent loop: drain -> schedule -> execute -> output."""
         while self._running:
             try:
                 has_active = await self._iteration()

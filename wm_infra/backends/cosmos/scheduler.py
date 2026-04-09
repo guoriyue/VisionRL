@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from wm_infra.backends.cosmos.runtime import CosmosExecutionChunk, CosmosExecutionEntity, expected_occupancy
-from wm_infra.execution import GroupedChunkDecision, schedule_grouped_chunks
+from wm_infra.engine.model_executor.chunk_scheduler import GroupedChunkDecision, schedule_grouped_chunks
 
 CosmosSchedulerDecision = GroupedChunkDecision[CosmosExecutionChunk]
 

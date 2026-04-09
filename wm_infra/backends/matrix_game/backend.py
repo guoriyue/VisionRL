@@ -25,13 +25,12 @@ from wm_infra.controlplane import (
     TaskType,
     WorldModelKind,
 )
-from wm_infra.engine.rollout import (
-    AsyncWorldModelEngine,
+from wm_infra.engine.engine import AsyncWorldModelEngine
+from wm_infra.engine.types import (
     DEFAULT_RESOURCE_UNITS_PER_GB,
     RolloutJob,
     RolloutRequest,
 )
-from wm_infra.operators import RolloutEngineDynamicsOperator
 
 
 class MatrixGameBackend(ProduceSampleBackend):
@@ -42,7 +41,6 @@ class MatrixGameBackend(ProduceSampleBackend):
 
     def __init__(self, engine: AsyncWorldModelEngine, backend_name: str = "matrix-game") -> None:
         self.engine = engine
-        self._operator = RolloutEngineDynamicsOperator(engine)
         self.backend_name = backend_name
 
     def _effective_task_config(self, request: ProduceSampleRequest) -> RolloutTaskConfig:
@@ -142,7 +140,7 @@ class MatrixGameBackend(ProduceSampleBackend):
         job.initial_latent = self._resolve_initial_latent(request, num_tokens=num_tokens, latent_dim=latent_dim)
         job.actions = action_tensor
 
-        result = await self._operator.rollout(job)
+        result = await self.engine.submit(job)
         record = SampleRecord(
             sample_id=sample_id,
             task_type=request.task_type,
@@ -158,7 +156,7 @@ class MatrixGameBackend(ProduceSampleBackend):
             resource_estimate=estimate,
             runtime={
                 "runtime_substrate": "rollout-engine",
-                "operator": self._operator.describe(),
+                "operator": {"name": "rollout-engine", "family": "dynamics"},
                 "rollout_job_id": result.job_id,
                 "steps_completed": result.steps_completed,
                 "elapsed_ms": result.elapsed_ms,

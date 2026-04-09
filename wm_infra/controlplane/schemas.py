@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 # VideoMemoryProfile and RolloutTaskConfig are owned by the engine layer
 # and re-exported here for backward compatibility.
-from wm_infra.engine._types import RolloutTaskConfig, VideoMemoryProfile  # noqa: F401
+from wm_infra.engine.types import RolloutTaskConfig, VideoMemoryProfile  # noqa: F401
 
 
 class TaskType(str, Enum):

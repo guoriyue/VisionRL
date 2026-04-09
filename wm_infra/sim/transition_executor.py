@@ -21,9 +21,9 @@ from wm_infra.controlplane import (
     StateLineageRef,
     TemporalStore,
 )
-from wm_infra.execution import ExecutionBatchPolicy
+from wm_infra.engine.types import ExecutionBatchPolicy
 from wm_infra.sim.dispatch import AsyncTransitionDispatcher, TransitionDispatch
-from wm_infra.sim.catalog import LearnedEnvCatalog
+from wm_infra.sim.registry import LearnedEnvCatalog
 from wm_infra.sim.persistence import (
     TransitionExecutionResult,
     TransitionPersistenceContext,
@@ -33,6 +33,77 @@ from wm_infra.sim.persistence import (
 from wm_infra.sim.pipeline import TransitionStagePipeline
 from wm_infra.sim.state import load_runtime_state_view
 from wm_infra.sim.transition import StatelessTransitionContext
+
+
+def load_stateless_context(
+    *,
+    temporal_store: TemporalStore,
+    catalog: LearnedEnvCatalog,
+    device: torch.device,
+    dtype: torch.dtype,
+    state_handle_id: str,
+    trajectory_id: str | None,
+    max_episode_steps: int | None,
+    policy_version: str | None,
+) -> StatelessTransitionContext:
+    """Load a stateless transition context from a persisted state handle.
+
+    Standalone function so callers don't need a full TransitionExecutor.
+    """
+    state_handle = temporal_store.state_handles.get(state_handle_id)
+    if state_handle is None:
+        raise KeyError(state_handle_id)
+    resolved = load_runtime_state_view(state_handle, dtype=dtype, device=device)
+    env_name = str(resolved.lineage_ref.env_name)
+    task_id = str(resolved.lineage_ref.task_id)
+    if not env_name or env_name == "None":
+        raise ValueError(f"state_handle {state_handle_id} is missing metadata.env_name")
+    if not task_id or task_id == "None":
+        raise ValueError(f"state_handle {state_handle_id} is missing metadata.task_id")
+    if state_handle.branch_id is None:
+        raise ValueError(f"state_handle {state_handle_id} is missing branch_id")
+    task = catalog.resolve_task(task_id, env_name=env_name)
+    spec = catalog.resolve_env_spec(env_name)
+
+    from wm_infra.sim.session_store import ensure_stateless_trajectory
+    trajectory = ensure_stateless_trajectory(
+        temporal_store,
+        env_name=env_name,
+        task=task,
+        episode_id=state_handle.episode_id,
+        branch_id=state_handle.branch_id,
+        trajectory_id=trajectory_id,
+        policy_version=policy_version,
+        max_episode_steps=max_episode_steps or spec.default_horizon,
+        metadata={"source_state_handle_id": state_handle_id},
+    )
+    if state_handle.lineage_ref is None:
+        state_handle.lineage_ref = StateLineageRef(
+            env_name=env_name,
+            task_id=task_id,
+            trajectory_id=trajectory.trajectory_id,
+            step_idx=resolved.step_idx,
+        )
+    elif state_handle.lineage_ref.trajectory_id is None:
+        state_handle.lineage_ref.trajectory_id = trajectory.trajectory_id
+    if state_handle.execution_state_ref is None:
+        state_handle.execution_state_ref = ExecutionStateRef(device=str(device))
+    temporal_store.state_handles.put(state_handle)
+    return StatelessTransitionContext(
+        env_name=env_name,
+        task_id=task_id,
+        episode_id=state_handle.episode_id,
+        branch_id=state_handle.branch_id,
+        trajectory_id=trajectory.trajectory_id,
+        state_handle_id=state_handle_id,
+        checkpoint_id=resolved.checkpoint_id,
+        policy_version=policy_version or trajectory.policy_version,
+        max_episode_steps=int(trajectory.metadata.get("max_episode_steps", max_episode_steps or spec.default_horizon)),
+        state=resolved.state,
+        goal=resolved.goal,
+        step_idx=resolved.step_idx,
+        scope_id=trajectory.env_id,
+    )
 
 
 class TransitionExecutor:
@@ -284,59 +355,15 @@ class TransitionExecutor:
         max_episode_steps: int | None,
         policy_version: str | None,
     ) -> StatelessTransitionContext:
-        state_handle = self.temporal_store.state_handles.get(state_handle_id)
-        if state_handle is None:
-            raise KeyError(state_handle_id)
-        resolved = load_runtime_state_view(state_handle, dtype=self.dtype, device=self.device)
-        env_name = str(resolved.lineage_ref.env_name)
-        task_id = str(resolved.lineage_ref.task_id)
-        if not env_name or env_name == "None":
-            raise ValueError(f"state_handle {state_handle_id} is missing metadata.env_name")
-        if not task_id or task_id == "None":
-            raise ValueError(f"state_handle {state_handle_id} is missing metadata.task_id")
-        if state_handle.branch_id is None:
-            raise ValueError(f"state_handle {state_handle_id} is missing branch_id")
-        task = self.catalog.resolve_task(task_id, env_name=env_name)
-        spec = self.catalog.resolve_env_spec(env_name)
-
-        from wm_infra.sim.session_store import ensure_stateless_trajectory
-        trajectory = ensure_stateless_trajectory(
-            self.temporal_store,
-            env_name=env_name,
-            task=task,
-            episode_id=state_handle.episode_id,
-            branch_id=state_handle.branch_id,
-            trajectory_id=trajectory_id,
-            policy_version=policy_version,
-            max_episode_steps=max_episode_steps or spec.default_horizon,
-            metadata={"source_state_handle_id": state_handle_id},
-        )
-        if state_handle.lineage_ref is None:
-            state_handle.lineage_ref = StateLineageRef(
-                env_name=env_name,
-                task_id=task_id,
-                trajectory_id=trajectory.trajectory_id,
-                step_idx=resolved.step_idx,
-            )
-        elif state_handle.lineage_ref.trajectory_id is None:
-            state_handle.lineage_ref.trajectory_id = trajectory.trajectory_id
-        if state_handle.execution_state_ref is None:
-            state_handle.execution_state_ref = ExecutionStateRef(device=str(self.device))
-        self.temporal_store.state_handles.put(state_handle)
-        return StatelessTransitionContext(
-            env_name=env_name,
-            task_id=task_id,
-            episode_id=state_handle.episode_id,
-            branch_id=state_handle.branch_id,
-            trajectory_id=trajectory.trajectory_id,
+        return load_stateless_context(
+            temporal_store=self.temporal_store,
+            catalog=self.catalog,
+            device=self.device,
+            dtype=self.dtype,
             state_handle_id=state_handle_id,
-            checkpoint_id=resolved.checkpoint_id,
-            policy_version=policy_version or trajectory.policy_version,
-            max_episode_steps=int(trajectory.metadata.get("max_episode_steps", max_episode_steps or spec.default_horizon)),
-            state=resolved.state,
-            goal=resolved.goal,
-            step_idx=resolved.step_idx,
-            scope_id=trajectory.env_id,
+            trajectory_id=trajectory_id,
+            max_episode_steps=max_episode_steps,
+            policy_version=policy_version,
         )
 
     def _build_persistence_plans(

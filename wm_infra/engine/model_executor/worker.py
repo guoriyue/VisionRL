@@ -1,20 +1,153 @@
-"""Worker — owns the pool and stages, executes batched gather/forward/scatter.
+"""Worker, queues, and stage runners for engine execution.
 
-The worker is the leaf executor in the engine hierarchy: the engine loop
-calls ``execute_step()`` and the worker handles gather from pool →
-stage forward → scatter to pool.
+Merges:
+- workers/queues.py (AsyncQueue, RequestQueue, ResultQueue)
+- pipeline/stage.py (StageRunner, StageSpec, EncodeStage, DynamicsStage)
+- workers/worker.py (Worker)
 """
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+import asyncio
+from dataclasses import dataclass
+from typing import Any, Generic, Protocol, Sequence, TypeVar, runtime_checkable
 
 import torch
 
-from wm_infra.engine._types import StepResult
-from wm_infra.engine.pipeline.stage import StageRunner
-from wm_infra.engine.pipeline.task_graph import TaskGraph
-from wm_infra.engine.state.paged_pool import PagedLatentPool
+from wm_infra.engine.types import EntityRequest, StepResult
+from wm_infra.engine.mem_cache.paged_pool import PagedLatentPool
+from wm_infra.engine.model_executor.task_graph import TaskGraph
+
+
+# ---------------------------------------------------------------------------
+# Async queues (from workers/queues.py)
+# ---------------------------------------------------------------------------
+
+T = TypeVar("T")
+
+
+class AsyncQueue(Generic[T]):
+    """Simple typed wrapper around ``asyncio.Queue``."""
+
+    def __init__(self, maxsize: int = 0) -> None:
+        self._queue: asyncio.Queue[T] = asyncio.Queue(maxsize=maxsize)
+
+    async def put(self, item: T) -> None:
+        await self._queue.put(item)
+
+    def put_nowait(self, item: T) -> None:
+        self._queue.put_nowait(item)
+
+    async def get(self) -> T:
+        return await self._queue.get()
+
+    def get_nowait(self) -> T:
+        return self._queue.get_nowait()
+
+    def empty(self) -> bool:
+        return self._queue.empty()
+
+    def qsize(self) -> int:
+        return self._queue.qsize()
+
+    def drain(self) -> list[T]:
+        """Non-blocking drain: pop all currently available items."""
+        items: list[T] = []
+        while not self._queue.empty():
+            try:
+                items.append(self._queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        return items
+
+
+class RequestQueue(AsyncQueue[EntityRequest]):
+    """Queue for incoming entity requests."""
+    pass
+
+
+class ResultQueue(AsyncQueue[StepResult]):
+    """Queue for outgoing step results."""
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Stage runners (from pipeline/stage.py)
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class StageRunner(Protocol):
+    """Protocol for a runnable engine stage."""
+
+    name: str
+
+    def forward(self, batch: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+        """Run the stage on a batched tensor and return the result."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class StageSpec:
+    """Declarative specification for a pipeline stage."""
+
+    name: str
+    stream_id: int = 0
+    device: str = "cpu"
+    priority: int = 0
+
+
+class EncodeStage:
+    """Encode (tokenize) observations into latent space.
+
+    For testing, uses a simple linear projection. In production this would
+    wrap the video tokenizer encoder.
+    """
+
+    name: str = "encode"
+
+    def __init__(
+        self,
+        latent_dim: int = 16,
+        observation_dim: int | None = None,
+    ) -> None:
+        self.latent_dim = latent_dim
+        self.observation_dim = observation_dim or latent_dim
+
+    def forward(self, batch: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+        """Encode observations -> latent. Identity/passthrough for shape compatibility."""
+        if batch.shape[-1] == self.latent_dim:
+            return batch
+        # Simple truncation/padding to latent_dim
+        if batch.shape[-1] > self.latent_dim:
+            return batch[..., : self.latent_dim]
+        pad = torch.zeros(
+            *batch.shape[:-1], self.latent_dim - batch.shape[-1],
+            device=batch.device, dtype=batch.dtype,
+        )
+        return torch.cat([batch, pad], dim=-1)
+
+
+class DynamicsStage:
+    """One step of the dynamics model (world model forward).
+
+    For testing, applies a simple additive offset. In production this wraps
+    the block-causal transformer.
+    """
+
+    name: str = "dynamics"
+
+    def __init__(self, step_delta: float = 0.01) -> None:
+        self.step_delta = step_delta
+
+    def forward(self, batch: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+        """Dynamics step: latent_t -> latent_{t+1}."""
+        return batch + self.step_delta
+
+
+# ---------------------------------------------------------------------------
+# Worker (from workers/worker.py)
+# ---------------------------------------------------------------------------
 
 
 class Worker:
@@ -57,7 +190,7 @@ class Worker:
     ) -> list[StepResult]:
         """Execute a batched stage on the given entities.
 
-        Steps: gather from pool → stage forward → scatter to pool → results.
+        Steps: gather from pool -> stage forward -> scatter to pool -> results.
         """
         stage = self._stages.get(stage_name)
         if stage is None:

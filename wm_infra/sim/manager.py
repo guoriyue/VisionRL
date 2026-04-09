@@ -23,9 +23,9 @@ from wm_infra.api.protocol import (
     TransitionPredictResponse,
 )
 from wm_infra.controlplane import EnvironmentSessionRecord, TemporalStore, TrajectoryRecord
-from wm_infra.execution import ExecutionBatchPolicy
+from wm_infra.engine.types import ExecutionBatchPolicy
 from wm_infra.sim.dispatch import AsyncTransitionDispatcher, TransitionDispatch
-from wm_infra.sim.catalog import LearnedEnvCatalog
+from wm_infra.sim.registry import LearnedEnvCatalog
 from wm_infra.sim.registry import EnvRegistry
 from wm_infra.sim.session_store import SessionStore
 from wm_infra.sim.transition_executor import TransitionExecutor

@@ -6,14 +6,14 @@ from dataclasses import dataclass
 
 import torch
 
-from wm_infra.execution import (
+from wm_infra.engine.types import (
     BatchSignature,
     ExecutionBatchPolicy,
     ExecutionChunk,
     ExecutionEntity,
     ExecutionWorkItem,
-    HomogeneousChunkScheduler,
 )
+from wm_infra.engine.model_executor.chunk_scheduler import HomogeneousChunkScheduler
 
 
 @dataclass(slots=True)

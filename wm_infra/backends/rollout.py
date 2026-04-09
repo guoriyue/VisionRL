@@ -8,8 +8,8 @@ import torch
 
 from wm_infra.backends.base import ProduceSampleBackend
 from wm_infra.controlplane.schemas import ArtifactKind, ArtifactRecord, ProduceSampleRequest, ResourceEstimate, SampleRecord, SampleStatus, TaskType, WorldModelKind
-from wm_infra.engine.rollout import AsyncWorldModelEngine, DEFAULT_RESOURCE_UNITS_PER_GB, RolloutJob, RolloutRequest
-from wm_infra.operators import RolloutEngineDynamicsOperator
+from wm_infra.engine.engine import AsyncWorldModelEngine
+from wm_infra.engine.types import DEFAULT_RESOURCE_UNITS_PER_GB, RolloutJob, RolloutRequest
 
 
 class RolloutBackend(ProduceSampleBackend):
@@ -20,7 +20,6 @@ class RolloutBackend(ProduceSampleBackend):
 
     def __init__(self, engine: AsyncWorldModelEngine, backend_name: str = "rollout-engine") -> None:
         self.engine = engine
-        self._operator = RolloutEngineDynamicsOperator(engine)
         self.backend_name = backend_name
 
     async def produce_sample(self, request: ProduceSampleRequest) -> SampleRecord:
@@ -50,7 +49,7 @@ class RolloutBackend(ProduceSampleBackend):
         latent_dim = self.engine.engine.config.dynamics.latent_token_dim
         job.initial_latent = torch.randn(num_tokens, latent_dim)
 
-        result = await self._operator.rollout(job)
+        result = await self.engine.submit(job)
         record = SampleRecord(
             sample_id=sample_id,
             task_type=request.task_type,
@@ -67,7 +66,7 @@ class RolloutBackend(ProduceSampleBackend):
                 "rollout_job_id": result.job_id,
                 "steps_completed": result.steps_completed,
                 "elapsed_ms": result.elapsed_ms,
-                "operator": self._operator.describe(),
+                "operator": {"name": "rollout-engine", "family": "dynamics"},
             },
             metadata={"evaluation_policy": request.evaluation_policy, "priority": request.priority, "labels": request.labels},
         )

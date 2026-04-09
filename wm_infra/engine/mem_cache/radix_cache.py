@@ -156,7 +156,7 @@ class RadixStateCache:
                 child, evicted, remaining - removed_count
             )
 
-            # After recursion, if child is an unreferenced leaf → evict it
+            # After recursion, if child is an unreferenced leaf -> evict it
             if (
                 child.is_leaf
                 and child.ref_count == 0
