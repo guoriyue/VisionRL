@@ -6,144 +6,74 @@ request/response cycle without starting a real server process.
 
 import asyncio
 import json
-import time
 from urllib.parse import quote
 
-import httpx
 import pytest
-import pytest_asyncio
 
 import wm_infra.api.server as server_module
-from wm_infra.api.server import create_app
-from wm_infra.config import ControlPlaneConfig, DynamicsConfig, EngineConfig, StateCacheConfig, TokenizerConfig
-from wm_infra.controlplane import ArtifactKind, SampleManifestStore, TemporalStore
+from tests.base import BaseApiTestCase
+from wm_infra.controlplane import ArtifactKind
 
 
-def _test_config() -> EngineConfig:
-    """Small CPU config for integration testing."""
-    return EngineConfig(
-        device="cpu",
-        dtype="float32",
-        dynamics=DynamicsConfig(
-            hidden_dim=64,
-            num_heads=4,
-            num_layers=2,
-            action_dim=8,
-            latent_token_dim=6,
-            max_rollout_steps=16,
-        ),
-        tokenizer=TokenizerConfig(
-            spatial_downsample=2,
-            temporal_downsample=1,
-            latent_channels=16,
-            fsq_levels=[4, 4, 4, 3, 3, 3],
-        ),
-        state_cache=StateCacheConfig(
-            max_batch_size=8,
-            max_rollout_steps=16,
-            latent_dim=6,
-            num_latent_tokens=16,
-            pool_size_gb=0.1,
-        ),
-        controlplane=ControlPlaneConfig(wan_engine_adapter="stub"),
-    )
+class TestServerEngine(BaseApiTestCase):
+    def test_create_async_engine_uses_strict_state_loading(self, monkeypatch):
+        calls = {}
+
+        class DummyDynamics:
+            def __init__(self, config):
+                self.config = config
+
+            def load_state_dict(self, state_dict, strict=True):
+                calls["dynamics_strict"] = strict
+                calls["dynamics_state_dict"] = state_dict
+
+            def to(self, *args, **kwargs):
+                return self
+
+            def eval(self):
+                return self
+
+        class DummyTokenizer:
+            def __init__(self, config):
+                self.config = config
+
+            def load_state_dict(self, state_dict, strict=True):
+                calls["tokenizer_strict"] = strict
+                calls["tokenizer_state_dict"] = state_dict
+
+            def to(self, *args, **kwargs):
+                return self
+
+            def eval(self):
+                return self
+
+        class DummyEngine:
+            def __init__(self, config, dynamics, tokenizer, execution_mode="chunked"):
+                calls["execution_mode"] = execution_mode
+                calls["config"] = config
+                calls["dynamics"] = dynamics
+                calls["tokenizer"] = tokenizer
+
+        monkeypatch.setattr(server_module, "LatentDynamicsModel", DummyDynamics)
+        monkeypatch.setattr(server_module, "VideoTokenizer", DummyTokenizer)
+        monkeypatch.setattr(server_module, "AsyncWorldModelEngine", DummyEngine)
+        monkeypatch.setattr(
+            server_module.torch,
+            "load",
+            lambda *args, **kwargs: {"dynamics": {"weights": 1}, "tokenizer": {"vocab": 2}},
+        )
+
+        config = self.build_engine_config()
+        config.model_path = "dummy-model.pt"
+        engine = server_module._create_async_engine(config)
+
+        assert isinstance(engine, DummyEngine)
+        assert calls["dynamics_strict"] is True
+        assert calls["tokenizer_strict"] is True
+        assert calls["execution_mode"] == "chunked"
 
 
-def test_create_async_engine_uses_strict_state_loading(monkeypatch):
-    calls = {}
-
-    class DummyDynamics:
-        def __init__(self, config):
-            self.config = config
-
-        def load_state_dict(self, state_dict, strict=True):
-            calls["dynamics_strict"] = strict
-            calls["dynamics_state_dict"] = state_dict
-
-        def to(self, *args, **kwargs):
-            return self
-
-        def eval(self):
-            return self
-
-    class DummyTokenizer:
-        def __init__(self, config):
-            self.config = config
-
-        def load_state_dict(self, state_dict, strict=True):
-            calls["tokenizer_strict"] = strict
-            calls["tokenizer_state_dict"] = state_dict
-
-        def to(self, *args, **kwargs):
-            return self
-
-        def eval(self):
-            return self
-
-    class DummyEngine:
-        def __init__(self, config, dynamics, tokenizer, execution_mode="chunked"):
-            calls["execution_mode"] = execution_mode
-            calls["config"] = config
-            calls["dynamics"] = dynamics
-            calls["tokenizer"] = tokenizer
-
-    monkeypatch.setattr(server_module, "LatentDynamicsModel", DummyDynamics)
-    monkeypatch.setattr(server_module, "VideoTokenizer", DummyTokenizer)
-    monkeypatch.setattr(server_module, "AsyncWorldModelEngine", DummyEngine)
-    monkeypatch.setattr(
-        server_module.torch,
-        "load",
-        lambda *args, **kwargs: {"dynamics": {"weights": 1}, "tokenizer": {"vocab": 2}},
-    )
-
-    config = _test_config()
-    config.model_path = "dummy-model.pt"
-    engine = server_module._create_async_engine(config)
-
-    assert isinstance(engine, DummyEngine)
-    assert calls["dynamics_strict"] is True
-    assert calls["tokenizer_strict"] is True
-    assert calls["execution_mode"] == "chunked"
-
-
-@pytest_asyncio.fixture
-async def client(tmp_path):
-    """Create an httpx AsyncClient connected to the test app."""
-    from asgi_lifespan import LifespanManager
-
-    config = _test_config()
-    config.controlplane.cosmos_output_root = str(tmp_path / "cosmos")
-    config.controlplane.wan_output_root = str(tmp_path / "wan")
-    config.controlplane.wan_engine_adapter = "stub"
-    temporal_store = TemporalStore(tmp_path / "temporal")
-    app = create_app(
-        config,
-        sample_store=SampleManifestStore(tmp_path),
-        temporal_store=temporal_store,
-    )
-
-    async with LifespanManager(app) as manager:
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=manager.app),
-            base_url="http://test",
-        ) as c:
-            yield c
-
-
-async def _wait_for_terminal_sample(client: httpx.AsyncClient, sample_id: str, timeout_s: float = 2.0):
-    deadline = time.monotonic() + timeout_s
-    last = None
-    while time.monotonic() < deadline:
-        resp = await client.get(f"/v1/samples/{sample_id}")
-        assert resp.status_code == 200
-        last = resp.json()
-        if last["status"] in {"succeeded", "failed", "accepted"}:
-            return last
-        await asyncio.sleep(0.05)
-    raise AssertionError(f"sample {sample_id} did not reach terminal state; last={last}")
-
-
-class TestHealth:
+class TestHealth(BaseApiTestCase):
     @pytest.mark.asyncio
     async def test_health_endpoint(self, client):
         resp = await client.get("/v1/health")
@@ -159,7 +89,7 @@ class TestHealth:
         assert resp.json()["active_rollouts"] == 0
 
 
-class TestModels:
+class TestModels(BaseApiTestCase):
     @pytest.mark.asyncio
     async def test_list_models(self, client):
         resp = await client.get("/v1/models")
@@ -169,7 +99,7 @@ class TestModels:
         assert "latent_dynamics" in data["models"]
 
 
-class TestBackends:
+class TestBackends(BaseApiTestCase):
     @pytest.mark.asyncio
     async def test_list_backends(self, client):
         resp = await client.get("/v1/backends")
@@ -203,7 +133,7 @@ class TestBackends:
         assert backends["wan-video"]["admission_max_vram_gb"] == 32.0
 
 
-class TestRollout:
+class TestRollout(BaseApiTestCase):
     @pytest.mark.asyncio
     async def test_basic_rollout(self, client):
         resp = await client.post("/v1/rollout", json={
@@ -261,7 +191,7 @@ class TestRollout:
             assert resp.json()["steps_completed"] == 2
 
 
-class TestSamples:
+class TestSamples(BaseApiTestCase):
     @pytest.mark.asyncio
     async def test_create_and_get_sample_manifest(self, client):
         resp = await client.post("/v1/samples", json={
@@ -326,7 +256,7 @@ class TestSamples:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "queued"
-        terminal = await _wait_for_terminal_sample(client, data["sample_id"])
+        terminal = await self.wait_for_terminal_sample(client, data["sample_id"])
         assert terminal["status"] == "succeeded"
         assert terminal["runtime"]["runner_mode"] == "stub"
         assert terminal["world_model_kind"] == "generation"
@@ -430,7 +360,7 @@ class TestSamples:
         sample_id = resp.json()["sample_id"]
         assert resp.json()["status"] == "queued"
 
-        final = await _wait_for_terminal_sample(client, sample_id)
+        final = await self.wait_for_terminal_sample(client, sample_id)
         assert final["status"] == "accepted"
         assert final["runtime"]["runner"] == "stub"
         assert final["runtime"]["execution_backend"] == "in_process_stage_scheduler"
@@ -456,32 +386,26 @@ class TestSamples:
     async def test_create_wan_video_can_be_rejected_by_admission(self, tmp_path):
         from asgi_lifespan import LifespanManager
 
-        config = _test_config()
+        config = self.build_engine_config()
         config.controlplane.wan_output_root = str(tmp_path / "wan")
         config.controlplane.wan_admission_max_vram_gb = 10.0
-        app = create_app(config, sample_store=SampleManifestStore(tmp_path))
-
-        async with LifespanManager(app) as manager:
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=manager.app),
-                base_url="http://test",
-            ) as c:
-                resp = await c.post("/v1/samples", json={
-                    "task_type": "text_to_video",
-                    "backend": "wan-video",
-                    "model": "wan2.2-t2v-A14B",
-                    "sample_spec": {"prompt": "too big"},
-                    "wan_config": {"num_steps": 4, "frame_count": 17, "width": 832, "height": 480},
-                })
-                assert resp.status_code == 200
-                data = resp.json()
-                assert data["status"] == "rejected"
-                assert data["runtime"]["admission"]["admitted"] is False
-                assert "estimated_vram_gb" in " ".join(data["runtime"]["admission"]["reasons"])
-                assert data["runtime"]["admission"]["quality_cost_hints"]["suggested_adjustments"]
-                fetched = await c.get(f"/v1/samples/{data['sample_id']}")
-                assert fetched.status_code == 200
-                assert fetched.json()["status"] == "rejected"
+        async with self.client_for_config(tmp_path, config=config) as client:
+            resp = await client.post("/v1/samples", json={
+                "task_type": "text_to_video",
+                "backend": "wan-video",
+                "model": "wan2.2-t2v-A14B",
+                "sample_spec": {"prompt": "too big"},
+                "wan_config": {"num_steps": 4, "frame_count": 17, "width": 832, "height": 480},
+            })
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "rejected"
+            assert data["runtime"]["admission"]["admitted"] is False
+            assert "estimated_vram_gb" in " ".join(data["runtime"]["admission"]["reasons"])
+            assert data["runtime"]["admission"]["quality_cost_hints"]["suggested_adjustments"]
+            fetched = await client.get(f"/v1/samples/{data['sample_id']}")
+            assert fetched.status_code == 200
+            assert fetched.json()["status"] == "rejected"
 
     @pytest.mark.asyncio
     async def test_create_sample_rejects_unknown_backend(self, client):
@@ -516,7 +440,7 @@ class TestSamples:
         assert resp.status_code == 404
 
 
-class TestArtifacts:
+class TestArtifacts(BaseApiTestCase):
     @pytest.mark.asyncio
     async def test_list_artifacts(self, client):
         resp = await client.post("/v1/samples", json={
@@ -526,7 +450,7 @@ class TestArtifacts:
             "sample_spec": {"prompt": "artifact list"},
         })
         sample_id = resp.json()["sample_id"]
-        data = await _wait_for_terminal_sample(client, sample_id)
+        data = await self.wait_for_terminal_sample(client, sample_id)
         assert data["status"] == "accepted"
 
         art_resp = await client.get(f"/v1/samples/{sample_id}/artifacts")
@@ -548,7 +472,7 @@ class TestArtifacts:
         })
         sample_id = resp.json()["sample_id"]
 
-        data = await _wait_for_terminal_sample(client, sample_id)
+        data = await self.wait_for_terminal_sample(client, sample_id)
         assert data["status"] == "accepted"
 
         # Fetch log artifact metadata
@@ -571,7 +495,7 @@ class TestArtifacts:
         })
         sample_id = resp.json()["sample_id"]
 
-        await _wait_for_terminal_sample(client, sample_id)
+        await self.wait_for_terminal_sample(client, sample_id)
 
         # Fetch the log file content
         log_artifact_id = quote(f"{sample_id}:log", safe="")
@@ -593,12 +517,10 @@ class TestArtifacts:
         assert art_resp.status_code == 404
 
 
-class TestTemporalControlPlane:
+class TestTemporalControlPlane(BaseApiTestCase):
     @pytest.mark.asyncio
     async def test_default_wan_backend_uses_controlplane_batching_config(self, tmp_path):
-        from asgi_lifespan import LifespanManager
-
-        config = _test_config()
+        config = self.build_engine_config()
         config.controlplane.manifest_store_root = str(tmp_path / "manifests")
         config.controlplane.wan_output_root = str(tmp_path / "wan")
         config.controlplane.cosmos_output_root = str(tmp_path / "cosmos")
@@ -607,14 +529,9 @@ class TestTemporalControlPlane:
         config.controlplane.wan_warm_pool_size = 5
         config.controlplane.wan_prewarm_common_signatures = False
 
-        temporal_store = TemporalStore(tmp_path / "temporal")
-        app = create_app(
-            config,
-            sample_store=SampleManifestStore(tmp_path / "manifests"),
-            temporal_store=temporal_store,
-        )
+        app = self.build_app(tmp_path, config=config, sample_store=self.make_sample_store(tmp_path / "manifests"))
 
-        async with LifespanManager(app):
+        async with self.client_for_app(app):
             backend = app.state.backend_registry.get("wan-video")
             assert backend is not None
             assert backend.max_batch_size == 3
@@ -628,7 +545,7 @@ class TestTemporalControlPlane:
             assert snapshot["batch_select_enabled"] is True
 
 
-class TestQueueStatus:
+class TestQueueStatus(BaseApiTestCase):
     @pytest.mark.asyncio
     async def test_queue_status_endpoint(self, client):
         resp = await client.get("/v1/queue/status")
@@ -643,52 +560,42 @@ class TestQueueStatus:
         assert isinstance(data["queues"]["wan"]["queued_sample_ids"], list)
 
 
-class TestShellRunner:
+class TestShellRunner(BaseApiTestCase):
     @pytest.mark.asyncio
     async def test_wan_shell_runner_failure_is_recorded(self, tmp_path):
-        from asgi_lifespan import LifespanManager
-
-        config = _test_config()
+        config = self.build_engine_config()
         config.controlplane.wan_output_root = str(tmp_path / "wan")
         config.controlplane.wan_engine_adapter = "disabled"
         config.controlplane.wan_shell_runner = "python -c \"import sys; print('runner boom'); sys.exit(7)\""
-        app = create_app(config, sample_store=SampleManifestStore(tmp_path))
+        async with self.client_for_config(tmp_path, config=config) as client:
+            resp = await client.post("/v1/samples", json={
+                "task_type": "text_to_video",
+                "backend": "wan-video",
+                "model": "wan2.2-t2v-A14B",
+                "sample_spec": {"prompt": "fail loudly"},
+            })
 
-        async with LifespanManager(app) as manager:
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=manager.app),
-                base_url="http://test",
-            ) as shell_client:
-                resp = await shell_client.post("/v1/samples", json={
-                    "task_type": "text_to_video",
-                    "backend": "wan-video",
-                    "model": "wan2.2-t2v-A14B",
-                    "sample_spec": {"prompt": "fail loudly"},
-                })
+            assert resp.status_code == 200
+            sample_id = resp.json()["sample_id"]
+            assert resp.json()["status"] == "queued"
 
-                # Job is queued async — wait for background worker to complete it
-                assert resp.status_code == 200
-                sample_id = resp.json()["sample_id"]
-                assert resp.json()["status"] == "queued"
-
-                data = await _wait_for_terminal_sample(shell_client, sample_id)
-                assert data["status"] == "failed"
-                assert data["runtime"]["runner"] == "shell"
-                assert data["runtime"]["returncode"] == 7
-                failure_artifacts = [artifact for artifact in data["artifacts"] if artifact["metadata"].get("role") == "failure"]
-                assert len(failure_artifacts) == 1
-                failure_meta = await shell_client.get(f"/v1/samples/{sample_id}/artifacts/{quote(f'{sample_id}:failure', safe='')}")
-                assert failure_meta.status_code == 200
+            data = await self.wait_for_terminal_sample(client, sample_id)
+            assert data["status"] == "failed"
+            assert data["runtime"]["runner"] == "shell"
+            assert data["runtime"]["returncode"] == 7
+            failure_artifacts = [artifact for artifact in data["artifacts"] if artifact["metadata"].get("role") == "failure"]
+            assert len(failure_artifacts) == 1
+            failure_meta = await client.get(f"/v1/samples/{sample_id}/artifacts/{quote(f'{sample_id}:failure', safe='')}")
+            assert failure_meta.status_code == 200
 
 
-class TestOfficialRunner:
+class TestOfficialRunner(BaseApiTestCase):
     @pytest.mark.asyncio
     async def test_official_runner_mode_reflected_in_backend(self, tmp_path):
         """Verify that when wan_repo_dir is set, runner_mode is 'official'."""
-        from asgi_lifespan import LifespanManager
         from wm_infra.backends import BackendRegistry, WanVideoBackend
 
-        config = _test_config()
+        config = self.build_engine_config()
         wan_root = str(tmp_path / "wan")
         registry = BackendRegistry()
         wan_backend = WanVideoBackend(
@@ -699,17 +606,11 @@ class TestOfficialRunner:
         )
         registry.register(wan_backend)
 
-        app = create_app(config, sample_store=SampleManifestStore(tmp_path), backend_registry=registry)
-
-        async with LifespanManager(app) as manager:
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=manager.app),
-                base_url="http://test",
-            ) as c:
-                resp = await c.get("/v1/backends")
-                assert resp.status_code == 200
-                backends = {b["name"]: b for b in resp.json()["backends"]}
-                assert backends["wan-video"]["runner_mode"] == "official"
+        async with self.client_for_config(tmp_path, config=config, backend_registry=registry) as client:
+            resp = await client.get("/v1/backends")
+            assert resp.status_code == 200
+            backends = {b["name"]: b for b in resp.json()["backends"]}
+            assert backends["wan-video"]["runner_mode"] == "official"
 
     def test_official_runner_builds_i2v_command_with_reference(self, tmp_path):
         from wm_infra.backends import WanVideoBackend
@@ -752,7 +653,7 @@ class TestOfficialRunner:
         assert "--image /tmp/input.png" in cmd
 
 
-class TestStreaming:
+class TestStreaming(BaseApiTestCase):
     @pytest.mark.asyncio
     async def test_sse_streaming(self, client):
         async with client.stream(
@@ -788,7 +689,7 @@ class TestStreaming:
             assert events[0]["latent"] is not None
 
 
-class TestMetrics:
+class TestMetrics(BaseApiTestCase):
     @pytest.mark.asyncio
     async def test_metrics_endpoint(self, client):
         resp = await client.get("/metrics")
@@ -797,7 +698,7 @@ class TestMetrics:
         assert "wm_request_total" in text or "wm_batch_size" in text
 
 
-class TestErrors:
+class TestErrors(BaseApiTestCase):
     @pytest.mark.asyncio
     async def test_invalid_num_steps(self, client):
         resp = await client.post("/v1/rollout", json={

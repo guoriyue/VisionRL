@@ -59,7 +59,7 @@ from wm_infra.controlplane import (
     StateHandleCreate,
     TemporalStore,
 )
-from wm_infra.rollout_engine import AsyncWorldModelEngine, RolloutJob
+from wm_infra.engine.compat_rollout import AsyncWorldModelEngine, RolloutJob
 from wm_infra.models.dynamics import LatentDynamicsModel
 from wm_infra.workloads.reinforcement_learning.runtime import ReinforcementLearningEnvManager
 from wm_infra.tokenizer.video_tokenizer import VideoTokenizer

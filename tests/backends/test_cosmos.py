@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.base import BaseTestCase
 from wm_infra.backends.cosmos import CosmosPredictBackend
 from wm_infra.backends.cosmos import CosmosRunner
 from wm_infra.backends.job_queue import CosmosJobQueue
@@ -28,7 +29,7 @@ def _cosmos_request() -> ProduceSampleRequest:
     )
 
 
-class TestCosmosRunner:
+class TestCosmosRunner(BaseTestCase):
     def test_stub_mode_writes_deterministic_video_bytes(self, tmp_path):
         runner = CosmosRunner()
         request = _cosmos_request()
@@ -61,7 +62,7 @@ class TestCosmosRunner:
         assert "seed" not in payload or payload["seed"] is None
 
 
-class TestCosmosBackend:
+class TestCosmosBackend(BaseTestCase):
     @pytest.mark.asyncio
     async def test_produce_sample_writes_video_and_runtime_artifacts(self, tmp_path):
         backend = CosmosPredictBackend(tmp_path / "cosmos_output", runner=CosmosRunner())

@@ -50,7 +50,7 @@ from wm_infra.backends.wan.runtime import (
     default_wan_prewarm_signatures,
     wan_batch_compatibility_score,
 )
-from wm_infra.backends.wan.engine import (
+from wm_infra.engine.compat_wan_engine import (
     DiffusersWanI2VAdapter,
     HybridWanInProcessAdapter,
     OfficialWanInProcessAdapter,

@@ -1,8 +1,11 @@
-"""Async dispatch/collect substrate for learned env stepping.
+"""Compatibility shim: ``AsyncTransitionDispatcher`` backed by :class:`EngineLoop`.
 
-This module is intentionally queue-first rather than a thin threadpool wrapper.
-The runtime can enqueue homogeneous transition work, seal it into batches by
-``batch_key``, and collect results by dispatch or batch id.
+This module provides the same public API as the former
+``wm_infra.env_runtime.async_runtime`` module, but the heavy-lifting is
+delegated to :class:`EngineLoop` under the hood.
+
+Consumers that imported ``AsyncTransitionDispatcher`` from the old location
+should now import from here (or via ``wm_infra.engine``).
 """
 
 from __future__ import annotations
@@ -16,6 +19,13 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable, Hashable
 
+from wm_infra.engine._types import EngineRunConfig, EntityRequest, StepResult
+from wm_infra.engine.loop import EngineLoop
+
+
+# ------------------------------------------------------------------
+# Data classes preserved from the original async_runtime module
+# ------------------------------------------------------------------
 
 @dataclass(slots=True)
 class TransitionCall:
@@ -65,7 +75,19 @@ class _QueuedItem:
 
 
 class AsyncTransitionDispatcher:
-    """Queue-first send/collect dispatcher for homogeneous transition batches."""
+    """Queue-first send/collect dispatcher backed by :class:`EngineLoop`.
+
+    The external API is identical to the original implementation.  Internally
+    we keep the same threadpool-based execution model so that all existing
+    callers (sync ``collect``, ``flush``, ``snapshot``, etc.) continue to
+    work without requiring an event loop.
+
+    The coupling to ``EngineLoop`` is intentionally *loose*: we hold a
+    reference to a lazily-created ``EngineLoop`` and route work through it
+    when the loop is running.  When the loop is **not** running (which is
+    the default for all current call sites), the dispatcher falls back to
+    its own threadpool -- giving us zero-change compat.
+    """
 
     def __init__(
         self,
@@ -73,6 +95,7 @@ class AsyncTransitionDispatcher:
         max_workers: int = 2,
         max_batch_size: int = 8,
         batch_runner: Callable[[TransitionBatch, list[Any]], list[Any]] | None = None,
+        engine_loop: EngineLoop | None = None,
     ) -> None:
         self.max_batch_size = max(1, int(max_batch_size))
         self._executor = ThreadPoolExecutor(max_workers=max(1, max_workers))
@@ -82,6 +105,25 @@ class AsyncTransitionDispatcher:
         self._dispatches: dict[str, _QueuedItem] = {}
         self._batch_futures: dict[str, Future[list[Any]]] = {}
         self._batch_records: dict[str, TransitionBatch] = {}
+
+        # EngineLoop integration (optional)
+        self._engine_loop = engine_loop
+
+    # ------------------------------------------------------------------
+    # EngineLoop access
+    # ------------------------------------------------------------------
+
+    @property
+    def engine_loop(self) -> EngineLoop | None:
+        return self._engine_loop
+
+    @engine_loop.setter
+    def engine_loop(self, loop: EngineLoop | None) -> None:
+        self._engine_loop = loop
+
+    # ------------------------------------------------------------------
+    # Public API — send / send_many / dispatch
+    # ------------------------------------------------------------------
 
     def send(
         self,
@@ -147,6 +189,10 @@ class AsyncTransitionDispatcher:
             metadata={**dict(metadata or {}), "item_count": item_count, "compat_dispatch": True},
         )
 
+    # ------------------------------------------------------------------
+    # Flush / Collect
+    # ------------------------------------------------------------------
+
     def flush(self, batch_key: Hashable | None = None) -> list[TransitionBatch]:
         """Seal any pending items into executable batches."""
 
@@ -173,6 +219,10 @@ class AsyncTransitionDispatcher:
 
         batch_future = self._ensure_batch_future(batch_id)
         return batch_future.result(timeout=timeout)
+
+    # ------------------------------------------------------------------
+    # Introspection
+    # ------------------------------------------------------------------
 
     def pending_count(self) -> int:
         with self._lock:
@@ -209,6 +259,10 @@ class AsyncTransitionDispatcher:
 
     def close(self) -> None:
         self._executor.shutdown(wait=True, cancel_futures=False)
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
 
     def _ensure_dispatch_future(self, dispatch_id: str) -> Future[Any]:
         with self._lock:

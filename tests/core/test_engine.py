@@ -5,8 +5,9 @@ import asyncio
 import pytest
 import torch
 
+from tests.base import BaseTestCase
 from wm_infra.config import EngineConfig, DynamicsConfig, TokenizerConfig, StateCacheConfig
-from wm_infra.rollout_engine import AsyncWorldModelEngine, LatentStateManager, RolloutJob, RolloutRequest, RolloutScheduler, WorldModelEngine
+from wm_infra.engine.compat_rollout import AsyncWorldModelEngine, LatentStateManager, RolloutJob, RolloutRequest, RolloutScheduler, WorldModelEngine
 from wm_infra.models.dynamics import LatentDynamicsModel
 from wm_infra.models.base import RolloutInput
 from wm_infra.tokenizer.video_tokenizer import VideoTokenizer, FSQQuantizer
@@ -47,7 +48,7 @@ def _small_config() -> EngineConfig:
 # ─── Unit Tests ───
 
 
-class TestFSQQuantizer:
+class TestFSQQuantizer(BaseTestCase):
     def test_roundtrip(self):
         levels = [4, 4, 4, 3, 3, 3]
         fsq = FSQQuantizer(levels)
@@ -76,7 +77,7 @@ class TestFSQQuantizer:
         assert z.grad.shape == z.shape
 
 
-class TestVideoTokenizer:
+class TestVideoTokenizer(BaseTestCase):
     def test_encode_decode_shape(self):
         config = TokenizerConfig(
             spatial_downsample=2,
@@ -105,7 +106,7 @@ class TestVideoTokenizer:
         assert z_q.ndim == 4
 
 
-class TestLatentDynamicsModel:
+class TestLatentDynamicsModel(BaseTestCase):
     def test_predict_next_shape(self):
         config = DynamicsConfig(
             hidden_dim=64, num_heads=4, num_layers=2,
@@ -137,7 +138,7 @@ class TestLatentDynamicsModel:
         assert out.predicted_states.shape == (1, 4, 16, 6)
 
 
-class TestLatentStateManager:
+class TestLatentStateManager(BaseTestCase):
     def test_create_and_append(self):
         mgr = LatentStateManager(max_concurrent=4, max_memory_gb=0.01, device="cpu")
         state = mgr.create("r1", torch.randn(16, 6), max_steps=5)
@@ -201,7 +202,7 @@ class TestLatentStateManager:
             mgr.append_step("r1", torch.zeros(8), torch.zeros(4, 4))
 
 
-class TestRolloutScheduler:
+class TestRolloutScheduler(BaseTestCase):
     def test_submit_and_schedule(self):
         from wm_infra.config import SchedulerConfig
         scheduler = RolloutScheduler(SchedulerConfig(max_batch_size=2))
@@ -247,7 +248,7 @@ class TestRolloutScheduler:
         assert "large" not in batch.request_ids
 
 
-class TestWorldModelEngine:
+class TestWorldModelEngine(BaseTestCase):
     def test_state_capacity_uses_rollout_concurrency_not_batch_size(self):
         config = _small_config()
         config.device = "cpu"
@@ -374,7 +375,7 @@ class TestWorldModelEngine:
             assert r.steps_completed == 2
 
 
-class TestAsyncEngine:
+class TestAsyncEngine(BaseTestCase):
     @pytest.mark.asyncio
     async def test_single_job(self):
         config = _small_config()

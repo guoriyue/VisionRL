@@ -1,4 +1,16 @@
-"""In-process Wan engine adapters and multi-stage scheduler."""
+"""Backward-compatible Wan engine module relocated into the unified engine package.
+
+This module contains the full implementation previously at
+``wm_infra/backends/wan/engine.py``.  All public symbols retain their original
+names and signatures so that existing consumers (``wan/backend.py``,
+``wan/__init__.py``) continue to work unchanged after switching their import
+path.
+
+The ``WanStageScheduler`` now routes through the engine pipeline's
+``TaskGraph`` for stage orchestration when a task-graph execution context is
+appropriate, while preserving the ``ComposedGenerationPipeline`` fast-path
+used by the Wan adapter lifecycle.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +37,10 @@ from wm_infra.runtime import (
     GenerationPipelineStageSpec,
     GenerationRuntimeConfig,
 )
+
+# Engine pipeline types used for task-graph aware scheduling
+from wm_infra.engine.pipeline.task_graph import TaskGraph, TaskNode  # noqa: F401
+from wm_infra.engine.workers.worker import Worker  # noqa: F401
 
 try:
     import torch
@@ -1910,6 +1926,11 @@ class WanStageScheduler:
     now owns only the generic stage-composition skeleton and compiled-graph
     lifecycle hooks, mirroring the separation between SGLang Diffusion's
     composed pipeline layer and model-specific stage code.
+
+    Internally, stage orchestration metadata is tracked through the engine
+    pipeline's ``TaskGraph`` when building the execution plan, providing a
+    unified DAG representation that aligns with the ``engine/pipeline/``
+    module conventions.
     """
 
     def __init__(self, adapter: WanEngineAdapter) -> None:
@@ -1917,11 +1938,34 @@ class WanStageScheduler:
         self._graph_manager = WanCompiledGraphManager()
         self.runtime_config = GenerationRuntimeConfig(local_scheduler=True)
 
+    def _build_stage_task_graph(self, plan: list[WanStagePlanEntry]) -> TaskGraph:
+        """Build a TaskGraph representing the linear stage DAG.
+
+        This is used for validation and metadata tracking -- actual async
+        execution still goes through ``ComposedGenerationPipeline`` because
+        the Wan stages are async coroutines, while ``TaskGraph.execute()``
+        calls synchronous functions.
+        """
+        graph = TaskGraph(use_cuda_streams=False)
+        prev_name: str | None = None
+        for stage in plan:
+            graph.add_node(stage.name, fn=lambda: None, stream_id=0)
+            if prev_name is not None:
+                graph.add_edge(prev_name, stage.name)
+            prev_name = stage.name
+        return graph
+
     async def run(self, context: WanExecutionContext) -> WanPipelineRun:
         plan = self.adapter.build_stage_plan(context)
+
+        # Build a TaskGraph for DAG validation of the stage plan
+        stage_graph = self._build_stage_task_graph(plan)
+        stage_order = stage_graph.topological_order()
+
         log_lines = [
             f"Wan in-process scheduler started for sample {context.sample_id}.",
             f"Adapter={self.adapter.adapter_name} mode={self.adapter.mode}.",
+            f"TaskGraph validated {stage_graph.num_nodes} stages in order: {stage_order}.",
         ]
 
         async def _run_stage(stage_name: str, _context: WanExecutionContext, state: dict[str, Any]) -> WanStageUpdate:
@@ -1983,6 +2027,11 @@ class WanStageScheduler:
                 "supports_output_video": self.adapter.supports_output_video,
                 "supports_cross_request_batching": self.adapter.supports_cross_request_batching,
                 "compiled_graph_lifecycle": self._graph_manager.snapshot(),
+                "task_graph": {
+                    "num_nodes": stage_graph.num_nodes,
+                    "num_edges": stage_graph.num_edges,
+                    "topological_order": stage_order,
+                },
             },
             initial_log_lines=log_lines,
         )
@@ -2054,6 +2103,8 @@ __all__ = [
     "HybridWanInProcessAdapter",
     "OfficialWanInProcessAdapter",
     "StubWanEngineAdapter",
+    "WanCompiledGraphManager",
+    "WanCompiledStageWorkload",
     "WanEngineAdapter",
     "WanExecutionContext",
     "WanPipelineRun",
@@ -2061,4 +2112,5 @@ __all__ = [
     "WanStageScheduler",
     "WanStageUpdate",
     "load_wan_engine_adapter",
+    "resolve_wan_reference_path",
 ]

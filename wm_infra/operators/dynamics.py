@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from wm_infra.operators.base import ModelOperator, OperatorFamily
-from wm_infra.rollout_engine import AsyncWorldModelEngine, RolloutJob, RolloutResult
+from wm_infra.engine.compat_rollout import AsyncWorldModelEngine, RolloutJob, RolloutResult
 
 
 class RolloutEngineDynamicsOperator(ModelOperator):

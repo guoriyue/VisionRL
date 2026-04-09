@@ -1,7 +1,7 @@
 """Wan backend package."""
 
 from .backend import WanVideoBackend
-from .engine import (
+from wm_infra.engine.compat_wan_engine import (
     DiffusersWanI2VAdapter,
     HybridWanInProcessAdapter,
     OfficialWanInProcessAdapter,
