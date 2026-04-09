@@ -15,7 +15,7 @@ from wm_infra.controlplane import (
     TaskType,
     WorldModelKind,
 )
-from wm_infra.engine.compat_rollout import RolloutResult
+from wm_infra.engine.rollout import RolloutResult
 
 
 class _FakeAsyncEngine:

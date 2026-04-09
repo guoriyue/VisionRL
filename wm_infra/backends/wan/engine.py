@@ -1,12 +1,10 @@
-"""Backward-compatible Wan engine module relocated into the unified engine package.
+"""Wan engine adapters and stage scheduler.
 
-This module contains the full implementation previously at
-``wm_infra/backends/wan/engine.py``.  All public symbols retain their original
-names and signatures so that existing consumers (``wan/backend.py``,
-``wan/__init__.py``) continue to work unchanged after switching their import
-path.
+This is the canonical location for Wan-specific engine integration code.
+It provides adapter classes that bridge the Wan video generation pipeline
+with the unified engine infrastructure.
 
-The ``WanStageScheduler`` now routes through the engine pipeline's
+The ``WanStageScheduler`` routes through the engine pipeline's
 ``TaskGraph`` for stage orchestration when a task-graph execution context is
 appropriate, while preserving the ``ComposedGenerationPipeline`` fast-path
 used by the Wan adapter lifecycle.

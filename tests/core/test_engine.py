@@ -7,7 +7,7 @@ import torch
 
 from tests.base import BaseTestCase
 from wm_infra.config import EngineConfig, DynamicsConfig, TokenizerConfig, StateCacheConfig
-from wm_infra.engine.compat_rollout import AsyncWorldModelEngine, LatentStateManager, RolloutJob, RolloutRequest, RolloutScheduler, WorldModelEngine
+from wm_infra.engine.rollout import AsyncWorldModelEngine, LatentStateManager, RolloutJob, RolloutRequest, RolloutScheduler, WorldModelEngine
 from wm_infra.models.dynamics import LatentDynamicsModel
 from wm_infra.models.base import RolloutInput
 from wm_infra.tokenizer.video_tokenizer import VideoTokenizer, FSQQuantizer

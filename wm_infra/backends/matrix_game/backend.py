@@ -25,7 +25,7 @@ from wm_infra.controlplane import (
     TaskType,
     WorldModelKind,
 )
-from wm_infra.engine.compat_rollout import (
+from wm_infra.engine.rollout import (
     AsyncWorldModelEngine,
     DEFAULT_RESOURCE_UNITS_PER_GB,
     RolloutJob,

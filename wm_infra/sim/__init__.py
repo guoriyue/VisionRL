@@ -1,6 +1,6 @@
 """Environment stepping runtime for learned temporal simulators."""
 
-from wm_infra.engine.compat_async_runtime import AsyncTransitionDispatcher, TransitionDispatch
+from wm_infra.sim.dispatch import AsyncTransitionDispatcher, TransitionDispatch
 from wm_infra.sim.catalog import LearnedEnvCatalog
 from wm_infra.sim.persistence import (
     TransitionCommitResult,

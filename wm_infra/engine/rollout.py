@@ -1,16 +1,15 @@
-"""Backward-compatible wrappers mapping old ``rollout_engine`` names.
+"""Rollout engine: state management, scheduling, and sync/async execution.
 
-This module preserves the public API that was previously exported by
-``wm_infra.rollout_engine`` so that consumers can migrate to
-``wm_infra.engine.compat_rollout`` (or ``wm_infra.engine``) without
-large-scale rewrites.
+Provides the core rollout-engine classes used throughout wm-infra:
 
-The implementations are inlined here rather than thin wrappers because the
-old rollout-engine classes (``LatentStateManager``, ``RolloutScheduler``,
-``WorldModelEngine``, ``AsyncWorldModelEngine``) have substantially different
-semantics from the new engine module (``PagedLatentPool``,
-``ContinuousBatchingScheduler``, ``EngineLoop``).  A pure delegation layer
-would need to emulate too many details, so we keep the proven code intact.
+- ``LatentStateManager`` — manages latent-state caching and retrieval
+- ``RolloutScheduler`` — batches and schedules rollout jobs
+- ``WorldModelEngine`` — synchronous single-request engine
+- ``AsyncWorldModelEngine`` — async engine for concurrent request handling
+
+These classes have different semantics from the lower-level engine primitives
+(``PagedLatentPool``, ``ContinuousBatchingScheduler``, ``EngineLoop``).
+They are the stable public interface consumed by backends and the API layer.
 """
 
 from __future__ import annotations

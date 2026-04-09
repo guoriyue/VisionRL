@@ -11,12 +11,6 @@ from wm_infra.engine._types import (
     StepResult,
     SwapHandle,
 )
-from wm_infra.engine.compat_async_runtime import (
-    AsyncTransitionDispatcher,
-    TransitionBatch,
-    TransitionCall,
-    TransitionDispatch,
-)
 from wm_infra.engine.loop import EngineLoop
 from wm_infra.engine.pipeline.stage import (
     DynamicsStage,
@@ -31,26 +25,8 @@ from wm_infra.engine.state.radix_cache import RadixNode, RadixStateCache
 from wm_infra.engine.workers.queues import AsyncQueue, RequestQueue, ResultQueue
 from wm_infra.engine.workers.worker import Worker
 
-# Backward-compatible re-exports from the former wan/engine module
-from wm_infra.engine.compat_wan_engine import (
-    DiffusersWanI2VAdapter,
-    HybridWanInProcessAdapter,
-    OfficialWanInProcessAdapter,
-    StubWanEngineAdapter,
-    WanCompiledGraphManager,
-    WanCompiledStageWorkload,
-    WanEngineAdapter,
-    WanExecutionContext,
-    WanPipelineRun,
-    WanStagePlanEntry,
-    WanStageScheduler,
-    WanStageUpdate,
-    load_wan_engine_adapter,
-    resolve_wan_reference_path,
-)
-
-# Backward-compatible re-exports from the former rollout_engine package
-from wm_infra.engine.compat_rollout import (
+# Rollout engine (high-level world model engine API)
+from wm_infra.engine.rollout import (
     AsyncWorldModelEngine,
     DEFAULT_FRAME_COUNT,
     DEFAULT_HEIGHT,
@@ -76,11 +52,6 @@ __all__ = [
     "SchedulerOutput",
     "StepResult",
     "SwapHandle",
-    # Compat (async_runtime migration)
-    "AsyncTransitionDispatcher",
-    "TransitionBatch",
-    "TransitionCall",
-    "TransitionDispatch",
     # Loop
     "EngineLoop",
     # Scheduler
@@ -104,22 +75,7 @@ __all__ = [
     "RequestQueue",
     "ResultQueue",
     "Worker",
-    # Compat (wan/engine migration)
-    "DiffusersWanI2VAdapter",
-    "HybridWanInProcessAdapter",
-    "OfficialWanInProcessAdapter",
-    "StubWanEngineAdapter",
-    "WanCompiledGraphManager",
-    "WanCompiledStageWorkload",
-    "WanEngineAdapter",
-    "WanExecutionContext",
-    "WanPipelineRun",
-    "WanStagePlanEntry",
-    "WanStageScheduler",
-    "WanStageUpdate",
-    "load_wan_engine_adapter",
-    "resolve_wan_reference_path",
-    # Compat (rollout_engine migration)
+    # Rollout engine
     "AsyncWorldModelEngine",
     "DEFAULT_FRAME_COUNT",
     "DEFAULT_HEIGHT",

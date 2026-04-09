@@ -22,7 +22,7 @@ from wm_infra.controlplane import (
     TemporalStore,
 )
 from wm_infra.execution import ExecutionBatchPolicy
-from wm_infra.engine.compat_async_runtime import AsyncTransitionDispatcher, TransitionDispatch
+from wm_infra.sim.dispatch import AsyncTransitionDispatcher, TransitionDispatch
 from wm_infra.sim.catalog import LearnedEnvCatalog
 from wm_infra.sim.persistence import (
     TransitionExecutionResult,

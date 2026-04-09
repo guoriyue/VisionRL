@@ -1,11 +1,12 @@
-"""Compatibility shim: ``AsyncTransitionDispatcher`` backed by :class:`EngineLoop`.
+"""Async transition dispatcher for simulation dispatch.
 
-This module provides the same public API as the former
-``wm_infra.sim.async_runtime`` module, but the heavy-lifting is
-delegated to :class:`EngineLoop` under the hood.
+This module provides :class:`AsyncTransitionDispatcher`, a queue-first
+send/collect dispatcher that batches homogeneous transition payloads for
+efficient execution.  The heavy-lifting is delegated to
+:class:`EngineLoop` under the hood when available.
 
-Consumers that imported ``AsyncTransitionDispatcher`` from the old location
-should now import from here (or via ``wm_infra.engine``).
+Consumers should import ``AsyncTransitionDispatcher`` from here
+(or via ``wm_infra.sim``).
 """
 
 from __future__ import annotations

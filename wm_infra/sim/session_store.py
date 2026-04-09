@@ -365,7 +365,7 @@ class SessionStore:
     ) -> StatelessTransitionContext:
         from wm_infra.sim.transition_executor import TransitionExecutor
         # Reuse the TransitionExecutor's context loader via a lightweight instance
-        from wm_infra.engine.compat_async_runtime import AsyncTransitionDispatcher
+        from wm_infra.sim.dispatch import AsyncTransitionDispatcher
         from wm_infra.execution import ExecutionBatchPolicy
         executor = TransitionExecutor(
             temporal_store=self.temporal_store,

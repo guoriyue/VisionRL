@@ -8,7 +8,7 @@ import torch
 
 from wm_infra.backends.base import ProduceSampleBackend
 from wm_infra.controlplane.schemas import ArtifactKind, ArtifactRecord, ProduceSampleRequest, ResourceEstimate, SampleRecord, SampleStatus, TaskType, WorldModelKind
-from wm_infra.engine.compat_rollout import AsyncWorldModelEngine, DEFAULT_RESOURCE_UNITS_PER_GB, RolloutJob, RolloutRequest
+from wm_infra.engine.rollout import AsyncWorldModelEngine, DEFAULT_RESOURCE_UNITS_PER_GB, RolloutJob, RolloutRequest
 from wm_infra.operators import RolloutEngineDynamicsOperator
 
 
