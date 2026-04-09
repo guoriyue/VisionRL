@@ -23,16 +23,16 @@ from wm_infra.controlplane import (
 )
 from wm_infra.execution import ExecutionBatchPolicy
 from wm_infra.engine.compat_async_runtime import AsyncTransitionDispatcher, TransitionDispatch
-from wm_infra.env_runtime.catalog import LearnedEnvCatalog
-from wm_infra.env_runtime.persistence import (
+from wm_infra.sim.catalog import LearnedEnvCatalog
+from wm_infra.sim.persistence import (
     TransitionExecutionResult,
     TransitionPersistenceContext,
     TransitionPersistenceLayer,
     build_transition_persistence_plan,
 )
-from wm_infra.env_runtime.pipeline import TransitionStagePipeline
-from wm_infra.env_runtime.state import load_runtime_state_view
-from wm_infra.env_runtime.transition import StatelessTransitionContext
+from wm_infra.sim.pipeline import TransitionStagePipeline
+from wm_infra.sim.state import load_runtime_state_view
+from wm_infra.sim.transition import StatelessTransitionContext
 
 
 class TransitionExecutor:
@@ -299,7 +299,7 @@ class TransitionExecutor:
         task = self.catalog.resolve_task(task_id, env_name=env_name)
         spec = self.catalog.resolve_env_spec(env_name)
 
-        from wm_infra.env_runtime.session_store import ensure_stateless_trajectory
+        from wm_infra.sim.session_store import ensure_stateless_trajectory
         trajectory = ensure_stateless_trajectory(
             self.temporal_store,
             env_name=env_name,

@@ -32,7 +32,7 @@ from wm_infra.controlplane import (
     WorldModelKind,
     estimate_wan_request,
 )
-from wm_infra.env_runtime.state import split_state_handle_refs
+from wm_infra.sim.state import split_state_handle_refs
 
 
 class TestProduceSampleRequest(BaseTestCase):

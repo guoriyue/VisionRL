@@ -1,7 +1,7 @@
 """Compatibility shim: ``AsyncTransitionDispatcher`` backed by :class:`EngineLoop`.
 
 This module provides the same public API as the former
-``wm_infra.env_runtime.async_runtime`` module, but the heavy-lifting is
+``wm_infra.sim.async_runtime`` module, but the heavy-lifting is
 delegated to :class:`EngineLoop` under the hood.
 
 Consumers that imported ``AsyncTransitionDispatcher`` from the old location

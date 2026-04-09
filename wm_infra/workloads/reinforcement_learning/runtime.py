@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 from wm_infra.controlplane import TemporalStore
-from wm_infra.env_runtime.manager import TemporalEnvManager as RuntimeTemporalEnvManager
+from wm_infra.sim.manager import TemporalEnvManager as RuntimeTemporalEnvManager
 from wm_infra.workloads.reinforcement_learning.defaults import build_default_registry
 
 

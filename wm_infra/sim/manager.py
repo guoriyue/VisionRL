@@ -25,10 +25,10 @@ from wm_infra.api.protocol import (
 from wm_infra.controlplane import EnvironmentSessionRecord, TemporalStore, TrajectoryRecord
 from wm_infra.execution import ExecutionBatchPolicy
 from wm_infra.engine.compat_async_runtime import AsyncTransitionDispatcher, TransitionDispatch
-from wm_infra.env_runtime.catalog import LearnedEnvCatalog
-from wm_infra.env_runtime.registry import EnvRegistry
-from wm_infra.env_runtime.session_store import SessionStore
-from wm_infra.env_runtime.transition_executor import TransitionExecutor
+from wm_infra.sim.catalog import LearnedEnvCatalog
+from wm_infra.sim.registry import EnvRegistry
+from wm_infra.sim.session_store import SessionStore
+from wm_infra.sim.transition_executor import TransitionExecutor
 
 
 class TemporalEnvManager:

@@ -22,7 +22,7 @@ from wm_infra.controlplane import (
     TransitionCreate,
     TransitionRecord,
 )
-from wm_infra.env_runtime.state import build_inline_state_handle_create
+from wm_infra.sim.state import build_inline_state_handle_create
 
 
 @dataclass(slots=True)

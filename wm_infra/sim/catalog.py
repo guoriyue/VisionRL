@@ -7,7 +7,7 @@ from typing import Any
 import torch
 
 from wm_infra.controlplane import EnvironmentSpec, TaskSpec, TemporalStore
-from wm_infra.env_runtime.registry import EnvRegistry
+from wm_infra.sim.registry import EnvRegistry
 
 
 class LearnedEnvCatalog:

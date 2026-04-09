@@ -9,7 +9,7 @@ import torch
 from wm_infra.controlplane import EnvironmentSpec, TaskSpec, WorldModelKind
 from wm_infra.workloads.reinforcement_learning.rewards import GoalReward
 from wm_infra.workloads.reinforcement_learning.toy import ToyLineWorldModel, ToyLineWorldSpec
-from wm_infra.env_runtime.registry import EnvRegistry
+from wm_infra.sim.registry import EnvRegistry
 
 
 # ---------------------------------------------------------------------------

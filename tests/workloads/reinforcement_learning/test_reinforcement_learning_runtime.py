@@ -4,7 +4,7 @@ import pytest
 
 from tests.base import BaseTestCase
 from wm_infra.controlplane import TemporalStore
-from wm_infra.env_runtime.state import load_runtime_state_view, split_state_handle_refs
+from wm_infra.sim.state import load_runtime_state_view, split_state_handle_refs
 from wm_infra.workloads.reinforcement_learning.runtime import ReinforcementLearningEnvManager
 
 

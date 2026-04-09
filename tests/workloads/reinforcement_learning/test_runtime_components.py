@@ -6,15 +6,15 @@ from tests.base import BaseTestCase
 from wm_infra.controlplane import TemporalStore
 from wm_infra.execution import ExecutionBatchPolicy
 from wm_infra.engine.compat_async_runtime import AsyncTransitionDispatcher
-from wm_infra.env_runtime.catalog import LearnedEnvCatalog
-from wm_infra.env_runtime.persistence import (
+from wm_infra.sim.catalog import LearnedEnvCatalog
+from wm_infra.sim.persistence import (
     TransitionExecutionResult,
     TransitionPersistenceContext,
     TransitionPersistenceLayer,
     build_transition_persistence_plan,
 )
-from wm_infra.env_runtime.pipeline import TransitionStagePipeline
-from wm_infra.env_runtime.transition_executor import TransitionExecutor
+from wm_infra.sim.pipeline import TransitionStagePipeline
+from wm_infra.sim.transition_executor import TransitionExecutor
 from wm_infra.workloads.reinforcement_learning.defaults import build_default_registry
 from wm_infra.workloads.reinforcement_learning.runtime import ReinforcementLearningEnvManager
 

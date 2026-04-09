@@ -1,8 +1,8 @@
 """Environment stepping runtime for learned temporal simulators."""
 
 from wm_infra.engine.compat_async_runtime import AsyncTransitionDispatcher, TransitionDispatch
-from wm_infra.env_runtime.catalog import LearnedEnvCatalog
-from wm_infra.env_runtime.persistence import (
+from wm_infra.sim.catalog import LearnedEnvCatalog
+from wm_infra.sim.persistence import (
     TransitionCommitResult,
     TransitionExecutionResult,
     TransitionPersistenceContext,
@@ -10,7 +10,7 @@ from wm_infra.env_runtime.persistence import (
     TransitionPersistencePlan,
     build_transition_persistence_plan,
 )
-from wm_infra.env_runtime.pipeline import (
+from wm_infra.sim.pipeline import (
     TransitionExecutionStage,
     TransitionMaterializedChunk,
     TransitionPersistIntent,
@@ -19,7 +19,7 @@ from wm_infra.env_runtime.pipeline import (
     TransitionStagePipeline,
     TransitionStageProfile,
 )
-from wm_infra.env_runtime.registry import (
+from wm_infra.sim.registry import (
     EnvInfoProvider,
     EnvRegistry,
     InitialStateSampler,
@@ -27,14 +27,14 @@ from wm_infra.env_runtime.registry import (
     RegisteredEnv,
     RewardProtocol,
 )
-from wm_infra.env_runtime.state import (
+from wm_infra.sim.state import (
     RuntimeStateView,
     StateHandleRefs,
     build_inline_state_handle_create,
     load_runtime_state_view,
     split_state_handle_refs,
 )
-from wm_infra.env_runtime.transition import StatelessTransitionContext, build_stateless_step_chunks
+from wm_infra.sim.transition import StatelessTransitionContext, build_stateless_step_chunks
 
 __all__ = [
     "AsyncTransitionDispatcher",

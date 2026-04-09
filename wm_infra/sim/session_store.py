@@ -28,9 +28,9 @@ from wm_infra.controlplane import (
     TrajectoryCreate,
     TrajectoryRecord,
 )
-from wm_infra.env_runtime.catalog import LearnedEnvCatalog
-from wm_infra.env_runtime.state import build_inline_state_handle_create, load_runtime_state_view
-from wm_infra.env_runtime.transition import StatelessTransitionContext
+from wm_infra.sim.catalog import LearnedEnvCatalog
+from wm_infra.sim.state import build_inline_state_handle_create, load_runtime_state_view
+from wm_infra.sim.transition import StatelessTransitionContext
 
 
 class SessionStore:
@@ -363,7 +363,7 @@ class SessionStore:
         max_episode_steps: int | None,
         policy_version: str | None,
     ) -> StatelessTransitionContext:
-        from wm_infra.env_runtime.transition_executor import TransitionExecutor
+        from wm_infra.sim.transition_executor import TransitionExecutor
         # Reuse the TransitionExecutor's context loader via a lightweight instance
         from wm_infra.engine.compat_async_runtime import AsyncTransitionDispatcher
         from wm_infra.execution import ExecutionBatchPolicy
