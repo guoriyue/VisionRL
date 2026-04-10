@@ -9,15 +9,15 @@ Merges:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Generic, Protocol, Sequence, TypeVar, runtime_checkable
+from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
 
 import torch
 
-from wm_infra.engine.types import EntityRequest, StepResult
 from wm_infra.engine.mem_cache.paged_pool import PagedLatentPool
 from wm_infra.engine.model_executor.task_graph import TaskGraph
-
+from wm_infra.engine.types import EntityRequest, StepResult
 
 # ---------------------------------------------------------------------------
 # Async queues (from workers/queues.py)
@@ -63,11 +63,13 @@ class AsyncQueue(Generic[T]):
 
 class RequestQueue(AsyncQueue[EntityRequest]):
     """Queue for incoming entity requests."""
+
     pass
 
 
 class ResultQueue(AsyncQueue[StepResult]):
     """Queue for outgoing step results."""
+
     pass
 
 
@@ -122,8 +124,10 @@ class EncodeStage:
         if batch.shape[-1] > self.latent_dim:
             return batch[..., : self.latent_dim]
         pad = torch.zeros(
-            *batch.shape[:-1], self.latent_dim - batch.shape[-1],
-            device=batch.device, dtype=batch.dtype,
+            *batch.shape[:-1],
+            self.latent_dim - batch.shape[-1],
+            device=batch.device,
+            dtype=batch.dtype,
         )
         return torch.cat([batch, pad], dim=-1)
 
@@ -212,11 +216,13 @@ class Worker:
         results: list[StepResult] = []
         indices = step_indices or [0] * len(entity_ids)
         for i, eid in enumerate(entity_ids):
-            results.append(StepResult(
-                request_id=eid,
-                step_index=indices[i],
-                output_latent=output[i] if i < len(output) else None,
-            ))
+            results.append(
+                StepResult(
+                    request_id=eid,
+                    step_index=indices[i],
+                    output_latent=output[i] if i < len(output) else None,
+                )
+            )
         return results
 
     def execute_step_with_task_graph(
@@ -263,6 +269,7 @@ class Worker:
                     out = _stage.forward(inp)
                     stage_outputs[_stage.name] = out
                     return out
+
                 return fn
 
             graph.add_node(sname, make_fn(stage, prev_name), stream_id=0)
@@ -290,11 +297,15 @@ class Worker:
             output = stage_outputs.get(sname)
             results: list[StepResult] = []
             for i, eid in enumerate(entity_ids):
-                results.append(StepResult(
-                    request_id=eid,
-                    step_index=indices[i],
-                    output_latent=output[i] if output is not None and i < len(output) else None,
-                ))
+                results.append(
+                    StepResult(
+                        request_id=eid,
+                        step_index=indices[i],
+                        output_latent=output[i]
+                        if output is not None and i < len(output)
+                        else None,
+                    )
+                )
             all_results[sname] = results
 
         return all_results

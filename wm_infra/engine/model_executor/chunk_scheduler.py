@@ -12,8 +12,9 @@ convenience alongside the chunk scheduler.
 from __future__ import annotations
 
 from collections import OrderedDict, defaultdict
+from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, Hashable, Iterable, TypeVar
+from typing import Any, Generic, TypeVar
 
 from wm_infra.engine.types import (
     BatchSignature,
@@ -83,7 +84,7 @@ class HomogeneousChunkScheduler:
         for signature, signature_items in grouped_items.items():
             signature_chunk_count = 0
             for offset in range(0, len(signature_items), max_chunk_size):
-                chunk_items = signature_items[offset:offset + max_chunk_size]
+                chunk_items = signature_items[offset : offset + max_chunk_size]
                 if len(chunk_items) < policy.min_ready_size and not policy.allow_partial_batch:
                     continue
                 chunks.append(
@@ -115,7 +116,9 @@ def schedule_grouped_chunks(
     group_key: Callable[[TEntity], TGroupKey],
     entity_sort_key: Callable[[TEntity], Any],
     build_chunk: Callable[[TGroupKey, list[TEntity], int], TChunk],
-    build_scheduler_inputs: Callable[[TGroupKey, list[TEntity], TChunk, int], dict[str, float | int | str | bool]],
+    build_scheduler_inputs: Callable[
+        [TGroupKey, list[TEntity], TChunk, int], dict[str, float | int | str | bool]
+    ],
     decision_sort_key: Callable[[GroupedChunkDecision[TChunk]], Any] | None = None,
 ) -> list[GroupedChunkDecision[TChunk]]:
     """Build homogeneous backend chunks from grouped entities.
@@ -139,7 +142,7 @@ def schedule_grouped_chunks(
     for key, items in grouped_entities.items():
         items.sort(key=entity_sort_key)
         for chunk_index, offset in enumerate(range(0, len(items), chunk_capacity)):
-            chunk_entities = items[offset:offset + chunk_capacity]
+            chunk_entities = items[offset : offset + chunk_capacity]
             chunk = build_chunk(key, chunk_entities, chunk_index)
             scheduler_inputs = build_scheduler_inputs(key, chunk_entities, chunk, group_count)
             decisions.append(GroupedChunkDecision(chunk=chunk, scheduler_inputs=scheduler_inputs))
@@ -171,7 +174,9 @@ def build_execution_chunks(
             latent_item=latent_item,
             action_item=action_item,
         )
-        for entity, latent_item, action_item in zip(entities, latent_items, action_items, strict=True)
+        for entity, latent_item, action_item in zip(
+            entities, latent_items, action_items, strict=True
+        )
     ]
     chunks, _ = HomogeneousChunkScheduler().schedule(
         work_items=work_items,
@@ -182,7 +187,9 @@ def build_execution_chunks(
     )
 
     if any(chunk.signature != signature for chunk in chunks):
-        raise ValueError("build_execution_chunks received entities with mismatched batch signatures")
+        raise ValueError(
+            "build_execution_chunks received entities with mismatched batch signatures"
+        )
     return chunks
 
 

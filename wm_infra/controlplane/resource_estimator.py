@@ -7,7 +7,13 @@ metadata, and it can score both Wan 2.2-style and Cosmos-style video requests.
 
 from __future__ import annotations
 
-from wm_infra.controlplane.schemas import CosmosTaskConfig, ResourceEstimate, RolloutTaskConfig, VideoMemoryProfile, WanTaskConfig
+from wm_infra.controlplane.schemas import (
+    CosmosTaskConfig,
+    ResourceEstimate,
+    RolloutTaskConfig,
+    VideoMemoryProfile,
+    WanTaskConfig,
+)
 
 _BASELINE_FRAMES = 9
 _BASELINE_WIDTH = 832
@@ -29,7 +35,13 @@ def _memory_multiplier(memory_profile: VideoMemoryProfile | None) -> float:
     return 1.0
 
 
-def _estimate_vram_gb(frame_count: int, width: int, height: int, num_steps: int, memory_profile: VideoMemoryProfile | None) -> float:
+def _estimate_vram_gb(
+    frame_count: int,
+    width: int,
+    height: int,
+    num_steps: int,
+    memory_profile: VideoMemoryProfile | None,
+) -> float:
     baseline_pixels = _BASELINE_FRAMES * _BASELINE_WIDTH * _BASELINE_HEIGHT
     pixels = max(frame_count, 1) * max(width, 1) * max(height, 1)
     base_gb = _BASELINE_VRAM_GB * (pixels / baseline_pixels)
@@ -95,7 +107,9 @@ def estimate_wan_request(wan_config: WanTaskConfig | None) -> ResourceEstimate:
         memory_profile=wan_config.memory_profile,
     )
     estimate = estimate_rollout_request(rollout_like)
-    estimate.notes.append("Wan estimate is calibrated from the Wan 2.2 A14B baseline and first-class wan_config fields.")
+    estimate.notes.append(
+        "Wan estimate is calibrated from the Wan 2.2 A14B baseline and first-class wan_config fields."
+    )
     return estimate
 
 
@@ -121,7 +135,9 @@ def estimate_cosmos_request(
 
     estimate.estimated_units = round(estimate.estimated_units * size_factor * variant_factor, 3)
     if estimate.estimated_vram_gb is not None:
-        estimate.estimated_vram_gb = round(estimate.estimated_vram_gb * size_factor * variant_factor, 2)
+        estimate.estimated_vram_gb = round(
+            estimate.estimated_vram_gb * size_factor * variant_factor, 2
+        )
     estimate.bottleneck = bottleneck
     estimate.notes.append(
         "Cosmos estimate scales rollout pressure by Cosmos variant and model_size to reflect world-generation cost."

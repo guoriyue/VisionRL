@@ -1,10 +1,7 @@
-"""Diffusers-based Wan I2V video generation model.
+"""Diffusers-based Wan 2.2 Image-to-Video generation model.
 
-Extracted from ``backends.wan.engine.DiffusersWanI2VAdapter`` — this
-module owns the model forward logic (pipeline loading, text encoding,
-conditioning, diffusion, VAE decode, postprocess) while the adapter
-retains serving infrastructure (workload lifecycle, CUDA graph
-capture, compute profiles, stage scheduling).
+Owns the model forward logic: pipeline loading, text encoding,
+conditioning, diffusion, VAE decode, and postprocess.
 """
 
 from __future__ import annotations
@@ -78,8 +75,8 @@ class DiffusersWanI2VModel(VideoGenerationModel):
             return
         import numpy as np
         import torch
-        from PIL import Image
         from diffusers import WanImageToVideoPipeline
+        from PIL import Image
 
         self._np = np
         self._pil_image = Image
@@ -100,7 +97,9 @@ class DiffusersWanI2VModel(VideoGenerationModel):
             if (ckpt_path / "model_index.json").exists():
                 return ckpt_path
         if not self.default_model_dir.exists():
-            raise FileNotFoundError(f"Wan diffusers model_dir does not exist: {self.default_model_dir}")
+            raise FileNotFoundError(
+                f"Wan diffusers model_dir does not exist: {self.default_model_dir}"
+            )
         return self.default_model_dir
 
     def _create_pipeline(self, model_dir: Path) -> Any:
@@ -124,11 +123,15 @@ class DiffusersWanI2VModel(VideoGenerationModel):
 
     # -- stages --------------------------------------------------------
 
-    async def encode_text(self, request: VideoGenerationRequest, state: dict[str, Any]) -> StageResult:
+    async def encode_text(
+        self, request: VideoGenerationRequest, state: dict[str, Any]
+    ) -> StageResult:
         self._load_modules()
         model_dir = self._resolve_model_dir(request)
         pipeline = self._get_pipeline(model_dir)
-        prompt_hash = _stable_hash(f"{request.model_name}|{request.prompt}|{request.negative_prompt}")
+        prompt_hash = _stable_hash(
+            f"{request.model_name}|{request.prompt}|{request.negative_prompt}"
+        )
         cache_key = (
             f"{model_dir}|{prompt_hash}|cfg={int(request.guidance_scale > 1.0)}|"
             f"max_seq={request.extra.get('max_sequence_length', 512)}"
@@ -154,7 +157,9 @@ class DiffusersWanI2VModel(VideoGenerationModel):
             ],
         )
 
-    async def encode_conditioning(self, request: VideoGenerationRequest, state: dict[str, Any]) -> StageResult:
+    async def encode_conditioning(
+        self, request: VideoGenerationRequest, state: dict[str, Any]
+    ) -> StageResult:
         self._load_modules()
         reference_path = resolve_wan_reference_path(request.references[0])
         cache_key = (
@@ -235,7 +240,9 @@ class DiffusersWanI2VModel(VideoGenerationModel):
             ],
         )
 
-    async def decode_vae(self, request: VideoGenerationRequest, state: dict[str, Any]) -> StageResult:
+    async def decode_vae(
+        self, request: VideoGenerationRequest, state: dict[str, Any]
+    ) -> StageResult:
         frames = self._np.asarray(state["video_frames"])
         return StageResult(
             state_updates={"video_frames": frames},
@@ -244,10 +251,14 @@ class DiffusersWanI2VModel(VideoGenerationModel):
                 "decoded_spatial_size": [int(frames.shape[2]), int(frames.shape[1])],
             },
             outputs={"fps": request.fps or 16},
-            notes=["VAE decode stage reused diffusers pipeline output from the verified offload path."],
+            notes=[
+                "VAE decode stage reused diffusers pipeline output from the verified offload path."
+            ],
         )
 
-    async def postprocess(self, request: VideoGenerationRequest, state: dict[str, Any]) -> StageResult:
+    async def postprocess(
+        self, request: VideoGenerationRequest, state: dict[str, Any]
+    ) -> StageResult:
         frames = self._np.asarray(state["video_frames"])
         if frames.dtype != self._np.uint8:
             frames = self._np.clip(frames * 255.0, 0.0, 255.0).astype(self._np.uint8)
@@ -257,9 +268,9 @@ class DiffusersWanI2VModel(VideoGenerationModel):
                 "output_fps": request.fps or 16,
             },
             runtime_state_updates={
-                "frame_count": int(len(frames)),
+                "frame_count": len(frames),
                 "output_fps": request.fps or 16,
             },
-            outputs={"frame_count": int(len(frames))},
+            outputs={"frame_count": len(frames)},
             notes=["Postprocess converted decoded tensors into numpy video frames."],
         )

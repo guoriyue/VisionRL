@@ -20,8 +20,8 @@ class CosmosLocalExecutor(ABC):
 
     execution_mode: str = "in_process"
 
-    async def load(self) -> None:
-        """Resolve local resources needed for inference."""
+    async def load(self) -> None:  # noqa: B027
+        """Resolve local resources needed for inference (optional override)."""
 
     @abstractmethod
     async def encode_text(
@@ -179,7 +179,10 @@ class StubCosmosLocalExecutor(CosmosLocalExecutor):
             state_updates={"video_frames": decoded_frames},
             runtime_state_updates={
                 "decoded_frame_count": int(decoded_frames.shape[0]),
-                "decoded_spatial_size": [int(decoded_frames.shape[2]), int(decoded_frames.shape[1])],
+                "decoded_spatial_size": [
+                    int(decoded_frames.shape[2]),
+                    int(decoded_frames.shape[1]),
+                ],
             },
             outputs={"fps": request.fps or 16},
             notes=["Cosmos stub decode_vae mapped latent frames into decoded video frames."],

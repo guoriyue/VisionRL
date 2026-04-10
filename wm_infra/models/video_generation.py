@@ -61,7 +61,7 @@ class StageResult:
 
     The same result shape works for Wan, Cosmos, and action-conditioned
     interactive video generators, even when their execution substrates differ.
-    ``WanStageUpdate`` in ``backends.wan.engine`` is now an alias for this type.
+    Used by model implementations as the normalized stage output type.
     """
 
     state_updates: dict[str, Any] = field(default_factory=dict)
@@ -127,9 +127,7 @@ class VideoGenerationModel(ABC):
         return StageResult(notes=["No conditioning inputs were provided."])
 
     @abstractmethod
-    async def denoise(
-        self, request: VideoGenerationRequest, state: dict[str, Any]
-    ) -> StageResult:
+    async def denoise(self, request: VideoGenerationRequest, state: dict[str, Any]) -> StageResult:
         """Run the main generation step, usually diffusion or a related sampler."""
 
     @abstractmethod

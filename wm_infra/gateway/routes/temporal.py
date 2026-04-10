@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 
-from wm_infra.controlplane import BranchCreate, CheckpointCreate, EpisodeCreate, RolloutCreate, StateHandleCreate, TemporalStore
+from wm_infra.controlplane import (
+    BranchCreate,
+    CheckpointCreate,
+    EpisodeCreate,
+    RolloutCreate,
+    StateHandleCreate,
+    TemporalStore,
+)
 from wm_infra.gateway.state import get_gateway_runtime
 
 
@@ -38,7 +45,10 @@ def register_temporal_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=404, detail="Episode not found")
         if request.parent_branch_id and store.branches.get(request.parent_branch_id) is None:
             raise HTTPException(status_code=404, detail="Parent branch not found")
-        if request.forked_from_checkpoint_id and store.checkpoints.get(request.forked_from_checkpoint_id) is None:
+        if (
+            request.forked_from_checkpoint_id
+            and store.checkpoints.get(request.forked_from_checkpoint_id) is None
+        ):
             raise HTTPException(status_code=404, detail="Fork checkpoint not found")
         return store.create_branch(request).model_dump(mode="json")
 
@@ -72,7 +82,9 @@ def register_temporal_routes(app: FastAPI) -> None:
         return store.create_state_handle(request).model_dump(mode="json")
 
     @router.get("/v1/state-handles")
-    async def list_state_handles(request: Request, episode_id: str | None = None, branch_id: str | None = None):
+    async def list_state_handles(
+        request: Request, episode_id: str | None = None, branch_id: str | None = None
+    ):
         store: TemporalStore = get_gateway_runtime(request).temporal_store
         items = store.state_handles.list()
         if episode_id is not None:
@@ -96,12 +108,17 @@ def register_temporal_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=404, detail="Episode not found")
         if request.branch_id and store.branches.get(request.branch_id) is None:
             raise HTTPException(status_code=404, detail="Branch not found")
-        if request.input_state_handle_id and store.state_handles.get(request.input_state_handle_id) is None:
+        if (
+            request.input_state_handle_id
+            and store.state_handles.get(request.input_state_handle_id) is None
+        ):
             raise HTTPException(status_code=404, detail="Input state handle not found")
         return store.create_rollout(request).model_dump(mode="json")
 
     @router.get("/v1/rollouts")
-    async def list_temporal_rollouts(request: Request, episode_id: str | None = None, branch_id: str | None = None):
+    async def list_temporal_rollouts(
+        request: Request, episode_id: str | None = None, branch_id: str | None = None
+    ):
         store: TemporalStore = get_gateway_runtime(request).temporal_store
         items = store.rollouts.list()
         if episode_id is not None:
@@ -135,7 +152,9 @@ def register_temporal_routes(app: FastAPI) -> None:
         return checkpoint.model_dump(mode="json")
 
     @router.get("/v1/checkpoints")
-    async def list_checkpoints(request: Request, episode_id: str | None = None, rollout_id: str | None = None):
+    async def list_checkpoints(
+        request: Request, episode_id: str | None = None, rollout_id: str | None = None
+    ):
         store: TemporalStore = get_gateway_runtime(request).temporal_store
         items = store.checkpoints.list()
         if episode_id is not None:

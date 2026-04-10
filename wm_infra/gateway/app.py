@@ -6,7 +6,6 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from wm_infra.api.metrics import API_AUTH_FAILURES
-from wm_infra.backends import BackendRegistry
 from wm_infra.config import EngineConfig, load_config
 from wm_infra.controlplane import SampleManifestStore, TemporalStore
 from wm_infra.gateway.bootstrap import build_gateway_lifespan, create_gateway_runtime
@@ -17,23 +16,20 @@ from wm_infra.gateway.state import bind_gateway_runtime
 def create_app(
     config: EngineConfig | None = None,
     sample_store: SampleManifestStore | None = None,
-    backend_registry: BackendRegistry | None = None,
     temporal_store: TemporalStore | None = None,
-    execution_mode: str = "chunked",
 ):
-    """Create the Gateway application that fronts engine and backend runtimes."""
+    """Create the Gateway application."""
     resolved_config = config or EngineConfig()
     runtime = create_gateway_runtime(
         resolved_config,
         sample_store=sample_store,
-        backend_registry=backend_registry,
         temporal_store=temporal_store,
     )
     app = FastAPI(
         title="wm-infra",
         description="Temporal model serving and control-plane infrastructure",
         version="0.1.0",
-        lifespan=build_gateway_lifespan(runtime, execution_mode=execution_mode),
+        lifespan=build_gateway_lifespan(runtime),
     )
     bind_gateway_runtime(app, runtime)
 

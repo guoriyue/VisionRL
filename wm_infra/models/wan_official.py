@@ -1,10 +1,7 @@
-"""Official Wan2.2 video generation model.
+"""Official Wan 2.2 video generation model.
 
-Extracted from ``backends.wan.engine.OfficialWanInProcessAdapter`` — this
-module owns the model forward logic (pipeline loading, text encoding,
-conditioning, diffusion, VAE decode, postprocess) while the adapter
-retains serving infrastructure (workload lifecycle, CUDA graph
-capture, compute profiles, stage scheduling).
+Owns the model forward logic: pipeline loading, text encoding,
+conditioning, diffusion, VAE decode, and postprocess.
 """
 
 from __future__ import annotations
@@ -73,7 +70,9 @@ class OfficialWanModel(VideoGenerationModel):
         default_convert_model_dtype: bool = True,
     ) -> None:
         self.repo_dir = Path(repo_dir)
-        self.default_checkpoint_dir = None if default_checkpoint_dir is None else Path(default_checkpoint_dir)
+        self.default_checkpoint_dir = (
+            None if default_checkpoint_dir is None else Path(default_checkpoint_dir)
+        )
         self.device_id = device_id
         self.default_t5_cpu = default_t5_cpu
         self.default_convert_model_dtype = default_convert_model_dtype
@@ -98,7 +97,9 @@ class OfficialWanModel(VideoGenerationModel):
             "name": "wan-official-model",
             "family": self.model_family,
             "repo_dir": str(self.repo_dir),
-            "default_checkpoint_dir": None if self.default_checkpoint_dir is None else str(self.default_checkpoint_dir),
+            "default_checkpoint_dir": None
+            if self.default_checkpoint_dir is None
+            else str(self.default_checkpoint_dir),
             "device": f"cuda:{self.device_id}",
         }
 
@@ -169,17 +170,27 @@ class OfficialWanModel(VideoGenerationModel):
             )
         return ckpt_path
 
-    def _validate_checkpoint_layout(self, task_key: str, checkpoint_dir: Path, config: Any) -> None:
+    def _validate_checkpoint_layout(
+        self, task_key: str, checkpoint_dir: Path, config: Any
+    ) -> None:
         required_paths: list[tuple[Path, str]] = [
             (checkpoint_dir / config.t5_checkpoint, "T5 checkpoint"),
             (checkpoint_dir / config.t5_tokenizer, "T5 tokenizer"),
             (checkpoint_dir / config.vae_checkpoint, "VAE checkpoint"),
         ]
         if task_key.startswith("i2v-"):
-            required_paths.extend([
-                (checkpoint_dir / config.low_noise_checkpoint, "low-noise checkpoint directory"),
-                (checkpoint_dir / config.high_noise_checkpoint, "high-noise checkpoint directory"),
-            ])
+            required_paths.extend(
+                [
+                    (
+                        checkpoint_dir / config.low_noise_checkpoint,
+                        "low-noise checkpoint directory",
+                    ),
+                    (
+                        checkpoint_dir / config.high_noise_checkpoint,
+                        "high-noise checkpoint directory",
+                    ),
+                ]
+            )
         for path, label in required_paths:
             if not path.exists():
                 raise FileNotFoundError(
@@ -201,22 +212,32 @@ class OfficialWanModel(VideoGenerationModel):
                 )
 
     def _pipeline_cache_key(
-        self, task_key: str, checkpoint_dir: Path, t5_cpu: bool, convert_model_dtype: bool,
+        self,
+        task_key: str,
+        checkpoint_dir: Path,
+        t5_cpu: bool,
+        convert_model_dtype: bool,
     ) -> str:
-        return "|".join([
-            task_key,
-            str(checkpoint_dir),
-            str(self.device_id),
-            str(t5_cpu),
-            str(convert_model_dtype),
-        ])
+        return "|".join(
+            [
+                task_key,
+                str(checkpoint_dir),
+                str(self.device_id),
+                str(t5_cpu),
+                str(convert_model_dtype),
+            ]
+        )
 
     def _get_pipeline(self, request: VideoGenerationRequest) -> tuple[Any, str, Path]:
         self._load_modules()
         task_key = self._task_key(request.task_type, request.model_size)
         checkpoint_dir = self._resolve_checkpoint_dir(request.ckpt_dir, task_key)
         t5_cpu = request.t5_cpu if request.t5_cpu is not None else self.default_t5_cpu
-        convert_dtype = request.convert_model_dtype if request.convert_model_dtype is not None else self.default_convert_model_dtype
+        convert_dtype = (
+            request.convert_model_dtype
+            if request.convert_model_dtype is not None
+            else self.default_convert_model_dtype
+        )
         cache_key = self._pipeline_cache_key(task_key, checkpoint_dir, t5_cpu, convert_dtype)
         pipeline = self._pipelines.get(cache_key)
         if pipeline is not None:
@@ -246,11 +267,15 @@ class OfficialWanModel(VideoGenerationModel):
 
     # -- stages --------------------------------------------------------
 
-    async def encode_text(self, request: VideoGenerationRequest, state: dict[str, Any]) -> StageResult:
+    async def encode_text(
+        self, request: VideoGenerationRequest, state: dict[str, Any]
+    ) -> StageResult:
         pipeline, task_key, checkpoint_dir = self._get_pipeline(request)
         torch = self._torch
         n_prompt = request.negative_prompt or pipeline.sample_neg_prompt
-        prompt_hash = _stable_hash(f"{request.model_name}|{request.prompt}|{request.negative_prompt}")
+        prompt_hash = _stable_hash(
+            f"{request.model_name}|{request.prompt}|{request.negative_prompt}"
+        )
         cache_key = f"{task_key}|{checkpoint_dir}|{prompt_hash}"
         cache_hit = cache_key in self._prompt_cache
 
@@ -293,10 +318,14 @@ class OfficialWanModel(VideoGenerationModel):
             cache_hit=cache_hit,
         )
 
-    async def encode_conditioning(self, request: VideoGenerationRequest, state: dict[str, Any]) -> StageResult:
+    async def encode_conditioning(
+        self, request: VideoGenerationRequest, state: dict[str, Any]
+    ) -> StageResult:
         pipeline = state["pipeline"]
         if request.task_type != "image_to_video":
-            return StageResult(notes=["Conditioning stage skipped because the request is text-to-video."])
+            return StageResult(
+                notes=["Conditioning stage skipped because the request is text-to-video."]
+            )
         reference_path = resolve_wan_reference_path(request.references[0])
         conditioning_hash = _stable_hash(
             f"{request.task_type}|"
@@ -310,7 +339,9 @@ class OfficialWanModel(VideoGenerationModel):
         if cache_hit:
             cached_conditioning = self._conditioning_cache[cache_key]
             conditioning = {
-                "conditioning_tensor": _move_tensor_to_device(cached_conditioning["conditioning_tensor"], pipeline.device),
+                "conditioning_tensor": _move_tensor_to_device(
+                    cached_conditioning["conditioning_tensor"], pipeline.device
+                ),
                 "conditioning_shape": list(cached_conditioning["conditioning_shape"]),
                 "decoded_size": list(cached_conditioning["decoded_size"]),
                 "reference_path": cached_conditioning["reference_path"],
@@ -344,16 +375,21 @@ class OfficialWanModel(VideoGenerationModel):
             )
             mask = mask.view(1, mask.shape[1] // 4, 4, lat_h, lat_w)
             mask = mask.transpose(1, 2)[0]
-            y = pipeline.vae.encode([
-                torch.concat([
-                    torch.nn.functional.interpolate(
-                        img_tensor[None].cpu(),
-                        size=(height, width),
-                        mode="bicubic",
-                    ).transpose(0, 1),
-                    torch.zeros(3, frame_num - 1, height, width),
-                ], dim=1).to(pipeline.device)
-            ])[0]
+            y = pipeline.vae.encode(
+                [
+                    torch.concat(
+                        [
+                            torch.nn.functional.interpolate(
+                                img_tensor[None].cpu(),
+                                size=(height, width),
+                                mode="bicubic",
+                            ).transpose(0, 1),
+                            torch.zeros(3, frame_num - 1, height, width),
+                        ],
+                        dim=1,
+                    ).to(pipeline.device)
+                ]
+            )[0]
             conditioning = {
                 "conditioning_tensor": torch.concat([mask, y]),
                 "conditioning_shape": [int(lat_h), int(lat_w)],
@@ -411,16 +447,24 @@ class OfficialWanModel(VideoGenerationModel):
                     height // pipeline.vae_stride[1],
                     width // pipeline.vae_stride[2],
                 )
-                seq_len = math.ceil(
-                    (target_shape[2] * target_shape[3])
-                    / (pipeline.patch_size[1] * pipeline.patch_size[2])
-                    * target_shape[1]
-                    / pipeline.sp_size
-                ) * pipeline.sp_size
+                seq_len = (
+                    math.ceil(
+                        (target_shape[2] * target_shape[3])
+                        / (pipeline.patch_size[1] * pipeline.patch_size[2])
+                        * target_shape[1]
+                        / pipeline.sp_size
+                    )
+                    * pipeline.sp_size
+                )
                 latents = [
                     torch.randn(
-                        target_shape[0], target_shape[1], target_shape[2], target_shape[3],
-                        dtype=torch.float32, device=pipeline.device, generator=seed_g,
+                        target_shape[0],
+                        target_shape[1],
+                        target_shape[2],
+                        target_shape[3],
+                        dtype=torch.float32,
+                        device=pipeline.device,
+                        generator=seed_g,
                     )
                 ]
                 arg_c = {"context": state["text_context"], "seq_len": seq_len}
@@ -429,13 +473,21 @@ class OfficialWanModel(VideoGenerationModel):
                 max_area = self._max_area_configs[size_key]
                 frame_num = request.frame_count
                 lat_h, lat_w = state["conditioning"]["conditioning_shape"]
-                max_seq_len = ((frame_num - 1) // pipeline.vae_stride[0] + 1) * lat_h * lat_w // (
-                    pipeline.patch_size[1] * pipeline.patch_size[2]
+                max_seq_len = (
+                    ((frame_num - 1) // pipeline.vae_stride[0] + 1)
+                    * lat_h
+                    * lat_w
+                    // (pipeline.patch_size[1] * pipeline.patch_size[2])
                 )
-                max_seq_len = int(math.ceil(max_seq_len / pipeline.sp_size)) * pipeline.sp_size
+                max_seq_len = math.ceil(max_seq_len / pipeline.sp_size) * pipeline.sp_size
                 latents = torch.randn(
-                    16, (frame_num - 1) // pipeline.vae_stride[0] + 1, lat_h, lat_w,
-                    dtype=torch.float32, generator=seed_g, device=pipeline.device,
+                    16,
+                    (frame_num - 1) // pipeline.vae_stride[0] + 1,
+                    lat_h,
+                    lat_w,
+                    dtype=torch.float32,
+                    generator=seed_g,
+                    device=pipeline.device,
                 )
                 arg_c = {
                     "context": [state["text_context"][0]],
@@ -451,33 +503,50 @@ class OfficialWanModel(VideoGenerationModel):
             boundary = pipeline.boundary * pipeline.num_train_timesteps
             solver_name = sample_solver
             if solver_name == "unipc":
-                scheduler = importlib.import_module("wan.utils.fm_solvers_unipc").FlowUniPCMultistepScheduler(
-                    num_train_timesteps=pipeline.num_train_timesteps, shift=1, use_dynamic_shifting=False,
+                scheduler = importlib.import_module(
+                    "wan.utils.fm_solvers_unipc"
+                ).FlowUniPCMultistepScheduler(
+                    num_train_timesteps=pipeline.num_train_timesteps,
+                    shift=1,
+                    use_dynamic_shifting=False,
                 )
-                scheduler.set_timesteps(request.num_steps, device=pipeline.device, shift=request.shift)
+                scheduler.set_timesteps(
+                    request.num_steps, device=pipeline.device, shift=request.shift
+                )
                 timesteps = scheduler.timesteps
             else:
                 fm_solvers = importlib.import_module("wan.utils.fm_solvers")
                 scheduler = fm_solvers.FlowDPMSolverMultistepScheduler(
-                    num_train_timesteps=pipeline.num_train_timesteps, shift=1, use_dynamic_shifting=False,
+                    num_train_timesteps=pipeline.num_train_timesteps,
+                    shift=1,
+                    use_dynamic_shifting=False,
                 )
                 sampling_sigmas = fm_solvers.get_sampling_sigmas(request.num_steps, request.shift)
                 timesteps, _ = fm_solvers.retrieve_timesteps(
-                    scheduler, device=pipeline.device, sigmas=sampling_sigmas,
+                    scheduler,
+                    device=pipeline.device,
+                    sigmas=sampling_sigmas,
                 )
 
             for t in timesteps:
                 timestep = torch.stack([t]).to(pipeline.device)
                 model = pipeline._prepare_model_for_timestep(t, boundary, request.offload_model)
-                sample_guide_scale = high_noise_guidance_scale if t.item() >= boundary else low_noise_guidance_scale
+                sample_guide_scale = (
+                    high_noise_guidance_scale if t.item() >= boundary else low_noise_guidance_scale
+                )
 
                 if state["task_key"].startswith("t2v-"):
                     noise_pred_cond = model(latents, t=timestep, **arg_c)[0]
                     noise_pred_uncond = model(latents, t=timestep, **arg_null)[0]
-                    noise_pred = noise_pred_uncond + sample_guide_scale * (noise_pred_cond - noise_pred_uncond)
+                    noise_pred = noise_pred_uncond + sample_guide_scale * (
+                        noise_pred_cond - noise_pred_uncond
+                    )
                     temp_x0 = scheduler.step(
-                        noise_pred.unsqueeze(0), t, latents[0].unsqueeze(0),
-                        return_dict=False, generator=seed_g,
+                        noise_pred.unsqueeze(0),
+                        t,
+                        latents[0].unsqueeze(0),
+                        return_dict=False,
+                        generator=seed_g,
                     )[0]
                     latents = [temp_x0.squeeze(0)]
                 else:
@@ -488,10 +557,15 @@ class OfficialWanModel(VideoGenerationModel):
                     noise_pred_uncond = model(latent_model_input, t=timestep, **arg_null)[0]
                     if request.offload_model:
                         torch.cuda.empty_cache()
-                    noise_pred = noise_pred_uncond + sample_guide_scale * (noise_pred_cond - noise_pred_uncond)
+                    noise_pred = noise_pred_uncond + sample_guide_scale * (
+                        noise_pred_cond - noise_pred_uncond
+                    )
                     temp_x0 = scheduler.step(
-                        noise_pred.unsqueeze(0), t, latents.unsqueeze(0),
-                        return_dict=False, generator=seed_g,
+                        noise_pred.unsqueeze(0),
+                        t,
+                        latents.unsqueeze(0),
+                        return_dict=False,
+                        generator=seed_g,
                     )[0]
                     latents = temp_x0.squeeze(0)
 
@@ -523,7 +597,9 @@ class OfficialWanModel(VideoGenerationModel):
             ],
         )
 
-    async def decode_vae(self, request: VideoGenerationRequest, state: dict[str, Any]) -> StageResult:
+    async def decode_vae(
+        self, request: VideoGenerationRequest, state: dict[str, Any]
+    ) -> StageResult:
         pipeline = state["pipeline"]
         video = pipeline.vae.decode(state["latents"])[0]
         if request.offload_model:
@@ -539,7 +615,9 @@ class OfficialWanModel(VideoGenerationModel):
             notes=["VAE decode completed and produced frame tensors."],
         )
 
-    async def postprocess(self, request: VideoGenerationRequest, state: dict[str, Any]) -> StageResult:
+    async def postprocess(
+        self, request: VideoGenerationRequest, state: dict[str, Any]
+    ) -> StageResult:
         video = state["video_tensor"]
         return StageResult(
             state_updates={"output_fps": int(state["fps"])},

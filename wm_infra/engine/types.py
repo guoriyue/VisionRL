@@ -11,10 +11,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
 from statistics import mean
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
-
 
 # ---------------------------------------------------------------------------
 # Phase / engine config / scheduler types (from _types.py)
@@ -24,11 +23,11 @@ from pydantic import BaseModel, Field
 class Phase(IntEnum):
     """Lifecycle phase of an entity request inside the engine."""
 
-    WAITING = 0       # queued, not yet admitted
-    ENCODING = 1      # running the encoder (tokenizer / observation encoder)
-    STEPPING = 2      # running dynamics model forward steps
-    SWAPPED = 3       # preempted, latent pages swapped to CPU
-    DONE = 4          # finished, awaiting result drain
+    WAITING = 0  # queued, not yet admitted
+    ENCODING = 1  # running the encoder (tokenizer / observation encoder)
+    STEPPING = 2  # running dynamics model forward steps
+    SWAPPED = 3  # preempted, latent pages swapped to CPU
+    DONE = 4  # finished, awaiting result drain
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,14 +113,26 @@ class VideoMemoryProfile(str, Enum):
 
 
 class RolloutTaskConfig(BaseModel):
-    num_steps: int = Field(default=1, ge=1, description="Number of rollout or denoising steps to execute")
-    frame_count: Optional[int] = Field(default=None, ge=1, description="Target frame count for video-like tasks")
-    width: Optional[int] = Field(default=None, ge=1, description="Requested output width")
-    height: Optional[int] = Field(default=None, ge=1, description="Requested output height")
-    offload_model: Optional[bool] = Field(default=None, description="Whether model weights should be CPU/offload backed")
-    convert_model_dtype: Optional[bool] = Field(default=None, description="Whether to enable reduced-precision model conversion")
-    t5_cpu: Optional[bool] = Field(default=None, description="Whether text encoder work should stay on CPU")
-    memory_profile: Optional[VideoMemoryProfile] = Field(default=None, description="Coarse memory/quality mode for schedulers and backends")
+    num_steps: int = Field(
+        default=1, ge=1, description="Number of rollout or denoising steps to execute"
+    )
+    frame_count: int | None = Field(
+        default=None, ge=1, description="Target frame count for video-like tasks"
+    )
+    width: int | None = Field(default=None, ge=1, description="Requested output width")
+    height: int | None = Field(default=None, ge=1, description="Requested output height")
+    offload_model: bool | None = Field(
+        default=None, description="Whether model weights should be CPU/offload backed"
+    )
+    convert_model_dtype: bool | None = Field(
+        default=None, description="Whether to enable reduced-precision model conversion"
+    )
+    t5_cpu: bool | None = Field(
+        default=None, description="Whether text encoder work should stay on CPU"
+    )
+    memory_profile: VideoMemoryProfile | None = Field(
+        default=None, description="Coarse memory/quality mode for schedulers and backends"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +259,9 @@ class ExecutionStats:
 
     def snapshot(self) -> dict[str, float | int | str]:
         avg_chunk_size = mean(self.chunk_sizes) if self.chunk_sizes else 0.0
-        fill_ratio = (self.transition_entities / self.transition_chunks) if self.transition_chunks else 0.0
+        fill_ratio = (
+            (self.transition_entities / self.transition_chunks) if self.transition_chunks else 0.0
+        )
         return {
             "mode": self.mode,
             "transition_chunks": self.transition_chunks,
@@ -320,7 +333,9 @@ class ExecutionRuntimeTrace:
             "chunk_count": chunk_count,
             "avg_chunk_size": (sum(chunk_sizes) / len(chunk_sizes)) if chunk_sizes else 0.0,
             "max_chunk_size": max(chunk_sizes) if chunk_sizes else 0,
-            "avg_expected_occupancy": (sum(occupancies) / len(occupancies)) if occupancies else 0.0,
+            "avg_expected_occupancy": (sum(occupancies) / len(occupancies))
+            if occupancies
+            else 0.0,
         }
         if self.include_estimated_transfer_bytes:
             summary["estimated_transfer_bytes"] = transfer_bytes

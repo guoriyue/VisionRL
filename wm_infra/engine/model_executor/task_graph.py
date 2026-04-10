@@ -9,8 +9,9 @@ in topological order.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -194,6 +195,7 @@ class TaskGraph:
 def _cuda_available() -> bool:
     try:
         import torch
+
         return torch.cuda.is_available()
     except ImportError:
         return False

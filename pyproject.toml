@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wm-infra"
+version = "0.1.0"
+description = "Temporal model serving and control-plane infrastructure for video sample production"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+dependencies = [
+    "torch>=2.2.0",
+    "triton>=3.0.0",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.6.0",
+    "numpy>=1.26.0",
+    "einops>=0.7.0",
+    "prometheus-client>=0.20.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.27.0",
+    "asgi-lifespan>=2.1.0",
+    "ruff>=0.4.0",
+]
+bench = [
+    "matplotlib>=3.8.0",
+    "tabulate>=0.9.0",
+]
+
+[project.scripts]
+wm-serve = "wm_infra.api.server:main"
+
+[tool.setuptools.packages.find]
+include = ["wm_infra*"]
+
+# ── Ruff ─────────────────────────────────────────────────────────
+[tool.ruff]
+target-version = "py310"
+line-length = 99
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+    "RUF",  # ruff-specific rules
+]
+ignore = [
+    "E501",   # line length (handled by formatter)
+    "B008",   # function call in default arg (FastAPI Depends)
+    "TCH001", # move into TYPE_CHECKING (conflicts with pydantic)
+    "TCH002",
+    "TCH003",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["wm_infra"]
+
+[tool.ruff.format]
+quote-style = "double"

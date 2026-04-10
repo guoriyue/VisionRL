@@ -6,14 +6,15 @@ forcing temporal state into loose sample metadata.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import tempfile
 import time
 import uuid
-import tempfile
 from enum import Enum
 from pathlib import Path
-from typing import Any, Generic, Optional, TypeVar
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -50,8 +51,8 @@ class ExecutionResidencyRef(BaseModel):
     state_key: str = "latent_state"
     goal_key: str = "goal_state"
     step_key: str = "step_idx"
-    device: Optional[str] = None
-    bytes_estimate: Optional[int] = None
+    device: str | None = None
+    bytes_estimate: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -59,26 +60,26 @@ ExecutionStateRef = ExecutionResidencyRef
 
 
 class StateLineageRef(BaseModel):
-    env_name: Optional[str] = None
-    task_id: Optional[str] = None
-    branch_id: Optional[str] = None
-    rollout_id: Optional[str] = None
-    checkpoint_id: Optional[str] = None
-    trajectory_id: Optional[str] = None
+    env_name: str | None = None
+    task_id: str | None = None
+    branch_id: str | None = None
+    rollout_id: str | None = None
+    checkpoint_id: str | None = None
+    trajectory_id: str | None = None
     step_idx: int = 0
-    parent_state_handle_id: Optional[str] = None
+    parent_state_handle_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class EpisodeRecord(BaseModel):
     episode_id: str
-    title: Optional[str] = None
-    description: Optional[str] = None
+    title: str | None = None
+    description: str | None = None
     status: TemporalStatus = TemporalStatus.ACTIVE
     labels: dict[str, str] = Field(default_factory=dict)
-    seed: Optional[int] = None
-    initial_prompt: Optional[str] = None
-    parent_episode_id: Optional[str] = None
+    seed: int | None = None
+    initial_prompt: str | None = None
+    parent_episode_id: str | None = None
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -87,9 +88,9 @@ class EpisodeRecord(BaseModel):
 class BranchRecord(BaseModel):
     branch_id: str
     episode_id: str
-    parent_branch_id: Optional[str] = None
-    forked_from_rollout_id: Optional[str] = None
-    forked_from_checkpoint_id: Optional[str] = None
+    parent_branch_id: str | None = None
+    forked_from_rollout_id: str | None = None
+    forked_from_checkpoint_id: str | None = None
     name: str
     status: TemporalStatus = TemporalStatus.ACTIVE
     labels: dict[str, str] = Field(default_factory=dict)
@@ -101,44 +102,44 @@ class BranchRecord(BaseModel):
 class StateHandleRecord(BaseModel):
     state_handle_id: str
     episode_id: str
-    branch_id: Optional[str] = None
-    rollout_id: Optional[str] = None
-    checkpoint_id: Optional[str] = None
+    branch_id: str | None = None
+    rollout_id: str | None = None
+    checkpoint_id: str | None = None
     kind: StateHandleKind = StateHandleKind.LATENT
-    uri: Optional[str] = None
+    uri: str | None = None
     shape: list[int] = Field(default_factory=list)
-    dtype: Optional[str] = None
+    dtype: str | None = None
     version: int = 1
     is_terminal: bool = False
-    execution_state_ref: Optional[ExecutionResidencyRef] = None
-    lineage_ref: Optional[StateLineageRef] = None
+    execution_state_ref: ExecutionResidencyRef | None = None
+    lineage_ref: StateLineageRef | None = None
     created_at: float = Field(default_factory=time.time)
     artifact_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @property
-    def execution_residency_ref(self) -> Optional[ExecutionResidencyRef]:
+    def execution_residency_ref(self) -> ExecutionResidencyRef | None:
         return self.execution_state_ref
 
 
 class RolloutRecord(BaseModel):
     rollout_id: str
     episode_id: str
-    branch_id: Optional[str] = None
+    branch_id: str | None = None
     backend: str
     model: str
     status: TemporalStatus = TemporalStatus.PENDING
-    sample_id: Optional[str] = None
-    request_id: Optional[str] = None
-    input_state_handle_id: Optional[str] = None
-    output_state_handle_id: Optional[str] = None
+    sample_id: str | None = None
+    request_id: str | None = None
+    input_state_handle_id: str | None = None
+    output_state_handle_id: str | None = None
     checkpoint_ids: list[str] = Field(default_factory=list)
     artifact_ids: list[str] = Field(default_factory=list)
     step_count: int = 0
     priority: float = 0.0
     created_at: float = Field(default_factory=time.time)
-    started_at: Optional[float] = None
-    completed_at: Optional[float] = None
+    started_at: float | None = None
+    completed_at: float | None = None
     updated_at: float = Field(default_factory=time.time)
     metrics: dict[str, float] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -147,31 +148,31 @@ class RolloutRecord(BaseModel):
 class CheckpointRecord(BaseModel):
     checkpoint_id: str
     episode_id: str
-    rollout_id: Optional[str] = None
-    branch_id: Optional[str] = None
-    state_handle_id: Optional[str] = None
+    rollout_id: str | None = None
+    branch_id: str | None = None
+    state_handle_id: str | None = None
     artifact_ids: list[str] = Field(default_factory=list)
     step_index: int = 0
-    tag: Optional[str] = None
+    tag: str | None = None
     created_at: float = Field(default_factory=time.time)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class EpisodeCreate(BaseModel):
-    title: Optional[str] = None
-    description: Optional[str] = None
+    title: str | None = None
+    description: str | None = None
     labels: dict[str, str] = Field(default_factory=dict)
-    seed: Optional[int] = None
-    initial_prompt: Optional[str] = None
-    parent_episode_id: Optional[str] = None
+    seed: int | None = None
+    initial_prompt: str | None = None
+    parent_episode_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class BranchCreate(BaseModel):
     episode_id: str
-    parent_branch_id: Optional[str] = None
-    forked_from_rollout_id: Optional[str] = None
-    forked_from_checkpoint_id: Optional[str] = None
+    parent_branch_id: str | None = None
+    forked_from_rollout_id: str | None = None
+    forked_from_checkpoint_id: str | None = None
     name: str
     labels: dict[str, str] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -179,33 +180,33 @@ class BranchCreate(BaseModel):
 
 class StateHandleCreate(BaseModel):
     episode_id: str
-    branch_id: Optional[str] = None
-    rollout_id: Optional[str] = None
-    checkpoint_id: Optional[str] = None
+    branch_id: str | None = None
+    rollout_id: str | None = None
+    checkpoint_id: str | None = None
     kind: StateHandleKind = StateHandleKind.LATENT
-    uri: Optional[str] = None
+    uri: str | None = None
     shape: list[int] = Field(default_factory=list)
-    dtype: Optional[str] = None
+    dtype: str | None = None
     version: int = 1
     is_terminal: bool = False
-    execution_state_ref: Optional[ExecutionResidencyRef] = None
-    lineage_ref: Optional[StateLineageRef] = None
+    execution_state_ref: ExecutionResidencyRef | None = None
+    lineage_ref: StateLineageRef | None = None
     artifact_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @property
-    def execution_residency_ref(self) -> Optional[ExecutionResidencyRef]:
+    def execution_residency_ref(self) -> ExecutionResidencyRef | None:
         return self.execution_state_ref
 
 
 class RolloutCreate(BaseModel):
     episode_id: str
-    branch_id: Optional[str] = None
+    branch_id: str | None = None
     backend: str
     model: str
-    sample_id: Optional[str] = None
-    request_id: Optional[str] = None
-    input_state_handle_id: Optional[str] = None
+    sample_id: str | None = None
+    request_id: str | None = None
+    input_state_handle_id: str | None = None
     artifact_ids: list[str] = Field(default_factory=list)
     step_count: int = 0
     priority: float = 0.0
@@ -214,19 +215,19 @@ class RolloutCreate(BaseModel):
 
 class CheckpointCreate(BaseModel):
     episode_id: str
-    rollout_id: Optional[str] = None
-    branch_id: Optional[str] = None
-    state_handle_id: Optional[str] = None
+    rollout_id: str | None = None
+    branch_id: str | None = None
+    state_handle_id: str | None = None
     artifact_ids: list[str] = Field(default_factory=list)
     step_index: int = 0
-    tag: Optional[str] = None
+    tag: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class EnvironmentSpec(BaseModel):
     env_name: str
     backend: str
-    world_model_kind: Optional[WorldModelKind] = None
+    world_model_kind: WorldModelKind | None = None
     observation_mode: str
     action_space: dict[str, Any] = Field(default_factory=dict)
     reward_schema: dict[str, Any] = Field(default_factory=dict)
@@ -256,14 +257,14 @@ class EnvironmentSessionRecord(BaseModel):
     backend: str
     status: TemporalStatus = TemporalStatus.ACTIVE
     current_step: int = 0
-    state_handle_id: Optional[str] = None
-    checkpoint_id: Optional[str] = None
-    trajectory_id: Optional[str] = None
-    branch_id: Optional[str] = None
-    policy_version: Optional[str] = None
+    state_handle_id: str | None = None
+    checkpoint_id: str | None = None
+    trajectory_id: str | None = None
+    branch_id: str | None = None
+    policy_version: str | None = None
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
-    completed_at: Optional[float] = None
+    completed_at: float | None = None
     labels: dict[str, str] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -282,7 +283,7 @@ class TransitionRecord(BaseModel):
     truncated: bool
     next_observation_ref: str
     info: dict[str, Any] = Field(default_factory=dict)
-    policy_version: Optional[str] = None
+    policy_version: str | None = None
     created_at: float = Field(default_factory=time.time)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -292,7 +293,7 @@ class TrajectoryRecord(BaseModel):
     env_id: str
     episode_id: str
     task_id: str
-    policy_version: Optional[str] = None
+    policy_version: str | None = None
     status: TemporalStatus = TemporalStatus.ACTIVE
     num_steps: int = 0
     return_value: float = 0.0
@@ -300,7 +301,7 @@ class TrajectoryRecord(BaseModel):
     transition_refs: list[str] = Field(default_factory=list)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
-    completed_at: Optional[float] = None
+    completed_at: float | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -313,7 +314,7 @@ class EvaluationRunRecord(BaseModel):
     metrics: dict[str, float] = Field(default_factory=dict)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
-    completed_at: Optional[float] = None
+    completed_at: float | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -325,7 +326,7 @@ class ReplayShardManifest(BaseModel):
     transition_ids: list[str] = Field(default_factory=list)
     num_trajectories: int = 0
     num_transitions: int = 0
-    uri: Optional[str] = None
+    uri: str | None = None
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -337,11 +338,11 @@ class EnvironmentSessionCreate(BaseModel):
     task_id: str
     backend: str
     current_step: int = 0
-    state_handle_id: Optional[str] = None
-    checkpoint_id: Optional[str] = None
-    trajectory_id: Optional[str] = None
-    branch_id: Optional[str] = None
-    policy_version: Optional[str] = None
+    state_handle_id: str | None = None
+    checkpoint_id: str | None = None
+    trajectory_id: str | None = None
+    branch_id: str | None = None
+    policy_version: str | None = None
     labels: dict[str, str] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -359,7 +360,7 @@ class TransitionCreate(BaseModel):
     truncated: bool
     next_observation_ref: str
     info: dict[str, Any] = Field(default_factory=dict)
-    policy_version: Optional[str] = None
+    policy_version: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -367,7 +368,7 @@ class TrajectoryCreate(BaseModel):
     env_id: str
     episode_id: str
     task_id: str
-    policy_version: Optional[str] = None
+    policy_version: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -384,7 +385,7 @@ class ReplayShardCreate(BaseModel):
     task_split: str
     trajectory_ids: list[str] = Field(default_factory=list)
     transition_ids: list[str] = Field(default_factory=list)
-    uri: Optional[str] = None
+    uri: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -412,10 +413,8 @@ class _EntityStore(Generic[T]):
                 os.fsync(handle.fileno())
             os.replace(tmp_path, path)
         except Exception:
-            try:
+            with contextlib.suppress(OSError):
                 tmp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
             raise
 
     def _read_record(self, path: Path) -> T | None:
@@ -453,32 +452,54 @@ class TemporalStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self.episodes = _EntityStore(self.root, "episodes", EpisodeRecord, "episode_id")
         self.rollouts = _EntityStore(self.root, "rollouts", RolloutRecord, "rollout_id")
-        self.state_handles = _EntityStore(self.root, "state_handles", StateHandleRecord, "state_handle_id")
+        self.state_handles = _EntityStore(
+            self.root, "state_handles", StateHandleRecord, "state_handle_id"
+        )
         self.branches = _EntityStore(self.root, "branches", BranchRecord, "branch_id")
-        self.checkpoints = _EntityStore(self.root, "checkpoints", CheckpointRecord, "checkpoint_id")
-        self.environment_specs = _EntityStore(self.root, "environment_specs", EnvironmentSpec, "env_name")
+        self.checkpoints = _EntityStore(
+            self.root, "checkpoints", CheckpointRecord, "checkpoint_id"
+        )
+        self.environment_specs = _EntityStore(
+            self.root, "environment_specs", EnvironmentSpec, "env_name"
+        )
         self.task_specs = _EntityStore(self.root, "task_specs", TaskSpec, "task_id")
-        self.environment_sessions = _EntityStore(self.root, "environment_sessions", EnvironmentSessionRecord, "env_id")
-        self.transitions = _EntityStore(self.root, "transitions", TransitionRecord, "transition_id")
-        self.trajectories = _EntityStore(self.root, "trajectories", TrajectoryRecord, "trajectory_id")
-        self.evaluation_runs = _EntityStore(self.root, "evaluation_runs", EvaluationRunRecord, "eval_run_id")
-        self.replay_shards = _EntityStore(self.root, "replay_shards", ReplayShardManifest, "replay_shard_id")
+        self.environment_sessions = _EntityStore(
+            self.root, "environment_sessions", EnvironmentSessionRecord, "env_id"
+        )
+        self.transitions = _EntityStore(
+            self.root, "transitions", TransitionRecord, "transition_id"
+        )
+        self.trajectories = _EntityStore(
+            self.root, "trajectories", TrajectoryRecord, "trajectory_id"
+        )
+        self.evaluation_runs = _EntityStore(
+            self.root, "evaluation_runs", EvaluationRunRecord, "eval_run_id"
+        )
+        self.replay_shards = _EntityStore(
+            self.root, "replay_shards", ReplayShardManifest, "replay_shard_id"
+        )
 
     def create_episode(self, request: EpisodeCreate) -> EpisodeRecord:
         now = time.time()
-        record = EpisodeRecord(episode_id=str(uuid.uuid4()), updated_at=now, created_at=now, **request.model_dump())
+        record = EpisodeRecord(
+            episode_id=str(uuid.uuid4()), updated_at=now, created_at=now, **request.model_dump()
+        )
         return self.episodes.put(record)
 
     def create_branch(self, request: BranchCreate) -> BranchRecord:
         now = time.time()
-        record = BranchRecord(branch_id=str(uuid.uuid4()), updated_at=now, created_at=now, **request.model_dump())
+        record = BranchRecord(
+            branch_id=str(uuid.uuid4()), updated_at=now, created_at=now, **request.model_dump()
+        )
         return self.branches.put(record)
 
     def create_state_handle(self, request: StateHandleCreate) -> StateHandleRecord:
         record = StateHandleRecord(state_handle_id=str(uuid.uuid4()), **request.model_dump())
         return self.state_handles.put(record)
 
-    def create_rollout(self, request: RolloutCreate, *, status: TemporalStatus = TemporalStatus.PENDING) -> RolloutRecord:
+    def create_rollout(
+        self, request: RolloutCreate, *, status: TemporalStatus = TemporalStatus.PENDING
+    ) -> RolloutRecord:
         now = time.time()
         record = RolloutRecord(
             rollout_id=str(uuid.uuid4()),
@@ -498,7 +519,9 @@ class TemporalStore:
         record = CheckpointRecord(checkpoint_id=str(uuid.uuid4()), **request.model_dump())
         return self.checkpoints.put(record)
 
-    def attach_checkpoint_to_rollout(self, rollout_id: str, checkpoint_id: str) -> RolloutRecord | None:
+    def attach_checkpoint_to_rollout(
+        self, rollout_id: str, checkpoint_id: str
+    ) -> RolloutRecord | None:
         rollout = self.rollouts.get(rollout_id)
         if rollout is None:
             return None
@@ -528,7 +551,9 @@ class TemporalStore:
         )
         return self.environment_sessions.put(record)
 
-    def update_environment_session(self, session: EnvironmentSessionRecord) -> EnvironmentSessionRecord:
+    def update_environment_session(
+        self, session: EnvironmentSessionRecord
+    ) -> EnvironmentSessionRecord:
         session.updated_at = time.time()
         return self.environment_sessions.put(session)
 

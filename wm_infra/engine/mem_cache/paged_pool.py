@@ -9,8 +9,8 @@ Copy-on-write fork uses reference counting to share blocks until mutation.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Sequence
 
 import torch
 
@@ -62,8 +62,12 @@ class PagedLatentPool:
         self.device = device
 
         self.pool = torch.zeros(
-            num_blocks, block_size, latent_tokens, latent_dim,
-            device=device, dtype=torch.float32,
+            num_blocks,
+            block_size,
+            latent_tokens,
+            latent_dim,
+            device=device,
+            dtype=torch.float32,
         )
 
         self._free: deque[int] = deque(range(num_blocks))
@@ -152,17 +156,18 @@ class PagedLatentPool:
         *total_steps* = max(entity_blocks) * block_size (zero-padded).
         """
         if not entity_ids:
-            return torch.empty(0, 0, self.latent_tokens, self.latent_dim,
-                               device=self.device)
+            return torch.empty(0, 0, self.latent_tokens, self.latent_dim, device=self.device)
 
-        max_blocks = max(
-            self._page_tables[eid].num_blocks for eid in entity_ids
-        )
+        max_blocks = max(self._page_tables[eid].num_blocks for eid in entity_ids)
         total_steps = max_blocks * self.block_size
 
         batch = torch.zeros(
-            len(entity_ids), total_steps, self.latent_tokens, self.latent_dim,
-            device=self.device, dtype=self.pool.dtype,
+            len(entity_ids),
+            total_steps,
+            self.latent_tokens,
+            self.latent_dim,
+            device=self.device,
+            dtype=self.pool.dtype,
         )
         for i, eid in enumerate(entity_ids):
             pt = self._page_tables[eid]
@@ -183,7 +188,7 @@ class PagedLatentPool:
         """
         for i, eid in enumerate(entity_ids):
             pt = self._page_tables[eid]
-            for j, bid in enumerate(pt.block_ids):
+            for j, _bid in enumerate(pt.block_ids):
                 start = j * self.block_size
                 end = start + self.block_size
                 self._ensure_writable(eid, j)

@@ -15,7 +15,6 @@ Reference: COSMOS tokenizer (NVIDIA, 2025) — 8x total compression with causal 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
@@ -51,11 +50,13 @@ class SpatialEncoder(nn.Module):
         ch = in_channels
         for i in range(num_stages):
             out_ch = latent_channels if i == num_stages - 1 else min(ch * 2, latent_channels)
-            layers.extend([
-                nn.Conv2d(ch, out_ch, 4, stride=2, padding=1, bias=False),
-                nn.GroupNorm(min(32, out_ch), out_ch),
-                nn.SiLU(),
-            ])
+            layers.extend(
+                [
+                    nn.Conv2d(ch, out_ch, 4, stride=2, padding=1, bias=False),
+                    nn.GroupNorm(min(32, out_ch), out_ch),
+                    nn.SiLU(),
+                ]
+            )
             ch = out_ch
         self.net = nn.Sequential(*layers)
 
@@ -74,11 +75,13 @@ class SpatialDecoder(nn.Module):
         ch = latent_channels
         for i in range(num_stages):
             out_ch = out_channels if i == num_stages - 1 else max(ch // 2, out_channels)
-            layers.extend([
-                nn.ConvTranspose2d(ch, out_ch, 4, stride=2, padding=1, bias=False),
-                nn.GroupNorm(min(32, out_ch), out_ch) if i < num_stages - 1 else nn.Identity(),
-                nn.SiLU() if i < num_stages - 1 else nn.Sigmoid(),
-            ])
+            layers.extend(
+                [
+                    nn.ConvTranspose2d(ch, out_ch, 4, stride=2, padding=1, bias=False),
+                    nn.GroupNorm(min(32, out_ch), out_ch) if i < num_stages - 1 else nn.Identity(),
+                    nn.SiLU() if i < num_stages - 1 else nn.Sigmoid(),
+                ]
+            )
             ch = out_ch
         self.net = nn.Sequential(*layers)
 
@@ -111,7 +114,7 @@ class TemporalDecoder(nn.Module):
         num_stages = int(math.log2(upsample))
         layers = []
         for _ in range(num_stages):
-            layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
+            layers.append(nn.Upsample(scale_factor=2, mode="nearest"))
             layers.append(CausalConv1d(channels, channels, kernel_size=3, stride=1))
             layers.append(nn.SiLU())
         self.net = nn.Sequential(*layers)
@@ -198,16 +201,28 @@ class VideoTokenizer(nn.Module):
         )
 
         if config.temporal_downsample > 1:
-            self.temporal_encoder = TemporalEncoder(config.latent_channels, config.temporal_downsample)
-            self.temporal_decoder = TemporalDecoder(config.latent_channels, config.temporal_downsample)
+            self.temporal_encoder = TemporalEncoder(
+                config.latent_channels, config.temporal_downsample
+            )
+            self.temporal_decoder = TemporalDecoder(
+                config.latent_channels, config.temporal_downsample
+            )
         else:
             self.temporal_encoder = nn.Identity()
             self.temporal_decoder = nn.Identity()
 
         # Project to FSQ dimension if needed
         fsq_dim = len(config.fsq_levels)
-        self.to_fsq = nn.Linear(config.latent_channels, fsq_dim) if config.latent_channels != fsq_dim else nn.Identity()
-        self.from_fsq = nn.Linear(fsq_dim, config.latent_channels) if config.latent_channels != fsq_dim else nn.Identity()
+        self.to_fsq = (
+            nn.Linear(config.latent_channels, fsq_dim)
+            if config.latent_channels != fsq_dim
+            else nn.Identity()
+        )
+        self.from_fsq = (
+            nn.Linear(fsq_dim, config.latent_channels)
+            if config.latent_channels != fsq_dim
+            else nn.Identity()
+        )
 
         self.quantizer = FSQQuantizer(config.fsq_levels)
 
@@ -245,7 +260,9 @@ class VideoTokenizer(nn.Module):
 
         return z_q, indices
 
-    def decode(self, z_q: torch.Tensor, original_shape: tuple[int, ...] | None = None) -> torch.Tensor:
+    def decode(
+        self, z_q: torch.Tensor, original_shape: tuple[int, ...] | None = None
+    ) -> torch.Tensor:
         """Decode quantized latent tokens back to video frames.
 
         Args:
@@ -255,7 +272,7 @@ class VideoTokenizer(nn.Module):
         Returns:
             video: [B, T, C, H, W] reconstructed frames
         """
-        B, T_prime, N, D = z_q.shape
+        B, T_prime, N, _D = z_q.shape
 
         # Unquantize
         latent = self.from_fsq(z_q)  # [B, T', N, latent_ch]

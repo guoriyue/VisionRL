@@ -8,18 +8,19 @@ in a loop, and resolves per-request futures when entities complete.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Any
 
+from wm_infra.engine.managers.scheduler import ContinuousBatchingScheduler
+from wm_infra.engine.mem_cache.paged_pool import PagedLatentPool
+from wm_infra.engine.mem_cache.radix_cache import RadixStateCache
+from wm_infra.engine.model_executor.worker import RequestQueue, Worker
 from wm_infra.engine.types import (
     EngineRunConfig,
     EntityRequest,
     StepResult,
 )
-from wm_infra.engine.managers.scheduler import ContinuousBatchingScheduler
-from wm_infra.engine.mem_cache.paged_pool import PagedLatentPool
-from wm_infra.engine.mem_cache.radix_cache import RadixStateCache
-from wm_infra.engine.model_executor.worker import RequestQueue, Worker
 
 logger = logging.getLogger(__name__)
 
@@ -89,13 +90,11 @@ class EngineLoop:
         self._has_work.set()  # wake the loop so it can exit
         if self._task is not None:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
             self._task = None
         # Cancel any unresolved futures so callers don't hang
-        for rid, future in self._futures.items():
+        for _rid, future in self._futures.items():
             if not future.done():
                 future.cancel()
         self._futures.clear()
@@ -174,9 +173,7 @@ class EngineLoop:
         if sched_output.encode_ids:
             encode_stage = self.worker.get_stage("encode")
             if encode_stage is not None:
-                self.worker.execute_step(
-                    sched_output.encode_ids, "encode"
-                )
+                self.worker.execute_step(sched_output.encode_ids, "encode")
             self.scheduler.on_encode_complete(sched_output.encode_ids)
 
         # (4) Execute dynamics step

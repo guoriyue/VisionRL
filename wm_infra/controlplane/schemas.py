@@ -8,13 +8,13 @@ production, evaluation, and export.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 # VideoMemoryProfile and RolloutTaskConfig are owned by the engine layer
 # and re-exported here for backward compatibility.
-from wm_infra.engine.types import RolloutTaskConfig, VideoMemoryProfile  # noqa: F401
+from wm_infra.engine.types import RolloutTaskConfig, VideoMemoryProfile
 
 
 class TaskType(str, Enum):
@@ -90,17 +90,17 @@ class FailureTag(str, Enum):
 
 class ExperimentRef(BaseModel):
     experiment_id: str = Field(..., description="Stable experiment identifier")
-    run_id: Optional[str] = Field(default=None, description="Specific run within experiment")
+    run_id: str | None = Field(default=None, description="Specific run within experiment")
     tags: list[str] = Field(default_factory=list)
 
 
 class TemporalRefs(BaseModel):
-    episode_id: Optional[str] = None
-    rollout_id: Optional[str] = None
-    branch_id: Optional[str] = None
-    checkpoint_id: Optional[str] = None
-    state_handle_id: Optional[str] = None
-    parent_state_handle_id: Optional[str] = None
+    episode_id: str | None = None
+    rollout_id: str | None = None
+    branch_id: str | None = None
+    checkpoint_id: str | None = None
+    state_handle_id: str | None = None
+    parent_state_handle_id: str | None = None
 
 
 class TokenInputSource(str, Enum):
@@ -117,12 +117,14 @@ class TokenInputSpec(BaseModel):
     source: TokenInputSource = TokenInputSource.INLINE
     tokenizer_family: TokenizerFamily = TokenizerFamily.RAW
     layout: Literal["thw", "flat"] = "thw"
-    uri: Optional[str] = None
+    uri: str | None = None
     inline_tokens: list[int] = Field(default_factory=list)
-    shape: list[int] = Field(default_factory=list, description="Expected token tensor shape, e.g. [T, H, W]")
+    shape: list[int] = Field(
+        default_factory=list, description="Expected token tensor shape, e.g. [T, H, W]"
+    )
     dtype: str = Field(default="uint32")
-    token_count: Optional[int] = Field(default=None, ge=0)
-    tokenizer_name: Optional[str] = None
+    token_count: int | None = Field(default=None, ge=0)
+    tokenizer_name: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -137,54 +139,79 @@ class WanTaskConfig(BaseModel):
     frame_count: int = Field(default=9, ge=1, description="Target frame count (frame_num)")
     width: int = Field(default=832, ge=1, description="Output width")
     height: int = Field(default=480, ge=1, description="Output height")
-    guidance_scale: float = Field(default=4.0, ge=0, description="Classifier-free guidance scale (sample_guide_scale)")
-    high_noise_guidance_scale: Optional[float] = Field(
+    guidance_scale: float = Field(
+        default=4.0, ge=0, description="Classifier-free guidance scale (sample_guide_scale)"
+    )
+    high_noise_guidance_scale: float | None = Field(
         default=None,
         ge=0,
         description="Optional high-noise guidance scale override for official Wan I2V",
     )
     shift: float = Field(default=12.0, ge=0, description="Noise schedule shift (sample_shift)")
     sample_solver: str = Field(default="unipc", description="Sampling solver (sample_solver)")
-    offload_model: bool = Field(default=True, description="Offload model weights to CPU between stages")
-    convert_model_dtype: bool = Field(default=True, description="Enable reduced-precision model conversion")
+    offload_model: bool = Field(
+        default=True, description="Offload model weights to CPU between stages"
+    )
+    convert_model_dtype: bool = Field(
+        default=True, description="Enable reduced-precision model conversion"
+    )
     t5_cpu: bool = Field(default=True, description="Keep T5 text encoder on CPU")
-    memory_profile: VideoMemoryProfile = Field(default=VideoMemoryProfile.LOW_VRAM, description="Coarse memory/quality mode")
-    model_size: str = Field(default="A14B", description="Wan 2.2 model-size suffix used in model ids such as wan2.2-t2v-A14B")
-    ckpt_dir: Optional[str] = Field(default=None, description="Path to the Wan 2.2 checkpoint directory")
+    memory_profile: VideoMemoryProfile = Field(
+        default=VideoMemoryProfile.LOW_VRAM, description="Coarse memory/quality mode"
+    )
+    model_size: str = Field(
+        default="A14B",
+        description="Wan 2.2 model-size suffix used in model ids such as wan2.2-t2v-A14B",
+    )
+    ckpt_dir: str | None = Field(
+        default=None, description="Path to the Wan 2.2 checkpoint directory"
+    )
 
 
 class CosmosTaskConfig(BaseModel):
-    """Cosmos-family world generation config for NIM or local shell runners."""
+    """Cosmos-family config for in-process staged world/video generation."""
 
     variant: CosmosVariant = Field(
         default=CosmosVariant.PREDICT1_VIDEO2WORLD,
         description="Cosmos pipeline variant to execute",
     )
-    model_size: str = Field(default="7B", description="Model size or variant label, e.g. 2B, 7B, 14B")
-    guidance_scale: float = Field(default=7.0, ge=0, description="Guidance scale when supported by the runner")
-    checkpoint_every_n_frames: int = Field(default=0, ge=0, description="Reserved for future chunked continuation scheduling")
+    model_size: str = Field(
+        default="7B", description="Model size or variant label, e.g. 2B, 7B, 14B"
+    )
+    guidance_scale: float = Field(
+        default=7.0, ge=0, description="Guidance scale for the staged generation pipeline"
+    )
+    checkpoint_every_n_frames: int = Field(
+        default=0, ge=0, description="Reserved for future chunked continuation scheduling"
+    )
     frames_per_second: int = Field(default=16, ge=1, description="Output video FPS")
-    negative_prompt: Optional[str] = Field(default=None, description="Optional backend-specific negative prompt override")
-    seed: Optional[int] = Field(default=None, description="Optional backend-specific seed override")
+    negative_prompt: str | None = Field(
+        default=None, description="Optional backend-specific negative prompt override"
+    )
+    seed: int | None = Field(default=None, description="Optional backend-specific seed override")
 
 
 class ResourceEstimate(BaseModel):
-    estimated_units: float = Field(..., ge=0, description="Relative resource score for admission/scheduling")
-    estimated_vram_gb: Optional[float] = Field(default=None, ge=0)
+    estimated_units: float = Field(
+        ..., ge=0, description="Relative resource score for admission/scheduling"
+    )
+    estimated_vram_gb: float | None = Field(default=None, ge=0)
     bottleneck: str = Field(default="unknown")
     notes: list[str] = Field(default_factory=list)
 
 
 class SampleSpec(BaseModel):
-    prompt: Optional[str] = None
-    negative_prompt: Optional[str] = None
-    duration_seconds: Optional[float] = Field(default=None, ge=0)
-    fps: Optional[int] = Field(default=None, ge=1)
-    width: Optional[int] = Field(default=None, ge=1)
-    height: Optional[int] = Field(default=None, ge=1)
-    seed: Optional[int] = None
+    prompt: str | None = None
+    negative_prompt: str | None = None
+    duration_seconds: float | None = Field(default=None, ge=0)
+    fps: int | None = Field(default=None, ge=1)
+    width: int | None = Field(default=None, ge=1)
+    height: int | None = Field(default=None, ge=1)
+    seed: int | None = None
     references: list[str] = Field(default_factory=list, description="URIs or asset IDs")
-    controls: dict[str, Any] = Field(default_factory=dict, description="Camera/motion/control inputs")
+    controls: dict[str, Any] = Field(
+        default_factory=dict, description="Camera/motion/control inputs"
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -192,27 +219,29 @@ class ArtifactRecord(BaseModel):
     artifact_id: str
     kind: ArtifactKind
     uri: str
-    mime_type: Optional[str] = None
-    bytes: Optional[int] = None
-    sha256: Optional[str] = None
+    mime_type: str | None = None
+    bytes: int | None = None
+    sha256: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class EvaluationRecord(BaseModel):
     evaluator: str = Field(..., description="Name of auto scorer or human review queue")
     status: EvaluationStatus = EvaluationStatus.PENDING
-    score: Optional[float] = None
+    score: float | None = None
     failure_tags: list[FailureTag] = Field(default_factory=list)
-    notes: Optional[str] = None
+    notes: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class TrainingExportRecord(BaseModel):
     export_id: str
-    export_format: str = Field(..., description="pairwise_ranking | scorer_training | lora_finetune_manifest")
-    dataset_name: Optional[str] = None
-    split: Optional[str] = None
-    uri: Optional[str] = None
+    export_format: str = Field(
+        ..., description="pairwise_ranking | scorer_training | lora_finetune_manifest"
+    )
+    dataset_name: str | None = None
+    split: str | None = None
+    uri: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -220,36 +249,36 @@ class ProduceSampleRequest(BaseModel):
     task_type: TaskType
     backend: str = Field(..., description="Backend/runtime identifier")
     model: str = Field(..., description="Logical model identifier")
-    world_model_kind: Optional[WorldModelKind] = Field(
+    world_model_kind: WorldModelKind | None = Field(
         default=None,
         description="Optional client-declared world-model family for routing validation.",
     )
-    model_revision: Optional[str] = None
-    experiment: Optional[ExperimentRef] = None
+    model_revision: str | None = None
+    experiment: ExperimentRef | None = None
     sample_spec: SampleSpec
-    temporal: Optional[TemporalRefs] = None
-    token_input: Optional[TokenInputSpec] = Field(
+    temporal: TemporalRefs | None = None
+    token_input: TokenInputSpec | None = Field(
         default=None,
         description=(
             "Optional tokenized-video input scaffold for temporal backends. Supports direct raw token input now "
             "(inline or .npy URI) and reserves tokenizer_family='magvit2' for forward-compatible tokenized inputs."
         ),
     )
-    task_config: Optional[RolloutTaskConfig] = Field(
+    task_config: RolloutTaskConfig | None = Field(
         default=None,
         description=(
             "Task-specific execution config. "
             "Video-relevant execution knobs such as num_steps, frame_count, width, height, and memory/offload mode belong here."
         ),
     )
-    wan_config: Optional[WanTaskConfig] = Field(
+    wan_config: WanTaskConfig | None = Field(
         default=None,
         description=(
             "Wan 2.2 video generation config. Used when backend is the wan-video runtime "
             "(text_to_video, image_to_video)."
         ),
     )
-    cosmos_config: Optional[CosmosTaskConfig] = Field(
+    cosmos_config: CosmosTaskConfig | None = Field(
         default=None,
         description=(
             "Cosmos-family world generation config. Used when backend is cosmos-predict. "
@@ -257,7 +286,9 @@ class ProduceSampleRequest(BaseModel):
         ),
     )
     return_artifacts: list[ArtifactKind] = Field(default_factory=lambda: [ArtifactKind.VIDEO])
-    evaluation_policy: Optional[str] = Field(default=None, description="Policy name for auto-QC / review")
+    evaluation_policy: str | None = Field(
+        default=None, description="Policy name for auto-QC / review"
+    )
     priority: float = 0.0
     labels: dict[str, str] = Field(default_factory=dict)
 
@@ -267,17 +298,17 @@ class SampleRecord(BaseModel):
     task_type: TaskType
     backend: str
     model: str
-    world_model_kind: Optional[WorldModelKind] = None
-    model_revision: Optional[str] = None
+    world_model_kind: WorldModelKind | None = None
+    model_revision: str | None = None
     status: SampleStatus = SampleStatus.QUEUED
-    experiment: Optional[ExperimentRef] = None
+    experiment: ExperimentRef | None = None
     sample_spec: SampleSpec
-    temporal: Optional[TemporalRefs] = None
-    token_input: Optional[TokenInputSpec] = None
-    task_config: Optional[RolloutTaskConfig] = None
-    wan_config: Optional[WanTaskConfig] = None
-    cosmos_config: Optional[CosmosTaskConfig] = None
-    resource_estimate: Optional[ResourceEstimate] = None
+    temporal: TemporalRefs | None = None
+    token_input: TokenInputSpec | None = None
+    task_config: RolloutTaskConfig | None = None
+    wan_config: WanTaskConfig | None = None
+    cosmos_config: CosmosTaskConfig | None = None
+    resource_estimate: ResourceEstimate | None = None
     artifacts: list[ArtifactRecord] = Field(default_factory=list)
     evaluations: list[EvaluationRecord] = Field(default_factory=list)
     exports: list[TrainingExportRecord] = Field(default_factory=list)

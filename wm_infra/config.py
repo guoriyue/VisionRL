@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import argparse
 import os
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 
 class DeviceType(str, Enum):
@@ -48,9 +48,9 @@ class MoEConfig:
     hidden_dim: int = 4096
     intermediate_dim: int = 14336
     weight_dtype: str = "float16"
-    max_experts_in_gpu: Optional[int] = None
+    max_experts_in_gpu: int | None = None
     has_shared_experts: bool = False
-    shared_expert_intermediate_dim: Optional[int] = None
+    shared_expert_intermediate_dim: int | None = None
     use_shared_expert_gate: bool = False
     use_expert_bias: bool = False
     expert_bias_lr: float = 0.001
@@ -75,13 +75,13 @@ class TransformerConfig:
     attention_backend: str = "auto"
     compile_attention: bool = False
     qkv_bias: bool = False
-    q_lora_rank: Optional[int] = None
+    q_lora_rank: int | None = None
     kv_lora_rank: int = 512
     qk_nope_head_dim: int = 128
     qk_rope_head_dim: int = 64
-    qk_head_dim: Optional[int] = None
+    qk_head_dim: int | None = None
     v_head_dim: int = 128
-    speculative_top_k: Optional[int] = None
+    speculative_top_k: int | None = None
 
     def __post_init__(self) -> None:
         if self.num_kv_heads <= 0:
@@ -101,7 +101,7 @@ class ModelConfig:
     num_layers: int = 32
     block: TransformerConfig = field(default_factory=TransformerConfig)
     moe_layer_indices: list[int] = field(default_factory=list)
-    intermediate_dim_dense: Optional[int] = None
+    intermediate_dim_dense: int | None = None
     tie_word_embeddings: bool = False
 
     def __post_init__(self) -> None:
@@ -133,7 +133,7 @@ class SchedulerConfig:
     max_waiting_time_ms: float = 50.0
     policy: SchedulerPolicy = SchedulerPolicy.SJF
     max_concurrent_rollouts: int = 64
-    max_batch_resource_units: Optional[float] = None
+    max_batch_resource_units: float | None = None
 
 
 @dataclass
@@ -144,41 +144,42 @@ class ServerConfig:
     port: int = 8400
     max_concurrent_requests: int = 128
     stream_chunk_interval_ms: float = 33.0  # ~30fps streaming
-    api_key: Optional[str] = None
+    api_key: str | None = None
 
 
 @dataclass
 class ControlPlaneConfig:
     """Control-plane persistence configuration."""
 
-    manifest_store_root: Optional[str] = None
-    wan_output_root: Optional[str] = None
+    manifest_store_root: str | None = None
+    wan_output_root: str | None = None
     # Legacy external-execution settings. Gateway startup now rejects them.
-    wan_shell_runner: Optional[str] = None
-    wan_shell_runner_timeout_s: Optional[int] = None
-    wan_repo_dir: Optional[str] = None
-    wan_conda_env: Optional[str] = None
-    wan_ckpt_dir: Optional[str] = None
-    wan_i2v_diffusers_dir: Optional[str] = None
-    conda_sh_path: Optional[str] = None
-    wan_engine_adapter: Optional[str] = None
+    wan_shell_runner: str | None = None
+    wan_shell_runner_timeout_s: int | None = None
+    wan_repo_dir: str | None = None
+    wan_conda_env: str | None = None
+    wan_ckpt_dir: str | None = None
+    wan_i2v_diffusers_dir: str | None = None
+    conda_sh_path: str | None = None
+    wan_engine_adapter: str | None = None
     wan_max_queue_size: int = 64
     wan_max_concurrent_jobs: int = 1
     wan_max_batch_size: int = 4
     wan_batch_wait_ms: float = 2.0
     wan_warm_pool_size: int = 16
     wan_prewarm_common_signatures: bool = False
-    wan_admission_max_units: Optional[float] = None
-    wan_admission_max_vram_gb: Optional[float] = 32.0
+    wan_admission_max_units: float | None = None
+    wan_admission_max_vram_gb: float | None = 32.0
     # Legacy Cosmos external-execution settings. Gateway startup now rejects them.
-    cosmos_output_root: Optional[str] = None
-    cosmos_base_url: Optional[str] = None
-    cosmos_api_key: Optional[str] = None
-    cosmos_model_name: Optional[str] = None
-    cosmos_shell_runner: Optional[str] = None
+    cosmos_output_root: str | None = None
+    cosmos_base_url: str | None = None
+    cosmos_api_key: str | None = None
+    cosmos_model_name: str | None = None
+    cosmos_shell_runner: str | None = None
     cosmos_timeout_s: int = 600
     cosmos_max_queue_size: int = 64
     cosmos_max_concurrent_jobs: int = 1
+
 
 @dataclass
 class EngineConfig:
@@ -191,7 +192,7 @@ class EngineConfig:
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     controlplane: ControlPlaneConfig = field(default_factory=ControlPlaneConfig)
-    model_path: Optional[str] = None
+    model_path: str | None = None
     seed: int = 42
 
 
@@ -213,8 +214,8 @@ def _load_yaml(path: str | Path) -> dict:
     """Load YAML config file. Returns empty dict if PyYAML not installed."""
     try:
         import yaml
-    except ImportError:
-        raise ImportError("PyYAML required for YAML config files: pip install pyyaml")
+    except ImportError as err:
+        raise ImportError("PyYAML required for YAML config files: pip install pyyaml") from err
     with open(path) as f:
         return yaml.safe_load(f) or {}
 
@@ -233,7 +234,7 @@ def _env_overrides() -> dict:
         WM_MANIFEST_STORE_ROOT=/data   → {"controlplane": {"manifest_store_root": "/data"}}
         WM_WAN_OUTPUT_ROOT=/data/wan   → {"controlplane": {"wan_output_root": "/data/wan"}}
         WM_WAN_SHELL_RUNNER=...        → {"controlplane": {"wan_shell_runner": "..."}} (legacy, rejected at startup)
-        WM_WAN_SHELL_RUNNER_TIMEOUT_S=600 → {"controlplane": {"wan_shell_runner_timeout_s": 600}} (legacy, only relevant with shell runner)
+        WM_WAN_SHELL_RUNNER_TIMEOUT_S=600 → {"controlplane": {"wan_shell_runner_timeout_s": 600}} (deprecated legacy knob kept only for explicit startup errors)
         WM_WAN_REPO_DIR=/path/to/Wan2.2 → {"controlplane": {"wan_repo_dir": "/path/to/Wan2.2"}}
         WM_WAN_CONDA_ENV=kosen         → {"controlplane": {"wan_conda_env": "kosen"}}
         WM_WAN_CKPT_DIR=/path/to/ckpt  → {"controlplane": {"wan_ckpt_dir": "/path/to/ckpt"}}
@@ -279,7 +280,10 @@ def _env_overrides() -> dict:
         "WM_WAN_MAX_BATCH_SIZE": (["controlplane", "wan_max_batch_size"], int),
         "WM_WAN_BATCH_WAIT_MS": (["controlplane", "wan_batch_wait_ms"], float),
         "WM_WAN_WARM_POOL_SIZE": (["controlplane", "wan_warm_pool_size"], int),
-        "WM_WAN_PREWARM_COMMON_SIGNATURES": (["controlplane", "wan_prewarm_common_signatures"], lambda value: value.lower() in {"1", "true", "yes", "on"}),
+        "WM_WAN_PREWARM_COMMON_SIGNATURES": (
+            ["controlplane", "wan_prewarm_common_signatures"],
+            lambda value: value.lower() in {"1", "true", "yes", "on"},
+        ),
         "WM_WAN_ADMISSION_MAX_UNITS": (["controlplane", "wan_admission_max_units"], float),
         "WM_WAN_ADMISSION_MAX_VRAM_GB": (["controlplane", "wan_admission_max_vram_gb"], float),
         "WM_COSMOS_OUTPUT_ROOT": (["controlplane", "cosmos_output_root"], str),
@@ -339,18 +343,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=str, default=None, help="Path to YAML config file")
     parser.add_argument("--model-path", type=str, default=None, help="Path to model weights")
     parser.add_argument("--device", type=str, choices=["cuda", "cpu"], default=None)
-    parser.add_argument("--dtype", type=str, choices=["float16", "float32", "bfloat16"], default=None)
+    parser.add_argument(
+        "--dtype", type=str, choices=["float16", "float32", "bfloat16"], default=None
+    )
     parser.add_argument("--port", type=int, default=None, help="Server port (default: 8400)")
     parser.add_argument("--host", type=str, default=None, help="Server host (default: 0.0.0.0)")
-    parser.add_argument("--api-key", type=str, default=None, help="Optional API key required for protected endpoints")
-    parser.add_argument("--max-batch-size", type=int, default=None, help="Max batch size for scheduling")
+    parser.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="Optional API key required for protected endpoints",
+    )
+    parser.add_argument(
+        "--max-batch-size", type=int, default=None, help="Max batch size for scheduling"
+    )
     parser.add_argument("--seed", type=int, default=None)
     return parser
 
 
 def load_config(
-    cli_args: Optional[list[str]] = None,
-    config_path: Optional[str] = None,
+    cli_args: list[str] | None = None,
+    config_path: str | None = None,
 ) -> EngineConfig:
     """Load config by merging: defaults → YAML → env vars → CLI args.
 
@@ -359,7 +372,9 @@ def load_config(
         config_path: Explicit YAML path (overrides --config CLI arg)
     """
     merged: dict[str, Any] = asdict(EngineConfig())
-    merged["device"] = merged["device"].value if hasattr(merged["device"], "value") else merged["device"]
+    merged["device"] = (
+        merged["device"].value if hasattr(merged["device"], "value") else merged["device"]
+    )
     merged["scheduler"]["policy"] = (
         merged["scheduler"]["policy"].value
         if hasattr(merged["scheduler"]["policy"], "value")

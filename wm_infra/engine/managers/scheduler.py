@@ -12,17 +12,17 @@ latent states rather than KV caches.
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
+from wm_infra.engine.mem_cache.paged_pool import PagedLatentPool
+from wm_infra.engine.mem_cache.radix_cache import RadixStateCache
 from wm_infra.engine.types import (
     EngineRunConfig,
     EntityRequest,
     Phase,
     SchedulerOutput,
 )
-from wm_infra.engine.mem_cache.paged_pool import PagedLatentPool
-from wm_infra.engine.mem_cache.radix_cache import RadixStateCache
 
 
 @dataclass(slots=True)
@@ -221,9 +221,7 @@ class ContinuousBatchingScheduler:
         """
         return min(request.num_steps, self.config.max_num_blocks // 2)
 
-    def _preempt_to_budget(
-        self, output: SchedulerOutput, blocks_needed: int
-    ) -> None:
+    def _preempt_to_budget(self, output: SchedulerOutput, blocks_needed: int) -> None:
         """Preempt lowest-priority running entities until *blocks_needed* are free.
 
         Only preempts entities whose priority is strictly lower than the
@@ -231,9 +229,7 @@ class ContinuousBatchingScheduler:
         """
         if not self._waiting:
             return
-        highest_waiting_priority = max(
-            s.request.priority for s in self._waiting.values()
-        )
+        highest_waiting_priority = max(s.request.priority for s in self._waiting.values())
 
         running_by_priority = sorted(
             self._running.items(),

@@ -9,8 +9,8 @@ Design modelled on SGLang's RadixCache but simplified for latent-state
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Sequence
 
 
 @dataclass(slots=True)
@@ -19,8 +19,8 @@ class RadixNode:
 
     key: tuple[int, ...] = ()
     children: dict[int, RadixNode] = field(default_factory=dict)
-    value: str | None = None        # entity_id owning this prefix
-    ref_count: int = 0              # number of live references
+    value: str | None = None  # entity_id owning this prefix
+    ref_count: int = 0  # number of live references
     block_ids: list[int] = field(default_factory=list)  # associated pool blocks
 
     @property
@@ -79,7 +79,7 @@ class RadixStateCache:
         node = self.root
         for tok in tokens:
             if tok not in node.children:
-                child = RadixNode(key=node.key + (tok,))
+                child = RadixNode(key=(*node.key, tok))
                 node.children[tok] = child
                 self._size += 1
             node = node.children[tok]
@@ -152,16 +152,10 @@ class RadixStateCache:
                 break
             child = node.children[tok]
             # Recurse first so child's subtree is cleaned bottom-up
-            removed_count += self._evict_dfs(
-                child, evicted, remaining - removed_count
-            )
+            removed_count += self._evict_dfs(child, evicted, remaining - removed_count)
 
             # After recursion, if child is an unreferenced leaf -> evict it
-            if (
-                child.is_leaf
-                and child.ref_count == 0
-                and remaining - removed_count > 0
-            ):
+            if child.is_leaf and child.ref_count == 0 and remaining - removed_count > 0:
                 evicted.append(child)
                 del node.children[tok]
                 self._size -= 1

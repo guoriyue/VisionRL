@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
@@ -40,26 +41,28 @@ class SampleManifestStore:
     @staticmethod
     def _atomic_write_text(path: Path, content: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = tempfile.NamedTemporaryFile(
+        with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
             delete=False,
             dir=path.parent,
             prefix=f".{path.name}.",
             suffix=".tmp",
-        )
-        tmp_path = Path(tmp.name)
-        try:
-            with tmp:
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            try:
                 tmp.write(content)
                 tmp.flush()
                 os.fsync(tmp.fileno())
+            except Exception:
+                with contextlib.suppress(FileNotFoundError):
+                    tmp_path.unlink()
+                raise
+        try:
             os.replace(tmp_path, path)
         except Exception:
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 tmp_path.unlink()
-            except FileNotFoundError:
-                pass
             raise
 
     def _load_record(self, path: Path) -> SampleRecord | None:
@@ -70,7 +73,9 @@ class SampleManifestStore:
 
     def put(self, record: SampleRecord) -> SampleRecord:
         path = self._record_path(record)
-        self._atomic_write_text(path, json.dumps(record.model_dump(mode="json"), indent=2, sort_keys=True))
+        self._atomic_write_text(
+            path, json.dumps(record.model_dump(mode="json"), indent=2, sort_keys=True)
+        )
         return record
 
     def get(self, sample_id: str) -> SampleRecord | None:

@@ -58,18 +58,3 @@ VRAM_USED_BYTES = Gauge(
     "wm_vram_used_bytes",
     "GPU memory used by the state cache (bytes)",
 )
-
-# ─── Low-level serving metrics ───
-
-SERVING_COMPILED_PROFILE_EVENTS = Counter(
-    "wm_serving_compiled_profile_events_total",
-    "Compiled profile lifecycle events for low-level serving runtimes",
-    ["backend", "event"],
-)
-
-SERVING_TRANSFER_BYTES = Histogram(
-    "wm_serving_transfer_bytes",
-    "Bytes moved across low-level serving transfer boundaries",
-    ["backend", "kind"],
-    buckets=[0, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864, 268435456],
-)
