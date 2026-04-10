@@ -7,24 +7,16 @@ conditioning, diffusion, VAE decode, and postprocess.
 from __future__ import annotations
 
 import gc
-import hashlib
 import importlib
 import math
 import random
 import sys
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
 
-from wm_infra.models.video_generation import (
-    StageResult,
-    VideoGenerationModel,
-    VideoGenerationRequest,
-)
-
-
-def _stable_hash(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+from wm_infra.models.base import VideoGenerationModel
+from wm_infra.models.families.wan.shared import _stable_hash, resolve_wan_reference_path
+from wm_infra.schemas.video_generation import StageResult, VideoGenerationRequest
 
 
 def _clone_tensor_list_to_cpu(tensors: list[Any]) -> list[Any]:
@@ -46,13 +38,6 @@ def _move_tensor_to_device(tensor: Any, device: Any, dtype: Any | None = None) -
     if dtype is not None:
         kwargs["dtype"] = dtype
     return tensor.to(**kwargs)
-
-
-def resolve_wan_reference_path(reference: str) -> str:
-    if reference.startswith("file://"):
-        parsed = urlparse(reference)
-        return unquote(parsed.path)
-    return reference
 
 
 class OfficialWanModel(VideoGenerationModel):

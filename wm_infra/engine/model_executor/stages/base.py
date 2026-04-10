@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from wm_infra.models.video_generation import StageResult, VideoGenerationRequest
+from wm_infra.schemas.video_generation import StageResult, VideoGenerationRequest
 
 
 class PipelineStage(ABC):

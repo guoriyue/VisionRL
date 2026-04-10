@@ -16,11 +16,8 @@ import sys
 import time
 from typing import Any
 
-from wm_infra.models.cosmos_adapter import CosmosLocalExecutor, CosmosVariant
-from wm_infra.models.video_generation import (
-    StageResult,
-    VideoGenerationRequest,
-)
+from wm_infra.models.families.cosmos.variants import CosmosLocalExecutor, CosmosVariant
+from wm_infra.schemas.video_generation import StageResult, VideoGenerationRequest
 
 # Cosmos Predict1 HuggingFace model ID map
 _MODEL_ID_MAP: dict[tuple[str, str], str] = {

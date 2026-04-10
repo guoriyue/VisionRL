@@ -7,7 +7,7 @@ from typing import Any
 
 from wm_infra.engine.model_executor.config import PipelineConfig
 from wm_infra.engine.model_executor.stages.base import PipelineStage
-from wm_infra.models.video_generation import StageResult, VideoGenerationRequest
+from wm_infra.schemas.video_generation import StageResult, VideoGenerationRequest
 
 
 class ComposedPipeline:
