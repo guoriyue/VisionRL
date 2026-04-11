@@ -1,4 +1,4 @@
-"""Remote reward function — scores rollouts via an async HTTP endpoint."""
+"""Remote reward — scores rollouts via an async HTTP endpoint."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from vrl.algorithms.types import Rollout
 from vrl.rewards.base import RewardFunction
 
 
-class RemoteRewardFunction(RewardFunction):
+class RemoteReward(RewardFunction):
     """Calls a remote reward service over HTTP.
 
     The service receives a JSON payload with the rollout's prompt, seed,

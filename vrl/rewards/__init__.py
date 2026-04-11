@@ -2,10 +2,14 @@
 
 from vrl.rewards.base import RewardFunction
 from vrl.rewards.composite import CompositeReward
-from vrl.rewards.remote import RemoteRewardFunction
+from vrl.rewards.multi import MultiReward, get_reward, register_reward
+from vrl.rewards.remote import RemoteReward
 
 __all__ = [
     "CompositeReward",
-    "RemoteRewardFunction",
+    "MultiReward",
+    "RemoteReward",
     "RewardFunction",
+    "get_reward",
+    "register_reward",
 ]

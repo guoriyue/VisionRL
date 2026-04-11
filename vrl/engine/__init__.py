@@ -5,8 +5,8 @@ from vrl.engine.interfaces import (
     CacheManager,
     ContinuousBatchPlanner,
     ResourceManager,
-    SimpleResourceManager,
 )
+from vrl.engine.managers.resource_manager import SimpleResourceManager
 from vrl.engine.managers.engine_loop import EngineLoop
 from vrl.engine.managers.scheduler import Scheduler
 from vrl.engine.model_executor.execution_state import (
@@ -20,7 +20,6 @@ from vrl.engine.types import (
     SchedulerOutput,
     SchedulerRequest,
     SchedulerStatus,
-    VideoExecutionPhase,
 )
 
 __all__ = [
@@ -38,6 +37,5 @@ __all__ = [
     "SchedulerRequest",
     "SchedulerStatus",
     "SimpleResourceManager",
-    "VideoExecutionPhase",
     "WorkloadSignature",
 ]

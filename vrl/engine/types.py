@@ -21,19 +21,6 @@ class SchedulerStatus(Enum):
     ABORTED = "aborted"
 
 
-class VideoExecutionPhase(Enum):
-    """Per-step execution phase."""
-
-    ENCODE_TEXT = "encode_text"
-    ENCODE_CONDITIONING = "encode_conditioning"
-    DENOISE_INIT = "denoise_init"
-    DENOISE_STEP = "denoise_step"
-    DENOISE_FINALIZE = "denoise_finalize"
-    DECODE_VAE = "decode_vae"
-    POSTPROCESS = "postprocess"
-    DONE = "done"
-
-
 @dataclass(slots=True)
 class SchedulerRequest:
     """One request tracked by the scheduler. ``data`` is opaque to the scheduler."""

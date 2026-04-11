@@ -1,7 +1,9 @@
 """RL algorithms: advantage estimation and policy gradient losses."""
 
 from vrl.algorithms.base import Algorithm
+from vrl.algorithms.flow_matching import SDEStepResult, compute_kl_divergence, sde_step_with_logprob
 from vrl.algorithms.grpo import GRPO, GRPOConfig
+from vrl.algorithms.stat_tracking import PerPromptStatTracker
 from vrl.algorithms.types import (
     Advantages,
     Rollout,
@@ -17,10 +19,14 @@ __all__ = [
     "Algorithm",
     "GRPO",
     "GRPOConfig",
+    "PerPromptStatTracker",
     "Rollout",
     "RolloutBatch",
     "RolloutGroup",
+    "SDEStepResult",
     "TrainStepMetrics",
     "Trajectory",
     "TrajectoryStep",
+    "compute_kl_divergence",
+    "sde_step_with_logprob",
 ]

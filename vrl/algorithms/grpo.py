@@ -22,6 +22,8 @@ class GRPOConfig:
     clip_eps: float = 0.2
     kl_coeff: float = 0.0
     eps: float = 1e-8
+    adv_clip_max: float = 5.0
+    global_std: bool = False
 
 
 class GRPO(Algorithm):
@@ -41,18 +43,41 @@ class GRPO(Algorithm):
     # Advantages
     # ------------------------------------------------------------------
 
-    def compute_advantages(self, group: RolloutGroup) -> Advantages:
+    def compute_advantages(
+        self,
+        group: RolloutGroup,
+        global_rewards: list[float] | None = None,
+    ) -> Advantages:
+        """Compute per-rollout advantages for a single prompt group.
+
+        When ``global_std=True`` (or ``global_rewards`` is provided), the
+        standard deviation is computed across all rewards in the batch,
+        not just within this group.  This matches the flow_grpo
+        ``PerPromptStatTracker(global_std=True)`` behavior.
+        """
         rewards = [r.reward for r in group.rollouts]
         n = len(rewards)
         if n == 0:
             return Advantages(values=[], method="grpo")
 
         mean = sum(rewards) / n
-        var = sum((r - mean) ** 2 for r in rewards) / max(n, 1)
-        std = math.sqrt(var)
-        denom = max(std, self.config.eps)
 
+        if self.config.global_std and global_rewards is not None:
+            g_n = len(global_rewards)
+            g_mean = sum(global_rewards) / max(g_n, 1)
+            g_var = sum((r - g_mean) ** 2 for r in global_rewards) / max(g_n, 1)
+            std = math.sqrt(g_var)
+        else:
+            var = sum((r - mean) ** 2 for r in rewards) / max(n, 1)
+            std = math.sqrt(var)
+
+        denom = max(std, self.config.eps)
         values = [(r - mean) / denom for r in rewards]
+
+        # Clip advantages (from flow_grpo: torch.clamp(adv, -adv_clip_max, adv_clip_max))
+        clip = self.config.adv_clip_max
+        values = [max(-clip, min(clip, v)) for v in values]
+
         return Advantages(
             values=values,
             method="grpo",
