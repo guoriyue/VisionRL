@@ -1,6 +1,6 @@
   Your Layout vs. SGLang: Side-by-Side Map                                                                
   ┌─────────────────┬───────────────────────────┬───────────────────────────────────┬───────────────────┐ 
-  │     Concern     │      SGLang location      │         wm-infra location         │      Verdict      │ 
+  │     Concern     │      SGLang location      │         vision-rl location         │      Verdict      │ 
   ├─────────────────┼───────────────────────────┼───────────────────────────────────┼───────────────────┤
   │ HTTP serving    │ sglang.srt.server         │ gateway/                          │ You have this.    │
   │                 │                           │                                   │ Fine.             │

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from wm_infra.engine import ContinuousBatchPlanner, EngineLoop, Scheduler
-from wm_infra.engine.ipc.artifacts import ArtifactStore
-from wm_infra.engine.types import RequestOutput, SchedulerRequest, SchedulerStatus
-from wm_infra.schemas import StageResult
+from vrl.engine import ContinuousBatchPlanner, EngineLoop, Scheduler
+from vrl.engine.ipc.artifacts import ArtifactStore
+from vrl.engine.types import RequestOutput, SchedulerRequest, SchedulerStatus
+from vrl.schemas import StageResult
 
 
 class _FeedbackIterationController:

@@ -7,19 +7,19 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from wm_infra.engine.model_executor.execution_state import (
+from vrl.engine.model_executor.execution_state import (
     DenoiseLoopState,
     PhaseGroupKey,
     VideoExecutionState,
 )
-from wm_infra.engine.model_executor.iteration_runner import VideoIterationRunner
-from wm_infra.engine.types import (
+from vrl.engine.model_executor.iteration_runner import VideoIterationRunner
+from vrl.engine.types import (
     SchedulerOutput,
     SchedulerRequest,
     VideoExecutionPhase,
 )
-from wm_infra.models.base import VideoGenerationModel
-from wm_infra.schemas.video_generation import StageResult, VideoGenerationRequest
+from vrl.models.base import VideoGenerationModel
+from vrl.schemas.video_generation import StageResult, VideoGenerationRequest
 
 
 # ---------------------------------------------------------------------------

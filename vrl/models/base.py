@@ -1,0 +1,134 @@
+"""Model contract: five-stage video generation pipeline."""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from typing import Any
+
+from vrl.schemas.video_generation import StageResult, VideoGenerationRequest
+
+
+class VideoGenerationModel(ABC):
+    """Five-stage generation: encode_text → encode_conditioning → denoise → decode_vae → postprocess."""
+
+    model_family: str = "video_generation"
+
+    @abstractmethod
+    async def load(self) -> None:
+        """Load model resources."""
+
+    @abstractmethod
+    def describe(self) -> dict[str, Any]:
+        """Return JSON-serialisable model metadata."""
+
+    @abstractmethod
+    async def encode_text(
+        self, request: VideoGenerationRequest, state: dict[str, Any]
+    ) -> StageResult:
+        """Produce text embeddings."""
+
+    async def encode_conditioning(
+        self, request: VideoGenerationRequest, state: dict[str, Any]
+    ) -> StageResult:
+        """Produce conditioning tensors from references, actions, or metadata."""
+        return StageResult(notes=["No conditioning inputs were provided."])
+
+    @abstractmethod
+    async def denoise(self, request: VideoGenerationRequest, state: dict[str, Any]) -> StageResult:
+        """Run diffusion / sampling."""
+
+    async def denoise_init(
+        self, request: VideoGenerationRequest, state: dict[str, Any]
+    ) -> Any:
+        """Set up per-step denoising state. Returns a DenoiseLoopState."""
+        raise NotImplementedError
+
+    async def denoise_step(
+        self, request: VideoGenerationRequest, state: dict[str, Any], denoise_state: Any
+    ) -> StageResult:
+        """One denoising step; mutates denoise_state in-place."""
+        raise NotImplementedError
+
+    async def denoise_finalize(
+        self, request: VideoGenerationRequest, state: dict[str, Any], denoise_state: Any
+    ) -> StageResult:
+        """Package final latents after all steps."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def decode_vae(
+        self, request: VideoGenerationRequest, state: dict[str, Any]
+    ) -> StageResult:
+        """Decode latents into frames."""
+
+    async def postprocess(
+        self, request: VideoGenerationRequest, state: dict[str, Any]
+    ) -> StageResult:
+        """Assemble final output artifacts."""
+        return StageResult(notes=["Postprocess stage is a passthrough."])
+
+    # -- batch methods (default: sequential fallback) ---
+
+    async def batch_encode_text(
+        self,
+        requests: list[VideoGenerationRequest],
+        states: list[dict[str, Any]],
+    ) -> list[StageResult]:
+        return [await self.encode_text(r, s) for r, s in zip(requests, states)]
+
+    async def batch_encode_conditioning(
+        self,
+        requests: list[VideoGenerationRequest],
+        states: list[dict[str, Any]],
+    ) -> list[StageResult]:
+        return [await self.encode_conditioning(r, s) for r, s in zip(requests, states)]
+
+    async def batch_denoise(
+        self,
+        requests: list[VideoGenerationRequest],
+        states: list[dict[str, Any]],
+    ) -> list[StageResult]:
+        return [await self.denoise(r, s) for r, s in zip(requests, states)]
+
+    async def batch_denoise_init(
+        self,
+        requests: list[VideoGenerationRequest],
+        states: list[dict[str, Any]],
+    ) -> list[Any]:
+        return [await self.denoise_init(r, s) for r, s in zip(requests, states)]
+
+    async def batch_denoise_step(
+        self,
+        requests: list[VideoGenerationRequest],
+        states: list[dict[str, Any]],
+        denoise_states: list[Any],
+    ) -> list[StageResult]:
+        return [
+            await self.denoise_step(r, s, d)
+            for r, s, d in zip(requests, states, denoise_states)
+        ]
+
+    async def batch_denoise_finalize(
+        self,
+        requests: list[VideoGenerationRequest],
+        states: list[dict[str, Any]],
+        denoise_states: list[Any],
+    ) -> list[StageResult]:
+        return [
+            await self.denoise_finalize(r, s, d)
+            for r, s, d in zip(requests, states, denoise_states)
+        ]
+
+    async def batch_decode_vae(
+        self,
+        requests: list[VideoGenerationRequest],
+        states: list[dict[str, Any]],
+    ) -> list[StageResult]:
+        return [await self.decode_vae(r, s) for r, s in zip(requests, states)]
+
+    async def batch_postprocess(
+        self,
+        requests: list[VideoGenerationRequest],
+        states: list[dict[str, Any]],
+    ) -> list[StageResult]:
+        return [await self.postprocess(r, s) for r, s in zip(requests, states)]

@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from wm_infra.engine.interfaces import (
+from vrl.engine.interfaces import (
     ContinuousBatchPlanner,
     VideoDiffusionIterationController,
 )
-from wm_infra.engine.managers.engine_loop import EngineLoop
-from wm_infra.engine.managers.scheduler import Scheduler
-from wm_infra.engine.model_executor.iteration_runner import VideoIterationRunner
-from wm_infra.models.base import VideoGenerationModel
+from vrl.engine.managers.engine_loop import EngineLoop
+from vrl.engine.managers.scheduler import Scheduler
+from vrl.engine.model_executor.iteration_runner import VideoIterationRunner
+from vrl.models.base import VideoGenerationModel
 
 
 def require_real_model_opt_in() -> None:

@@ -11,8 +11,8 @@ from tests.e2e.helpers import (
     require_real_model_opt_in,
     resolve_hf_snapshot,
 )
-from wm_infra.models.families.wan.diffusers_i2v import DiffusersWanI2VModel
-from wm_infra.schemas.video_generation import VideoGenerationRequest
+from vrl.models.families.wan.diffusers_i2v import DiffusersWanI2VModel
+from vrl.schemas.video_generation import VideoGenerationRequest
 
 
 @pytest.mark.asyncio
