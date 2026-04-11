@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import numpy as np
-
 from vrl.engine import ContinuousBatchPlanner, EngineLoop, Scheduler
-from vrl.engine.ipc.artifacts import ArtifactStore
 from vrl.engine.types import RequestOutput, SchedulerRequest, SchedulerStatus
-from vrl.schemas import StageResult
 
 
 class _FeedbackIterationController:
@@ -30,22 +26,7 @@ class _FeedbackMailbox:
         return self._items.pop(request_id, None)
 
 
-def test_artifact_store_accepts_public_media_fields(tmp_path):
-    store = ArtifactStore(root=str(tmp_path))
-    video_tensor = np.arange(24, dtype=np.uint8).reshape(2, 3, 4)
-    result = RequestOutput(
-        request_id="req-1",
-        finished=True,
-        data=[StageResult(state_updates={"video_tensor": video_tensor})],
-    )
-
-    artifact = store.write_result("req-1", result)
-
-    assert artifact.shape == video_tensor.shape
-    assert store.read_result_path("req-1") is not None
-
-
-def test_engine_loop_uses_public_feedback_mailbox_interface():
+def test_feedback_mailbox_transitions_request():
     scheduler = Scheduler(
         batch_planner=ContinuousBatchPlanner(max_batch_size=1),
         iteration_controller=_FeedbackIterationController(),

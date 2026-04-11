@@ -1,3 +1,6 @@
+TODO
+CUDA task graph parallel
+
   Your Layout vs. SGLang: Side-by-Side Map                                                                
   ┌─────────────────┬───────────────────────────┬───────────────────────────────────┬───────────────────┐ 
   │     Concern     │      SGLang location      │         vision-rl location         │      Verdict      │ 

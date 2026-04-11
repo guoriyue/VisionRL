@@ -21,25 +21,20 @@ class PhaseGroupKey:
 
 @dataclass
 class DenoiseLoopState:
-    """Per-step denoising loop state. Populated by denoise_init(), mutated by denoise_step()."""
+    """Per-step denoising progress. Model-agnostic.
 
-    latents: Any = None
-    timesteps: Any = None
+    The engine only reads ``current_step`` and ``total_steps`` to decide
+    when to transition from DENOISE_STEP to DENOISE_FINALIZE.
+
+    All model-specific state (latents, scheduler, guidance args, etc.)
+    lives in ``model_state`` — an opaque object created by
+    ``denoise_init()`` and consumed by ``denoise_step()`` /
+    ``denoise_finalize()``. The engine never inspects it.
+    """
+
     current_step: int = 0
     total_steps: int = 0
-    seed_generator: Any = None
-    arg_c: dict = field(default_factory=dict)
-    arg_null: dict = field(default_factory=dict)
-    boundary: float = 0.0
-    high_noise_guidance_scale: float = 5.0
-    low_noise_guidance_scale: float = 5.0
-    scheduler: Any = None
-    seed: int = 0
-    seed_policy: str = "randomized"
-    solver_name: str = "dpmpp"
-    pipeline: Any = None
-    task_key: str = ""
-    extra: dict = field(default_factory=dict)
+    model_state: Any = None
 
 
 @dataclass

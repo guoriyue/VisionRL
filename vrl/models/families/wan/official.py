@@ -13,6 +13,7 @@ from typing import Any
 from vrl.engine.model_executor.execution_state import DenoiseLoopState
 from vrl.models.base import VideoGenerationModel
 from vrl.models.families.wan.shared import resolve_wan_reference_path, stable_hash
+from vrl.models.families.wan.state import WanDenoiseState
 from vrl.schemas.video_generation import StageResult, VideoGenerationRequest
 
 
@@ -713,31 +714,33 @@ class OfficialWanModel(VideoGenerationModel):
             )
 
         return DenoiseLoopState(
-            latents=latents,
-            timesteps=timesteps,
             current_step=0,
             total_steps=len(timesteps),
-            seed_generator=seed_g,
-            arg_c=arg_c,
-            arg_null=arg_null,
-            boundary=boundary,
-            high_noise_guidance_scale=high_noise_guidance_scale,
-            low_noise_guidance_scale=low_noise_guidance_scale,
-            scheduler=scheduler,
-            seed=seed,
-            seed_policy=seed_policy,
-            solver_name=solver_name,
-            pipeline=pipeline,
-            task_key=state["task_key"],
+            model_state=WanDenoiseState(
+                latents=latents,
+                timesteps=timesteps,
+                seed_generator=seed_g,
+                arg_c=arg_c,
+                arg_null=arg_null,
+                boundary=boundary,
+                high_noise_guidance_scale=high_noise_guidance_scale,
+                low_noise_guidance_scale=low_noise_guidance_scale,
+                scheduler=scheduler,
+                seed=seed,
+                seed_policy=seed_policy,
+                solver_name=solver_name,
+                pipeline=pipeline,
+                task_key=state["task_key"],
+            ),
         )
 
     async def denoise_step(
         self, request: VideoGenerationRequest, state: dict[str, Any], denoise_state: DenoiseLoopState
     ) -> StageResult:
         torch = self._torch
-        ds = denoise_state
-        pipeline = ds.pipeline
-        t = ds.timesteps[ds.current_step]
+        ms: WanDenoiseState = denoise_state.model_state
+        pipeline = ms.pipeline
+        t = ms.timesteps[denoise_state.current_step]
 
         with (
             torch.amp.autocast("cuda", dtype=pipeline.param_dtype),
@@ -745,63 +748,63 @@ class OfficialWanModel(VideoGenerationModel):
         ):
             timestep = torch.stack([t]).to(pipeline.device)
             if request.offload_model:
-                model = self._model_for_timestep(pipeline, t, ds.boundary)
+                model = self._model_for_timestep(pipeline, t, ms.boundary)
             else:
                 model = (
                     pipeline.high_noise_model
-                    if t.item() >= ds.boundary
+                    if t.item() >= ms.boundary
                     else pipeline.low_noise_model
                 )
             sample_guide_scale = (
-                ds.high_noise_guidance_scale if t.item() >= ds.boundary else ds.low_noise_guidance_scale
+                ms.high_noise_guidance_scale if t.item() >= ms.boundary else ms.low_noise_guidance_scale
             )
 
-            if ds.task_key.startswith("t2v-"):
-                noise_pred_cond = model(ds.latents, t=timestep, **ds.arg_c)[0]
-                noise_pred_uncond = model(ds.latents, t=timestep, **ds.arg_null)[0]
+            if ms.task_key.startswith("t2v-"):
+                noise_pred_cond = model(ms.latents, t=timestep, **ms.arg_c)[0]
+                noise_pred_uncond = model(ms.latents, t=timestep, **ms.arg_null)[0]
                 noise_pred = noise_pred_uncond + sample_guide_scale * (
                     noise_pred_cond - noise_pred_uncond
                 )
-                temp_x0 = ds.scheduler.step(
+                temp_x0 = ms.scheduler.step(
                     noise_pred.unsqueeze(0),
                     t,
-                    ds.latents[0].unsqueeze(0),
+                    ms.latents[0].unsqueeze(0),
                     return_dict=False,
-                    generator=ds.seed_generator,
+                    generator=ms.seed_generator,
                 )[0]
-                ds.latents = [temp_x0.squeeze(0)]
+                ms.latents = [temp_x0.squeeze(0)]
             else:
-                latent_model_input = [ds.latents.to(pipeline.device)]
-                noise_pred_cond = model(latent_model_input, t=timestep, **ds.arg_c)[0]
+                latent_model_input = [ms.latents.to(pipeline.device)]
+                noise_pred_cond = model(latent_model_input, t=timestep, **ms.arg_c)[0]
                 if request.offload_model:
                     torch.cuda.empty_cache()
-                noise_pred_uncond = model(latent_model_input, t=timestep, **ds.arg_null)[0]
+                noise_pred_uncond = model(latent_model_input, t=timestep, **ms.arg_null)[0]
                 if request.offload_model:
                     torch.cuda.empty_cache()
                 noise_pred = noise_pred_uncond + sample_guide_scale * (
                     noise_pred_cond - noise_pred_uncond
                 )
-                temp_x0 = ds.scheduler.step(
+                temp_x0 = ms.scheduler.step(
                     noise_pred.unsqueeze(0),
                     t,
-                    ds.latents.unsqueeze(0),
+                    ms.latents.unsqueeze(0),
                     return_dict=False,
-                    generator=ds.seed_generator,
+                    generator=ms.seed_generator,
                 )[0]
-                ds.latents = temp_x0.squeeze(0)
+                ms.latents = temp_x0.squeeze(0)
 
-        ds.current_step += 1
+        denoise_state.current_step += 1
         return StageResult(
-            notes=[f"Denoise step {ds.current_step}/{ds.total_steps} completed."],
+            notes=[f"Denoise step {denoise_state.current_step}/{denoise_state.total_steps} completed."],
         )
 
     async def denoise_finalize(
         self, request: VideoGenerationRequest, state: dict[str, Any], denoise_state: DenoiseLoopState
     ) -> StageResult:
         torch = self._torch
-        ds = denoise_state
-        pipeline = ds.pipeline
-        final_latents = ds.latents if isinstance(ds.latents, list) else [ds.latents]
+        ms: WanDenoiseState = denoise_state.model_state
+        pipeline = ms.pipeline
+        final_latents = ms.latents if isinstance(ms.latents, list) else [ms.latents]
         if request.offload_model:
             pipeline.low_noise_model.cpu()
             pipeline.high_noise_model.cpu()
@@ -809,7 +812,7 @@ class OfficialWanModel(VideoGenerationModel):
 
         latent_shape = list(final_latents[0].shape)
         max_area = None
-        if not ds.task_key.startswith("t2v-"):
+        if not ms.task_key.startswith("t2v-"):
             size_key = self._size_key(request.width, request.height)
             max_area = self._max_area_configs[size_key]
 
@@ -817,20 +820,20 @@ class OfficialWanModel(VideoGenerationModel):
             state_updates={"latents": final_latents, "fps": pipeline.config.sample_fps},
             runtime_state_updates={
                 "latent_shape": latent_shape,
-                "seed": ds.seed,
-                "seed_policy": ds.seed_policy,
-                "sample_solver": ds.solver_name,
-                "guide_scale_pair": [ds.low_noise_guidance_scale, ds.high_noise_guidance_scale],
-                "boundary_timestep": ds.boundary,
+                "seed": ms.seed,
+                "seed_policy": ms.seed_policy,
+                "sample_solver": ms.solver_name,
+                "guide_scale_pair": [ms.low_noise_guidance_scale, ms.high_noise_guidance_scale],
+                "boundary_timestep": ms.boundary,
                 "max_area": max_area,
             },
             outputs={
-                "solver": ds.solver_name,
+                "solver": ms.solver_name,
                 "num_steps": request.num_steps,
-                "guidance_scale": [ds.low_noise_guidance_scale, ds.high_noise_guidance_scale],
+                "guidance_scale": [ms.low_noise_guidance_scale, ms.high_noise_guidance_scale],
             },
             notes=[
-                f"Diffusion completed on {ds.total_steps} timesteps for {ds.task_key}.",
+                f"Diffusion completed on {denoise_state.total_steps} timesteps for {ms.task_key}.",
             ],
         )
 

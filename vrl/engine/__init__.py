@@ -15,7 +15,6 @@ from vrl.engine.model_executor.execution_state import (
     VideoExecutionState,
 )
 from vrl.engine.model_executor.iteration_runner import VideoIterationRunner
-from vrl.engine.model_executor.task_graph import TaskEdge, TaskGraph, TaskNode
 from vrl.engine.types import (
     ModelRunnerOutput,
     RequestOutput,
@@ -39,9 +38,6 @@ __all__ = [
     "SchedulerOutput",
     "SchedulerRequest",
     "SchedulerStatus",
-    "TaskEdge",
-    "TaskGraph",
-    "TaskNode",
     "VideoDiffusionIterationController",
     "VideoExecutionPhase",
     "VideoExecutionState",
