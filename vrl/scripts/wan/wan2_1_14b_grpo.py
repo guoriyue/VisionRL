@@ -1,10 +1,10 @@
-"""Wan GRPO training entry point.
+"""Wan2.1-14B GRPO training (multi-GPU, official repo).
 
-Wires together the CEA training pipeline:
-  Collector (WanCollector) -> Evaluator (FlowMatchingEvaluator) -> Algorithm (GRPO)
+Uses OfficialWanModel (WanT2V/WanI2V dual-expert) with:
+  WanCollector → FlowMatchingEvaluator → GRPO → OnlineTrainer
 
 Usage:
-    python -m vrl.scripts.train_wan_grpo --config config.yaml
+    python -m vrl.scripts.wan.wan2_1_14b_grpo --repo-dir /path/to/Wan2.1
 """
 
 from __future__ import annotations

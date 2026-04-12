@@ -77,3 +77,11 @@ known-first-party = ["vrl"]
 
 [tool.ruff.format]
 quote-style = "double"
+
+# ── Pytest ───────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+markers = [
+    "e2e: end-to-end tests requiring GPU and real model weights (opt-in via WM_RUN_REAL_MODEL_TESTS=1)",
+]

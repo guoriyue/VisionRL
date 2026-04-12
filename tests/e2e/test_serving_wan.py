@@ -15,6 +15,7 @@ from vrl.models.families.wan.diffusers_i2v import DiffusersWanI2VModel
 from vrl.models.base import VideoGenerationRequest
 
 
+@pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_wan_diffusers_i2v_real_engine_e2e():
     """Run a real Wan diffusers checkpoint through engine -> pipeline -> result."""

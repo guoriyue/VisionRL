@@ -24,6 +24,7 @@ def _find_reference_image():
     return None
 
 
+@pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_cosmos_real_engine_e2e():
     """Run a real Cosmos checkpoint through engine -> pipeline -> result."""
