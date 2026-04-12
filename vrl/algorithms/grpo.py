@@ -156,7 +156,7 @@ class GRPO(Algorithm):
         return total_loss, metrics
 
     # ------------------------------------------------------------------
-    # New 4-layer: Advantages from tensors
+    # CEA pipeline: Advantages from tensors
     # ------------------------------------------------------------------
 
     def compute_advantages_from_tensors(
@@ -199,7 +199,7 @@ class GRPO(Algorithm):
         return advantages
 
     # ------------------------------------------------------------------
-    # New 4-layer: Loss from SignalBatch
+    # CEA pipeline: Loss from SignalBatch
     # ------------------------------------------------------------------
 
     def compute_signal_loss(

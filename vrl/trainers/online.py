@@ -2,7 +2,7 @@
 
 Supports two modes:
 - Legacy: RolloutSource + LogProbComputer (original flow_grpo port)
-- New 4-layer: Collector + Adapter + Evaluator + Algorithm pipeline
+- CEA pipeline: Collector + Evaluator + Algorithm
 """
 
 from __future__ import annotations
@@ -107,9 +107,9 @@ class OnlineTrainer(Trainer):
 
     Supports two modes:
 
-    **New 4-layer mode** (preferred): pass ``collector``,
-    ``evaluator``, and ``algorithm`` — the trainer just orchestrates
-    collect -> evaluate -> advantage -> loss -> backward -> step.
+    **CEA pipeline** (preferred): pass ``collector``,
+    ``evaluator``, and ``algorithm`` — the trainer orchestrates
+    collect → evaluate → advantage → loss → backward → step.
 
     **Legacy mode**: pass ``rollout_source``, ``reward_fn``, and optionally
     ``log_prob_computer`` for the original flow_grpo-style training loop.
@@ -118,9 +118,8 @@ class OnlineTrainer(Trainer):
     def __init__(
         self,
         algorithm: Algorithm,
-        # -- New 4-layer mode --
+        # -- CEA pipeline --
         collector: Any | None = None,      # Collector protocol
-        adapter: Any | None = None,        # ModelAdapter protocol
         evaluator: Any | None = None,      # Evaluator protocol
         # -- Legacy mode --
         reward_fn: RewardFunction | None = None,
@@ -133,13 +132,11 @@ class OnlineTrainer(Trainer):
         config: TrainerConfig | None = None,
         prompts: list[str] | None = None,
         device: torch.device | str = "cuda",
-        # Gap 8: HF Accelerate integration
         accelerator: Any | None = None,
     ) -> None:
         self.algorithm = algorithm
-        # New 4-layer components
+        # CEA pipeline components
         self.collector = collector
-        self.adapter = adapter
         self.evaluator = evaluator
         # Legacy components
         self.reward_fn = reward_fn
@@ -226,8 +223,8 @@ class OnlineTrainer(Trainer):
         optimizer.zero_grad()
 
     @property
-    def _is_4layer_mode(self) -> bool:
-        """Check if we're in new 4-layer mode."""
+    def _is_cea_mode(self) -> bool:
+        """Check if we're in CEA pipeline mode (Collector + Evaluator + Algorithm)."""
         return self.collector is not None and self.evaluator is not None
 
     # ------------------------------------------------------------------
@@ -237,14 +234,14 @@ class OnlineTrainer(Trainer):
     async def step(self, prompts: list[str] | None = None) -> TrainStepMetrics:
         """Run one full training step.
 
-        In 4-layer mode: collect -> evaluate -> advantage -> loss -> backward -> step.
+        In CEA mode: collect -> evaluate -> advantage -> loss -> backward -> step.
         In legacy mode: collect -> reward -> advantage -> train (original flow_grpo).
         """
         if prompts is not None:
             self.prompts = prompts
 
-        if self._is_4layer_mode:
-            metrics = await self._step_4layer()
+        if self._is_cea_mode:
+            metrics = await self._step_cea()
         else:
             metrics = await self._step_legacy()
 
@@ -261,11 +258,11 @@ class OnlineTrainer(Trainer):
         return metrics
 
     # ------------------------------------------------------------------
-    # New 4-layer training step
+    # CEA pipeline training step
     # ------------------------------------------------------------------
 
-    async def _step_4layer(self) -> TrainStepMetrics:
-        """Pure orchestrator: collect -> evaluate -> advantage -> loss."""
+    async def _step_cea(self) -> TrainStepMetrics:
+        """Collector → Evaluator → Algorithm pipeline."""
         from vrl.rollouts.evaluators.types import SignalRequest
 
         cfg = self.config

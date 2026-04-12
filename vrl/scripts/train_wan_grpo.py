@@ -1,7 +1,7 @@
 """Wan GRPO training entry point.
 
-Wires together the 4-layer training architecture:
-  Collector (WanCollector) -> Adapter (WanAdapter) -> Evaluator (FlowMatchingEvaluator) -> Algorithm (GRPO)
+Wires together the CEA training pipeline:
+  Collector (WanCollector) -> Evaluator (FlowMatchingEvaluator) -> Algorithm (GRPO)
 
 Usage:
     python -m vrl.scripts.train_wan_grpo --config config.yaml
@@ -144,7 +144,7 @@ async def train(config: WanGRPOConfig) -> None:
     # 5. Build reward function
     reward_fn = get_reward(config.reward_type)
 
-    # 6. Wire up 4-layer architecture
+    # 6. Wire up CEA pipeline
     collector_config = WanCollectorConfig(
         num_steps=config.num_steps,
         guidance_scale=config.guidance_scale,

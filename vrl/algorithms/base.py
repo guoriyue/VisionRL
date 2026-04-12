@@ -14,7 +14,7 @@ class Algorithm(ABC):
 
     Supports two interfaces:
     - Legacy: compute_advantages(group) + compute_loss(batch, policy, ref_policy)
-    - New (4-layer): compute_advantages_from_tensors(rewards, group_ids)
+    - CEA pipeline: compute_advantages_from_tensors(rewards, group_ids)
                    + compute_signal_loss(signals, advantages, old_log_probs)
     """
 
@@ -36,7 +36,7 @@ class Algorithm(ABC):
         """Compute the policy gradient loss and metrics (legacy path)."""
 
     # ------------------------------------------------------------------
-    # New 4-layer interface (tensor-based)
+    # CEA pipeline interface (tensor-based)
     # ------------------------------------------------------------------
 
     @abstractmethod
