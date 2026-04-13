@@ -57,6 +57,13 @@ class AestheticReward(RewardFunction):
                 self.clip = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
                 self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
                 self.mlp = _MLP()
+                # Load pretrained aesthetic predictor weights
+                from importlib import resources
+                weights_path = resources.files("vrl.rewards.assets").joinpath(
+                    "sac+logos+ava1-l14-linearMSE.pth"
+                )
+                state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
+                self.mlp.load_state_dict(state_dict)
                 self.dtype = dtype
                 self.eval()
 
