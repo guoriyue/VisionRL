@@ -75,5 +75,6 @@ class TrainStepMetrics:
     reward_std: float = 0.0
     advantage_mean: float = 0.0
     clip_fraction: float = 0.0
+    approx_kl: float = 0.0
     grad_norm: float = 0.0
     lr: float = 0.0

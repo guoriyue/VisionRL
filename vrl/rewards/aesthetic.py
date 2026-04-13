@@ -78,10 +78,19 @@ class AestheticReward(RewardFunction):
         output = rollout.trajectory.output
         if isinstance(output, torch.Tensor):
             images = (output * 255).round().clamp(0, 255).to(torch.uint8)
-            if images.ndim == 4:
+            if images.ndim == 4 and images.shape[0] > 4:
+                # [B, C, H, W] image batch
                 images = images.cpu().numpy().transpose(0, 2, 3, 1)
+            elif images.ndim == 4 and images.shape[0] <= 4:
+                # [C, T, H, W] video — take middle frame
+                mid = images.shape[1] // 2
+                frame = images[:, mid, :, :]  # [C, H, W]
+                images = [frame.cpu().numpy().transpose(1, 2, 0)]
+            elif images.ndim == 3:
+                # [C, H, W] single image
+                images = [images.cpu().numpy().transpose(1, 2, 0)]
             else:
-                # Video: take middle frame
+                # [T, C, H, W] or other — take middle frame
                 mid = images.shape[0] // 2
                 images = images[mid].cpu().numpy().transpose(1, 2, 0)
                 images = [images]

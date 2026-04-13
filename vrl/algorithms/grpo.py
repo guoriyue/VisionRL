@@ -256,7 +256,7 @@ class GRPO(Algorithm):
             policy_loss=policy_loss.item(),
             kl_penalty=kl_loss.item(),
             clip_fraction=clip_fraction,
+            approx_kl=approx_kl,
         )
-        metrics.approx_kl = approx_kl  # type: ignore[attr-defined]
 
         return loss, metrics
