@@ -30,6 +30,8 @@ vrl/runtime/env/__pycache__/
 *.safetensors
 *.onnx
 *.bin
+# Exception: small pretrained reward MLP weights
+!vrl/rewards/assets/*.pth
 
 # Data
 *.npy
