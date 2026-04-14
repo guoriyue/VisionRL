@@ -149,7 +149,7 @@ def _dict_to_config(d: dict) -> EngineConfig:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vrl-serve",
-        description="Vision-RL model serving",
+        description="Visual-RL model serving",
     )
     parser.add_argument("--config", type=str, default=None, help="Path to YAML config file")
     parser.add_argument("--model-path", type=str, default=None, help="Path to model weights")

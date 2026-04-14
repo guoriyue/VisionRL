@@ -301,6 +301,37 @@ class DiffusersCosmosPredict2Executor(CosmosLocalExecutor):
         request: VideoGenerationRequest,
         state: dict[str, Any],
     ) -> ModelResult:
+        if "latents" in state:
+            # RL / step-level path: decode raw latents with Cosmos normalization
+            import torch
+
+            pipeline = self._get_pipeline()
+            sigma_data = pipeline.scheduler.config.sigma_data
+            latents = state["latents"]
+
+            latents_for_decode = latents.to(pipeline.vae.dtype)
+            latents_mean = (
+                torch.tensor(pipeline.vae.config.latents_mean)
+                .view(1, pipeline.vae.config.z_dim, 1, 1, 1)
+                .to(latents_for_decode.device, latents_for_decode.dtype)
+            )
+            latents_std = (
+                torch.tensor(pipeline.vae.config.latents_std)
+                .view(1, pipeline.vae.config.z_dim, 1, 1, 1)
+                .to(latents_for_decode.device, latents_for_decode.dtype)
+            )
+            latents_for_decode = latents_for_decode * latents_std / sigma_data + latents_mean
+            video = pipeline.vae.decode(latents_for_decode, return_dict=False)[0]
+            video = pipeline.video_processor.postprocess_video(video, output_type="pt")
+            # [B, T, C, H, W] -> [B, C, T, H, W]
+            video = video.permute(0, 2, 1, 3, 4)
+
+            return ModelResult(
+                state_updates={"video": video},
+                outputs={"video_shape": list(video.shape)},
+            )
+
+        # Serving path: frames already decoded by monolithic pipeline(...)
         frames = self._np.asarray(state["video_frames"])
         return ModelResult(
             state_updates={"video_frames": frames},
@@ -520,35 +551,6 @@ class DiffusersCosmosPredict2Executor(CosmosLocalExecutor):
             "noise_pred_cond": noise_pred_cond,
             "noise_pred_uncond": noise_pred_uncond,
         }
-
-    async def decode_vae_for_latents(self, latents: Any) -> Any:
-        """Decode raw latents -> video tensor with Cosmos normalization.
-
-        Returns video tensor [B, C, T, H, W].
-        """
-        import torch
-
-        pipeline = self._get_pipeline()
-        sigma_data = pipeline.scheduler.config.sigma_data
-
-        latents_for_decode = latents.to(pipeline.vae.dtype)
-        latents_mean = (
-            torch.tensor(pipeline.vae.config.latents_mean)
-            .view(1, pipeline.vae.config.z_dim, 1, 1, 1)
-            .to(latents_for_decode.device, latents_for_decode.dtype)
-        )
-        latents_std = (
-            torch.tensor(pipeline.vae.config.latents_std)
-            .view(1, pipeline.vae.config.z_dim, 1, 1, 1)
-            .to(latents_for_decode.device, latents_for_decode.dtype)
-        )
-        # Cosmos2 decode: z_raw = z_norm * std / sigma_data + mean
-        latents_for_decode = latents_for_decode * latents_std / sigma_data + latents_mean
-        video = pipeline.vae.decode(latents_for_decode, return_dict=False)[0]
-        video = pipeline.video_processor.postprocess_video(video, output_type="pt")
-        # [B, T, C, H, W] -> [B, C, T, H, W]
-        video = video.permute(0, 2, 1, 3, 4)
-        return video
 
     def describe(self) -> dict[str, Any]:
         return {

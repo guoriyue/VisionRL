@@ -138,9 +138,6 @@ class CosmosGenerationModel(VideoGenerationModel):
     ) -> Any:
         return await self._executor.denoise_init(request, state)
 
-    async def decode_vae_for_latents(self, latents: Any) -> Any:
-        return await self._executor.decode_vae_for_latents(latents)
-
     async def generate(
         self,
         request: VideoGenerationRequest,

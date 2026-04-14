@@ -1,12 +1,6 @@
-"""Wan 1.3B Diffusers-based collector for RL training.
+"""Wan 1.3B Diffusers collector for RL training.
 
-Uses the model-family step runtime (``denoise_init`` / ``predict_noise`` /
-``decode_vae_for_latents``) instead of raw pipeline access, so that
-model-specific knowledge (CFG kwargs, VAE normalization) stays inside
-the model layer.
-
-Follows the same architecture as ``CosmosDiffusersCollector``:
-  Collector → FlowMatchingEvaluator → GRPO → OnlineTrainer
+Collector → FlowMatchingEvaluator → GRPO → OnlineTrainer
 """
 
 from __future__ import annotations
@@ -53,12 +47,9 @@ class WanDiffusersCollector:
     """Collect rollouts from Wan 1.3B with per-step log-probabilities.
 
     Delegates model-specific forward passes to the model family's
-    ``denoise_init`` / ``predict_noise`` / ``decode_vae_for_latents``
-    methods.  The collector only owns the SDE-step loop, reward scoring,
+    ``denoise_init`` / ``predict_noise`` / ``decode_vae`` methods.
+    The collector only owns the SDE-step loop, reward scoring,
     and ``ExperienceBatch`` assembly.
-
-    Implements both ``collect()`` (rollout) and ``forward_step()``
-    (single-timestep forward for training evaluator).
     """
 
     def __init__(
@@ -199,7 +190,9 @@ class WanDiffusersCollector:
         kl_tensor = torch.stack(all_kls, dim=1)
 
         # 4. Decode VAE via model family
-        video = await self.model.decode_vae_for_latents(ms.latents)
+        decode_state: dict[str, Any] = {"latents": ms.latents}
+        decode_result = await self.model.decode_vae(request, decode_state)
+        video = decode_result.state_updates["video"]
 
         # 5. Score with reward function
         rewards_list = []

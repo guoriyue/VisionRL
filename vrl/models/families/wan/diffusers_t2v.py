@@ -1,8 +1,4 @@
-"""Diffusers Wan 1.3B T2V model with step-level denoising runtime.
-
-Provides both monolithic ``generate()`` for serving and step-level
-``denoise_init`` / ``predict_noise`` / ``decode_vae`` for RL training.
-"""
+"""Diffusers Wan 1.3B T2V model with step-level denoising runtime."""
 
 from __future__ import annotations
 
@@ -245,33 +241,6 @@ class DiffusersWanT2VModel(VideoGenerationModel):
             state_updates={"video": video},
             outputs={"video_shape": list(video.shape)},
         )
-
-    async def decode_vae_for_latents(self, latents: Any) -> Any:
-        """Decode raw latents -> video tensor [B, C, T, H, W].
-
-        Standalone method for collector use (doesn't need request/state).
-        """
-        import torch
-
-        pipe = self.pipeline
-
-        latents_for_decode = latents.to(pipe.vae.dtype)
-        latents_mean = (
-            torch.tensor(pipe.vae.config.latents_mean)
-            .view(1, pipe.vae.config.z_dim, 1, 1, 1)
-            .to(latents_for_decode.device, latents_for_decode.dtype)
-        )
-        latents_std = (
-            1.0 / torch.tensor(pipe.vae.config.latents_std)
-            .view(1, pipe.vae.config.z_dim, 1, 1, 1)
-            .to(latents_for_decode.device, latents_for_decode.dtype)
-        )
-        latents_for_decode = latents_for_decode / latents_std + latents_mean
-        video = pipe.vae.decode(latents_for_decode, return_dict=False)[0]
-        video = pipe.video_processor.postprocess_video(video, output_type="pt")
-        # [B, T, C, H, W] -> [B, C, T, H, W]
-        video = video.permute(0, 2, 1, 3, 4)
-        return video
 
     async def generate(
         self,

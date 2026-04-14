@@ -85,9 +85,5 @@ class CosmosLocalExecutor(ABC):
         """Model forward + CFG for a single step. Returns {'noise_pred': ...}."""
         raise NotImplementedError
 
-    async def decode_vae_for_latents(self, latents: Any) -> Any:
-        """Decode raw latents -> video tensor."""
-        raise NotImplementedError
-
     def describe(self) -> dict[str, Any]:
         return {"execution_mode": self.execution_mode, "executor": self.__class__.__name__}
