@@ -207,7 +207,12 @@ class TestCosmosDiffusersCollectorForwardStep:
         uncond_indicator = torch.zeros(1, C, D, 1, 1)
         cond_mask = torch.zeros(1, 1, D, 1, 1)
         uncond_mask = torch.zeros(1, 1, D, 1, 1)
+        padding_mask = torch.zeros(1, 1, H * 8, W * 8)
         init_latents = torch.randn(B, C, D, H, W)
+
+        # Mock scheduler with sigmas for forward_step
+        class MockScheduler:
+            sigmas = torch.ones(T)
 
         batch = ExperienceBatch(
             observations=observations,
@@ -227,8 +232,10 @@ class TestCosmosDiffusersCollectorForwardStep:
                 "fps": 16,
                 "cond_mask": cond_mask,
                 "uncond_mask": uncond_mask,
+                "padding_mask": padding_mask,
                 "cond_indicator": cond_indicator,
                 "uncond_indicator": uncond_indicator,
+                "scheduler": MockScheduler(),
             },
         )
 

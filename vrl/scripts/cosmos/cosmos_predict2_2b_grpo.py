@@ -9,6 +9,11 @@ Usage:
         --reward-type aesthetic \
         --prompt-file prompts.txt \
         --reference-image ref.png
+
+Eval-only mode (base vs LoRA comparison):
+    python -m vrl.scripts.cosmos.cosmos_predict2_2b_grpo \
+        --eval-only --lora-path outputs/cosmos_pred2_2b_grpo/checkpoint-100/lora_weights \
+        --reference-image ref.png --eval-prompts eval_prompts.txt
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +85,14 @@ class CosmosPred2Config:
     # Reward
     reward_type: str = "aesthetic"
 
+    # Eval
+    eval_prompts_file: str = ""
+    eval_seeds: int = 1
+    eval_only: bool = False
+
+    # Debug
+    debug_first_step: bool = False
+
     # Logging
     log_interval: int = 1
     save_interval: int = 100
@@ -128,6 +142,9 @@ async def train(config: CosmosPred2Config) -> None:
         )
     finally:
         _v2w_mod.CosmosSafetyChecker = _orig_safety
+
+    # diffusers from_pretrained disables grad globally — re-enable for training
+    torch.set_grad_enabled(True)
 
     pipeline.set_progress_bar_config(disable=True)
     pipeline.vae.requires_grad_(False)
@@ -216,7 +233,7 @@ async def train(config: CosmosPred2Config) -> None:
         model_size="2B",
     )
     cosmos_executor._pipeline = pipeline
-    cosmos_executor._modules_loaded = True
+    cosmos_executor._load_modules()
 
     collector = CosmosDiffusersCollector(
         cosmos_executor, reward_fn, collector_config,
@@ -251,6 +268,7 @@ async def train(config: CosmosPred2Config) -> None:
         ema_update_interval=config.ema_update_interval,
         timestep_fraction=config.timestep_fraction,
         cfg=config.cfg,
+        debug_first_step=config.debug_first_step,
     )
 
     # Use transformer itself as ref_model (LoRA disable_adapter for ref)
@@ -278,18 +296,74 @@ async def train(config: CosmosPred2Config) -> None:
             "a person walking through a park in autumn",
         ]
 
+    # Load eval prompts (held-out or first 4 training prompts)
+    eval_prompts: list[str] = []
+    if config.eval_prompts_file and Path(config.eval_prompts_file).exists():
+        eval_prompts = Path(config.eval_prompts_file).read_text().strip().splitlines()
+    if not eval_prompts:
+        eval_prompts = prompts[:4]
+
+    # Reference image warning
+    if not config.reference_image:
+        logger.warning(
+            "No --reference-image provided. Video2World will use zero conditioning. "
+            "This is degenerate — provide a real image for valid training."
+        )
+
+    output_dir = Path(config.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # --eval-only mode: compare base vs LoRA on eval prompts
+    if config.eval_only:
+        if not config.lora_path:
+            raise ValueError(
+                "--eval-only requires --lora-path pointing to a trained LoRA checkpoint. "
+                "Without it, 'LoRA' scores would come from a random adapter."
+            )
+        await _run_eval_only(
+            config, transformer, collector, eval_prompts, output_dir, device, torch,
+        )
+        return
+
     # 8. Training loop
     logger.info(
         "Starting Cosmos Predict2-2B GRPO training — %d epochs, %d prompts, group_size=%d",
         config.num_epochs, len(prompts), config.group_size,
     )
-    output_dir = Path(config.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # CSV log for easy plotting
+    csv_path = output_dir / "metrics.csv"
+    if not csv_path.exists():
+        csv_path.write_text(
+            "epoch,loss,policy_loss,kl_penalty,reward_mean,reward_std,"
+            "clip_fraction,approx_kl,advantage_mean,ref_image\n"
+        )
+
+    ref_image_flag = "1" if config.reference_image else "0"
 
     for epoch in range(config.num_epochs):
         prompt_batch = [prompts[epoch % len(prompts)]]
 
         metrics = await trainer.step(prompt_batch)
+
+        # Epoch-0 on-policy sanity check
+        if epoch == 0:
+            logger.info(
+                "Epoch 0 sanity check: approx_kl=%.6f clip_fraction=%.4f",
+                metrics.approx_kl, metrics.clip_fraction,
+            )
+            if metrics.clip_fraction > 0.5:
+                logger.warning(
+                    "HIGH clip_fraction at epoch 0 (%.3f) — likely ratio mismatch "
+                    "between collect and forward_step. Training may not converge.",
+                    metrics.clip_fraction,
+                )
+            if metrics.approx_kl > 0.1:
+                logger.warning(
+                    "HIGH approx_kl at epoch 0 (%.6f) — log-probs from collect and "
+                    "forward_step may not match. Check _predict_noise_impl consistency.",
+                    metrics.approx_kl,
+                )
 
         if epoch % config.log_interval == 0:
             logger.info(
@@ -303,6 +377,15 @@ async def train(config: CosmosPred2Config) -> None:
                 metrics.reward_std,
                 metrics.clip_fraction,
             )
+            # Append to CSV
+            with open(csv_path, "a") as f:
+                f.write(
+                    f"{epoch},{metrics.loss:.6f},{metrics.policy_loss:.6f},"
+                    f"{metrics.kl_penalty:.6f},{metrics.reward_mean:.4f},"
+                    f"{metrics.reward_std:.4f},{metrics.clip_fraction:.4f},"
+                    f"{metrics.approx_kl:.6f},{metrics.advantage_mean:.4f},"
+                    f"{ref_image_flag}\n"
+                )
 
         if config.save_interval > 0 and (epoch + 1) % config.save_interval == 0:
             ckpt_path = output_dir / f"checkpoint-{epoch+1}"
@@ -310,9 +393,152 @@ async def train(config: CosmosPred2Config) -> None:
             torch.save(trainer.state_dict(), ckpt_path / "trainer_state.pt")
             if hasattr(transformer, "save_pretrained"):
                 transformer.save_pretrained(ckpt_path / "lora_weights")
-            logger.info("Saved checkpoint to %s", ckpt_path)
+
+            # Generate eval samples for visual comparison
+            logger.info("Generating eval samples at epoch %d...", epoch + 1)
+            transformer.eval()
+            eval_dir = ckpt_path / "eval_samples"
+            eval_dir.mkdir(exist_ok=True)
+            eval_scores = []
+            for i, ep in enumerate(eval_prompts):
+                with torch.no_grad():
+                    eval_batch = await collector.collect(
+                        [ep], reference_image=reference_image, seed=i,
+                    )
+                score = eval_batch.rewards[0].item()
+                eval_scores.append(score)
+                # Save middle frame as PNG
+                if eval_batch.videos is not None:
+                    _save_middle_frame(
+                        eval_batch.videos[0], eval_dir,
+                        f"prompt_{i}_score_{score:.2f}.png", torch,
+                    )
+            transformer.train()
+
+            avg_eval = sum(eval_scores) / len(eval_scores) if eval_scores else 0
+            logger.info(
+                "Checkpoint %d | eval_reward=%.4f (%s) | saved to %s",
+                epoch + 1,
+                avg_eval,
+                ", ".join(f"{s:.2f}" for s in eval_scores),
+                ckpt_path,
+            )
 
     logger.info("Training complete.")
+
+
+def _save_middle_frame(
+    video: Any, out_dir: Path, filename: str, torch: Any,
+) -> None:
+    """Extract middle frame from video tensor and save as PNG."""
+    try:
+        from PIL import Image
+
+        vid = video
+        if vid.ndim == 4:
+            mid = vid.shape[1] // 2
+            frame = vid[:, mid, :, :]  # [C, H, W]
+        else:
+            frame = vid
+        frame = (frame * 255).clamp(0, 255).to(torch.uint8)
+        frame = frame.cpu().permute(1, 2, 0).numpy()
+        img = Image.fromarray(frame)
+        img.save(out_dir / filename)
+    except Exception:
+        logger.debug("Failed to save frame %s", filename)
+
+
+async def _run_eval_only(
+    config: CosmosPred2Config,
+    transformer: Any,
+    collector: Any,
+    eval_prompts: list[str],
+    output_dir: Path,
+    device: Any,
+    torch: Any,
+) -> None:
+    """Eval-only mode: compare base model vs LoRA on eval prompts.
+
+    Uses the same seed for both LoRA and base runs on each (prompt, seed)
+    pair so the comparison is paired / apples-to-apples.
+    """
+    import csv
+
+    reference_image = None
+    if config.reference_image:
+        from PIL import Image as PILImage
+
+        reference_image = PILImage.open(config.reference_image).convert("RGB")
+
+    eval_dir = output_dir / "eval_only"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = eval_dir / "eval_results.csv"
+
+    rows: list[dict[str, Any]] = []
+
+    # Evaluate LoRA model
+    logger.info("Evaluating LoRA model on %d prompts x %d seeds...", len(eval_prompts), config.eval_seeds)
+    transformer.eval()
+    lora_scores: list[float] = []
+    for i, prompt in enumerate(eval_prompts):
+        for seed in range(config.eval_seeds):
+            with torch.no_grad():
+                batch = await collector.collect(
+                    [prompt], reference_image=reference_image, seed=seed,
+                )
+            score = batch.rewards[0].item()
+            lora_scores.append(score)
+            if batch.videos is not None:
+                _save_middle_frame(
+                    batch.videos[0], eval_dir,
+                    f"lora_prompt_{i}_seed_{seed}_score_{score:.2f}.png", torch,
+                )
+            rows.append({
+                "prompt": prompt, "seed": seed,
+                "lora_score": f"{score:.4f}", "base_score": "", "delta": "",
+            })
+
+    # Evaluate base model (disable LoRA adapter) — same seeds for paired comparison
+    base_scores: list[float] = []
+    if hasattr(transformer, "disable_adapter"):
+        logger.info("Evaluating base model (LoRA disabled) on %d prompts x %d seeds...", len(eval_prompts), config.eval_seeds)
+        with transformer.disable_adapter():
+            row_idx = 0
+            for i, prompt in enumerate(eval_prompts):
+                for seed in range(config.eval_seeds):
+                    with torch.no_grad():
+                        batch = await collector.collect(
+                            [prompt], reference_image=reference_image, seed=seed,
+                        )
+                    score = batch.rewards[0].item()
+                    base_scores.append(score)
+                    if batch.videos is not None:
+                        _save_middle_frame(
+                            batch.videos[0], eval_dir,
+                            f"base_prompt_{i}_seed_{seed}_score_{score:.2f}.png", torch,
+                        )
+                    rows[row_idx]["base_score"] = f"{score:.4f}"
+                    rows[row_idx]["delta"] = f"{lora_scores[row_idx] - score:.4f}"
+                    row_idx += 1
+    else:
+        logger.warning("Model does not support disable_adapter — skipping base comparison.")
+
+    transformer.train()
+
+    # Write CSV
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["prompt", "seed", "lora_score", "base_score", "delta"])
+        writer.writeheader()
+        writer.writerows(rows)
+
+    # Summary
+    avg_lora = sum(lora_scores) / len(lora_scores) if lora_scores else 0
+    avg_base = sum(base_scores) / len(base_scores) if base_scores else 0
+    delta = avg_lora - avg_base if base_scores else float("nan")
+    logger.info(
+        "Eval-only results: lora=%.4f base=%.4f delta=%.4f | %s",
+        avg_lora, avg_base, delta, csv_path,
+    )
 
 
 def main() -> None:
@@ -354,6 +580,10 @@ def main() -> None:
     parser.add_argument("--no-gradient-checkpointing", action="store_true")
     parser.add_argument("--save-interval", type=int, default=100)
     parser.add_argument("--log-interval", type=int, default=1)
+    parser.add_argument("--eval-prompts", type=str, default="", help="Path to held-out eval prompts file")
+    parser.add_argument("--eval-seeds", type=int, default=1, help="Number of seeds per eval prompt")
+    parser.add_argument("--eval-only", action="store_true", help="Eval-only mode: compare base vs LoRA")
+    parser.add_argument("--debug-first-step", action="store_true", help="Log old vs fresh log-prob diff on first training step")
 
     args = parser.parse_args()
 
@@ -383,6 +613,10 @@ def main() -> None:
         gradient_checkpointing=not args.no_gradient_checkpointing,
         save_interval=args.save_interval,
         log_interval=args.log_interval,
+        eval_prompts_file=args.eval_prompts,
+        eval_seeds=args.eval_seeds,
+        eval_only=args.eval_only,
+        debug_first_step=args.debug_first_step,
     )
 
     asyncio.run(train(config))

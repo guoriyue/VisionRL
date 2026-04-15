@@ -398,7 +398,7 @@ class DiffusersCosmosPredict2Executor(CosmosLocalExecutor):
         pipeline.scheduler.set_timesteps(request.num_steps, device=device)
         timesteps = pipeline.scheduler.timesteps
 
-        num_channels_latents = pipeline.transformer.config.in_channels
+        num_channels_latents = pipeline.transformer.config.in_channels - 1
         batch_size = prompt_embeds.shape[0]
 
         # Reference image for Video2World
@@ -415,6 +415,11 @@ class DiffusersCosmosPredict2Executor(CosmosLocalExecutor):
                 device=device, dtype=pipeline.vae.dtype,
             )
 
+        # Seed → generator for reproducible latent init
+        seed = request.seed if request.seed is not None else random.randint(0, sys.maxsize)
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(seed)
+
         # Cosmos2 prepare_latents returns 6-tuple
         latents_result = pipeline.prepare_latents(
             video=video_input,
@@ -426,7 +431,7 @@ class DiffusersCosmosPredict2Executor(CosmosLocalExecutor):
             do_classifier_free_guidance=do_cfg,
             dtype=torch.float32,
             device=device,
-            generator=None,
+            generator=generator,
             latents=None,
         )
         latents = latents_result[0]
@@ -439,7 +444,11 @@ class DiffusersCosmosPredict2Executor(CosmosLocalExecutor):
         sigma_data = pipeline.scheduler.config.sigma_data
         sigma_conditioning = 0.0001
 
-        seed = request.seed if request.seed is not None else random.randint(0, sys.maxsize)
+        # Padding mask for transformer (zeros at pixel resolution)
+        padding_mask = latents.new_zeros(
+            1, 1, request.height, request.width,
+            dtype=prompt_embeds.dtype,
+        )
 
         ms = DiffusersDenoiseState(
             latents=latents,
@@ -455,6 +464,7 @@ class DiffusersCosmosPredict2Executor(CosmosLocalExecutor):
             uncond_indicator=uncond_indicator,
             cond_mask=cond_mask,
             uncond_mask=uncond_mask,
+            padding_mask=padding_mask,
             fps=request.fps or 16,
             sigma_data=sigma_data,
             sigma_conditioning=sigma_conditioning,
@@ -495,7 +505,9 @@ class DiffusersCosmosPredict2Executor(CosmosLocalExecutor):
     ) -> dict[str, Any]:
         """Cosmos Predict2 transformer forward + optional CFG.
 
-        Handles cond_indicator blending and condition_mask kwargs.
+        Mirrors the diffusers Cosmos2VideoToWorldPipeline denoising loop:
+        sigma scaling (c_in/c_skip/c_out), spatial timestep blending via
+        cond_indicator, and post-transformer conditioning re-application.
         """
         import torch
 
@@ -504,47 +516,90 @@ class DiffusersCosmosPredict2Executor(CosmosLocalExecutor):
         batch_size = ms.latents.shape[0]
         transformer_dtype = ms.prompt_embeds.dtype
 
-        # Build conditioning latent (reference frames blended with noise)
-        cond_latent = (
-            ms.init_latents * (1 - ms.sigma_conditioning)
-            + ms.sigma_conditioning * torch.randn_like(ms.init_latents)
+        # Sigma scaling coefficients
+        current_sigma = ms.scheduler.sigmas[step_idx]
+        current_t = current_sigma / (current_sigma + 1)
+        c_in = 1 - current_t
+        c_skip = 1 - current_t
+        c_out = -current_t
+
+        # Spatial timestep tensor [B, 1, T, 1, 1]
+        timestep = current_t.view(1, 1, 1, 1, 1).expand(
+            batch_size, -1, ms.latents.size(2), -1, -1,
         )
-        cond_latent_input = (
-            ms.cond_indicator * cond_latent
-            + (1 - ms.cond_indicator) * ms.latents.to(transformer_dtype)
+        t_conditioning = torch.tensor(
+            ms.sigma_conditioning, device=ms.latents.device, dtype=timestep.dtype,
+        ).view(1, 1, 1, 1, 1).expand_as(timestep)
+
+        # Expand tensors to batch size (prepare_latents returns [1,...] but
+        # forward_step may have stacked batches)
+        cond_mask = ms.cond_mask.expand(batch_size, -1, -1, -1, -1)
+        uncond_mask = ms.uncond_mask.expand(batch_size, -1, -1, -1, -1) if ms.uncond_mask is not None else None
+        padding_mask = ms.padding_mask  # kept at [1, 1, H, W] — transformer repeats internally
+        init_latents = ms.init_latents.expand(batch_size, -1, -1, -1, -1)
+        cond_indicator = ms.cond_indicator.expand(batch_size, -1, -1, -1, -1)
+        uncond_indicator = ms.uncond_indicator.expand(batch_size, -1, -1, -1, -1) if ms.uncond_indicator is not None else None
+
+        # Cond pass: blend conditioning latents with scaled noise latents
+        cond_latent = ms.latents * c_in
+        cond_latent = (
+            cond_indicator * init_latents
+            + (1 - cond_indicator) * cond_latent
+        )
+        cond_timestep = (
+            cond_indicator * t_conditioning
+            + (1 - cond_indicator) * timestep
         )
 
-        # Forward pass: cond
-        noise_pred_cond = model(
-            hidden_states=cond_latent_input.to(transformer_dtype),
-            timestep=t.expand(batch_size),
+        raw_cond = model(
+            hidden_states=cond_latent.to(transformer_dtype),
+            timestep=cond_timestep.to(transformer_dtype),
             encoder_hidden_states=ms.prompt_embeds,
             fps=ms.fps,
-            condition_mask=ms.cond_mask,
+            condition_mask=cond_mask,
+            padding_mask=padding_mask,
             return_dict=False,
         )[0]
-        noise_pred_cond = noise_pred_cond.to(ms.prompt_embeds.dtype)
+        noise_pred_cond = (c_skip * ms.latents + c_out * raw_cond.float()).to(transformer_dtype)
+        noise_pred_cond = (
+            cond_indicator * init_latents
+            + (1 - cond_indicator) * noise_pred_cond
+        )
 
         # CFG: uncond pass
         if ms.do_cfg:
-            uncond_latent_input = (
-                ms.uncond_indicator * cond_latent
-                + (1 - ms.uncond_indicator) * ms.latents.to(transformer_dtype)
+            uncond_latent = ms.latents * c_in
+            uncond_latent = (
+                uncond_indicator * init_latents
+                + (1 - uncond_indicator) * uncond_latent
             )
-            noise_pred_uncond = model(
-                hidden_states=uncond_latent_input.to(transformer_dtype),
-                timestep=t.expand(batch_size),
+            uncond_timestep = (
+                uncond_indicator * t_conditioning
+                + (1 - uncond_indicator) * timestep
+            )
+
+            raw_uncond = model(
+                hidden_states=uncond_latent.to(transformer_dtype),
+                timestep=uncond_timestep.to(transformer_dtype),
                 encoder_hidden_states=ms.negative_prompt_embeds,
                 fps=ms.fps,
-                condition_mask=ms.uncond_mask,
+                condition_mask=uncond_mask,
+                padding_mask=padding_mask,
                 return_dict=False,
             )[0]
-            noise_pred = noise_pred_uncond + ms.guidance_scale * (
-                noise_pred_cond - noise_pred_uncond
+            noise_pred_uncond = (c_skip * ms.latents + c_out * raw_uncond.float()).to(transformer_dtype)
+            noise_pred_uncond = (
+                uncond_indicator * init_latents
+                + (1 - uncond_indicator) * noise_pred_uncond
             )
+
+            combined = noise_pred_cond + ms.guidance_scale * (noise_pred_cond - noise_pred_uncond)
         else:
             noise_pred_uncond = torch.zeros_like(noise_pred_cond)
-            noise_pred = noise_pred_cond
+            combined = noise_pred_cond
+
+        # Final: convert to velocity for scheduler
+        noise_pred = (ms.latents - combined) / current_sigma
 
         return {
             "noise_pred": noise_pred,

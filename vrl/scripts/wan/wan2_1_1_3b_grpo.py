@@ -49,7 +49,7 @@ class Wan1_3BConfig:
     max_grad_norm: float = 1.0
     mixed_precision: str = "bf16"
     beta: float = 0.004  # KL loss coefficient
-    clip_range: float = 1e-3
+    clip_range: float = 1e-4
     adv_clip_max: float = 5.0
     timestep_fraction: float = 0.99
     gradient_checkpointing: bool = True
@@ -64,7 +64,7 @@ class Wan1_3BConfig:
     sde_window_size: int = 0
     sde_window_range: tuple[int, int] = (0, 10)
     same_latent: bool = False
-    global_std: bool = False
+    global_std: bool = True
     cfg: bool = True
 
     # Data
@@ -232,6 +232,10 @@ async def train(config: Wan1_3BConfig) -> None:
             "a cat playing with a ball of yarn",
             "a robot walking through a forest",
             "fireworks exploding in the night sky",
+            "a golden retriever running on a beach",
+            "a waterfall in a lush green jungle",
+            "colorful hot air balloons floating in the sky",
+            "a snow-covered mountain peak at sunrise",
         ]
 
     # 7. Training loop
@@ -241,6 +245,17 @@ async def train(config: Wan1_3BConfig) -> None:
     )
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # CSV log for easy plotting
+    csv_path = output_dir / "metrics.csv"
+    if not csv_path.exists():
+        csv_path.write_text(
+            "epoch,loss,policy_loss,kl_penalty,reward_mean,reward_std,"
+            "clip_fraction,approx_kl,advantage_mean\n"
+        )
+
+    # Fixed eval prompts for consistent checkpoint comparison
+    eval_prompts = prompts[:4]
 
     for epoch in range(config.num_epochs):
         # Cycle through prompts
@@ -260,6 +275,14 @@ async def train(config: Wan1_3BConfig) -> None:
                 metrics.reward_std,
                 metrics.clip_fraction,
             )
+            # Append to CSV
+            with open(csv_path, "a") as f:
+                f.write(
+                    f"{epoch},{metrics.loss:.6f},{metrics.policy_loss:.6f},"
+                    f"{metrics.kl_penalty:.6f},{metrics.reward_mean:.4f},"
+                    f"{metrics.reward_std:.4f},{metrics.clip_fraction:.4f},"
+                    f"{metrics.approx_kl:.6f},{metrics.advantage_mean:.4f}\n"
+                )
 
         if config.save_interval > 0 and (epoch + 1) % config.save_interval == 0:
             ckpt_path = output_dir / f"checkpoint-{epoch+1}"
@@ -267,7 +290,44 @@ async def train(config: Wan1_3BConfig) -> None:
             torch.save(trainer.state_dict(), ckpt_path / "trainer_state.pt")
             if hasattr(transformer, "save_pretrained"):
                 transformer.save_pretrained(ckpt_path / "lora_weights")
-            logger.info("Saved checkpoint to %s", ckpt_path)
+
+            # Generate eval samples for visual comparison
+            logger.info("Generating eval samples at epoch %d...", epoch + 1)
+            transformer.eval()
+            eval_dir = ckpt_path / "eval_samples"
+            eval_dir.mkdir(exist_ok=True)
+            eval_scores = []
+            for i, ep in enumerate(eval_prompts):
+                with torch.no_grad():
+                    eval_batch = await collector.collect([ep])
+                score = eval_batch.rewards[0].item()
+                eval_scores.append(score)
+                # Save video frames as a grid image
+                if eval_batch.videos is not None:
+                    vid = eval_batch.videos[0]  # [C, T, H, W]
+                    if vid.ndim == 4:
+                        mid = vid.shape[1] // 2
+                        frame = vid[:, mid, :, :]  # [C, H, W]
+                    else:
+                        frame = vid
+                    frame = (frame * 255).clamp(0, 255).to(torch.uint8)
+                    frame = frame.cpu().permute(1, 2, 0).numpy()
+                    try:
+                        from PIL import Image
+                        img = Image.fromarray(frame)
+                        img.save(eval_dir / f"prompt_{i}_score_{score:.2f}.png")
+                    except Exception:
+                        pass
+            transformer.train()
+
+            avg_eval = sum(eval_scores) / len(eval_scores) if eval_scores else 0
+            logger.info(
+                "Checkpoint %d | eval_reward=%.4f (%s) | saved to %s",
+                epoch + 1,
+                avg_eval,
+                ", ".join(f"{s:.2f}" for s in eval_scores),
+                ckpt_path,
+            )
 
     logger.info("Training complete.")
 
@@ -302,7 +362,7 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=416)
     parser.add_argument("--num-frames", type=int, default=33)
     parser.add_argument("--mixed-precision", type=str, default="bf16")
-    parser.add_argument("--clip-range", type=float, default=1e-3)
+    parser.add_argument("--clip-range", type=float, default=1e-4)
     parser.add_argument("--no-lora", action="store_true")
     parser.add_argument("--no-ema", action="store_true")
     parser.add_argument("--no-gradient-checkpointing", action="store_true")

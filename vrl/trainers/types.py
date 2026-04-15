@@ -56,6 +56,9 @@ class TrainerConfig:
     # --- misc ---
     epochs_per_step: int = 1
 
+    # --- debug ---
+    debug_first_step: bool = False
+
 
 @dataclass(slots=True)
 class TrainState:

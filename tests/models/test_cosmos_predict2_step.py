@@ -24,7 +24,7 @@ class TestCosmosPredict2DenoiseInit:
 
         # Mock pipeline
         class MockTransformerConfig:
-            in_channels = C
+            in_channels = C + 1  # Cosmos2 uses in_channels - 1 for latents
 
         class MockTransformer:
             dtype = torch.bfloat16
@@ -140,18 +140,23 @@ class TestCosmosPredict2PredictNoise:
         executor._pipeline = MockPipeline()
         executor._modules_loaded = True
 
+        class MockScheduler:
+            sigmas = torch.tensor([1.0, 0.5, 0.1])
+
         ms = DiffusersDenoiseState(
             latents=torch.randn(B, C, D, H, W),
             timesteps=torch.tensor([1.0, 0.5, 0.0]),
+            scheduler=MockScheduler(),
             prompt_embeds=torch.randn(B, 10, 64),
             negative_prompt_embeds=torch.randn(B, 10, 64),
             guidance_scale=7.0,
             do_cfg=False,
             init_latents=torch.randn(B, C, D, H, W),
-            cond_indicator=torch.zeros(1, C, D, 1, 1),
-            uncond_indicator=torch.zeros(1, C, D, 1, 1),
+            cond_indicator=torch.zeros(1, 1, D, 1, 1),
+            uncond_indicator=torch.zeros(1, 1, D, 1, 1),
             cond_mask=torch.zeros(1, 1, D, 1, 1),
             uncond_mask=torch.zeros(1, 1, D, 1, 1),
+            padding_mask=torch.zeros(1, 1, H * 8, W * 8),
             fps=16,
             sigma_conditioning=0.0001,
             model_family="cosmos-predict2",
@@ -192,18 +197,23 @@ class TestCosmosPredict2PredictNoiseWithModel:
         )
         executor._modules_loaded = True
 
+        class MockScheduler:
+            sigmas = torch.tensor([1.0])
+
         ms = DiffusersDenoiseState(
             latents=torch.randn(B, C, D, H, W),
             timesteps=torch.tensor([1.0]),
+            scheduler=MockScheduler(),
             prompt_embeds=torch.randn(B, 10, 64),
             negative_prompt_embeds=torch.randn(B, 10, 64),
             guidance_scale=1.0,
             do_cfg=False,
             init_latents=torch.randn(B, C, D, H, W),
-            cond_indicator=torch.zeros(1, C, D, 1, 1),
-            uncond_indicator=torch.zeros(1, C, D, 1, 1),
+            cond_indicator=torch.zeros(1, 1, D, 1, 1),
+            uncond_indicator=torch.zeros(1, 1, D, 1, 1),
             cond_mask=torch.zeros(1, 1, D, 1, 1),
             uncond_mask=torch.zeros(1, 1, D, 1, 1),
+            padding_mask=torch.zeros(1, 1, H * 8, W * 8),
             fps=16,
             model_family="cosmos-predict2",
         )

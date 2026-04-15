@@ -293,3 +293,105 @@ class TestOnlineTrainerStatTracker:
         assert trainer._stat_tracker is not None
         from vrl.algorithms.stat_tracking import PerPromptStatTracker
         assert isinstance(trainer._stat_tracker, PerPromptStatTracker)
+
+
+class TestOnlineTrainerCeaRegressions:
+    def _make_cea_trainer(self, rewards: list[float]):
+        import torch
+        import torch.nn as nn
+
+        from vrl.algorithms.types import TrainStepMetrics
+        from vrl.rollouts.evaluators.types import SignalBatch
+        from vrl.rollouts.types import ExperienceBatch
+        from vrl.trainers.online import OnlineTrainer
+        from vrl.trainers.types import TrainerConfig
+
+        class _Algorithm:
+            class _Config:
+                global_std = False
+
+            config = _Config()
+
+            def compute_signal_loss(self, signals, advantages, old_log_probs):
+                loss = signals.log_prob.mean()
+                metrics = TrainStepMetrics(
+                    loss=loss.item(),
+                    policy_loss=loss.item(),
+                    approx_kl=float(old_log_probs.mean().item()),
+                )
+                return loss, metrics
+
+        class _Collector:
+            def __init__(self, reward_values: list[float]) -> None:
+                self._reward_values = reward_values
+                self._cursor = 0
+
+            async def collect(self, prompts, **kwargs):
+                reward = self._reward_values[self._cursor]
+                self._cursor += 1
+                observations = torch.zeros(1, 2, 1)
+                actions = torch.zeros(1, 2, 1)
+                return ExperienceBatch(
+                    observations=observations,
+                    actions=actions,
+                    rewards=torch.tensor([reward], dtype=torch.float32),
+                    dones=torch.ones(1, dtype=torch.bool),
+                    group_ids=torch.zeros(1, dtype=torch.long),
+                    extras={
+                        "log_probs": torch.tensor([[0.0, 1.0]], dtype=torch.float32),
+                    },
+                    prompts=list(prompts),
+                )
+
+        class _Evaluator:
+            def evaluate(
+                self,
+                collector,
+                model,
+                batch,
+                timestep_idx,
+                ref_model=None,
+                signal_request=None,
+            ):
+                batch_size = batch.rewards.shape[0]
+                log_prob = model.weight.view(1).expand(batch_size)
+                return SignalBatch(log_prob=log_prob)
+
+        model = nn.Linear(1, 1, bias=False)
+        with torch.no_grad():
+            model.weight.fill_(1.0)
+
+        trainer = OnlineTrainer(
+            algorithm=_Algorithm(),
+            collector=_Collector(rewards),
+            evaluator=_Evaluator(),
+            model=model,
+            config=TrainerConfig(
+                lr=0.01,
+                group_size=2,
+                mixed_precision="no",
+            ),
+            device="cpu",
+        )
+        return trainer
+
+    def test_cea_step_clears_prompt_history_between_steps(self) -> None:
+        """Second-step advantages should be normalized against the current group only."""
+        import asyncio
+
+        trainer = self._make_cea_trainer([0.0, 0.0, 0.0, 1.0])
+
+        asyncio.run(trainer.step(["prompt-a"]))
+        second_step = asyncio.run(trainer.step(["prompt-a"]))
+
+        assert second_step.advantage_mean == pytest.approx(0.0, abs=1e-3)
+        assert trainer._stat_tracker.stats == {}
+
+    def test_cea_metrics_propagate_approx_kl(self) -> None:
+        """CEA aggregation should not silently drop approx_kl."""
+        import asyncio
+
+        trainer = self._make_cea_trainer([0.0, 1.0])
+        metrics = asyncio.run(trainer.step(["prompt-a"]))
+
+        assert metrics.approx_kl == pytest.approx(0.5)

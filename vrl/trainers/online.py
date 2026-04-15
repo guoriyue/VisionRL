@@ -291,6 +291,10 @@ class OnlineTrainer(Trainer):
         adv_np = self._stat_tracker.update(
             prompts_flat, batch.rewards.tolist(),
         )
+        # Each trainer step already collects the full comparison group for the
+        # current prompts. Keeping prompt history across steps turns GRPO's
+        # within-group baseline into a stale running baseline.
+        self._stat_tracker.clear()
         advantages = torch.tensor(
             adv_np, dtype=batch.rewards.dtype, device=batch.rewards.device,
         )
@@ -311,6 +315,26 @@ class OnlineTrainer(Trainer):
             train_indices = list(range(num_timesteps))
 
         old_log_probs = batch.extras["log_probs"]
+
+        # Debug first step: compare old vs fresh log-probs on first timestep
+        if cfg.debug_first_step and self.state.step == 0:
+            with autocast_ctx:
+                _dbg_signals = self.evaluator.evaluate(
+                    self.collector,
+                    self.model,
+                    batch,
+                    0,
+                    ref_model=self.ref_model,
+                    signal_request=SignalRequest(need_ref=False, need_kl_intermediates=False),
+                )
+            _old_lp_0 = old_log_probs[:, 0] if old_log_probs.ndim > 1 else old_log_probs
+            _diff = (_dbg_signals.log_prob - _old_lp_0).abs()
+            logger.info(
+                "DEBUG first-step log-prob diff: mean=%.6f max=%.6f | "
+                "old_lp[0]=%.6f fresh_lp[0]=%.6f",
+                _diff.mean().item(), _diff.max().item(),
+                _old_lp_0[0].item(), _dbg_signals.log_prob[0].item(),
+            )
 
         for _inner_epoch in range(cfg.num_inner_epochs):
             for j in train_indices:
@@ -339,6 +363,7 @@ class OnlineTrainer(Trainer):
                 agg_metrics["policy_loss"].append(metrics.policy_loss)
                 agg_metrics["kl_penalty"].append(metrics.kl_penalty)
                 agg_metrics["clip_fraction"].append(metrics.clip_fraction)
+                agg_metrics["approx_kl"].append(metrics.approx_kl)
 
             # gradient clipping + optimizer step
             self._clip_and_step(optimizer)
@@ -366,6 +391,7 @@ class OnlineTrainer(Trainer):
             reward_std=reward_std,
             advantage_mean=adv_mean,
             clip_fraction=avg("clip_fraction"),
+            approx_kl=avg("approx_kl"),
         )
 
     # ------------------------------------------------------------------

@@ -100,6 +100,7 @@ class CosmosDiffusersCollector:
         batch_size = len(prompts)
 
         # Build request
+        seed = kwargs.get("seed", None)
         request = VideoGenerationRequest(
             prompt=prompts[0] if len(prompts) == 1 else prompts[0],
             num_steps=cfg.num_steps,
@@ -108,6 +109,7 @@ class CosmosDiffusersCollector:
             width=cfg.width,
             frame_count=cfg.num_frames,
             fps=cfg.fps,
+            seed=seed,
         )
 
         # 1. Encode text via model family
@@ -252,8 +254,10 @@ class CosmosDiffusersCollector:
                 "fps": ms.fps,
                 "cond_mask": ms.cond_mask,
                 "uncond_mask": ms.uncond_mask,
+                "padding_mask": ms.padding_mask,
                 "cond_indicator": ms.cond_indicator,
                 "uncond_indicator": ms.uncond_indicator,
+                "scheduler": ms.scheduler,
                 "model_family": "cosmos-predict2",
             },
             videos=video,
@@ -294,13 +298,16 @@ class CosmosDiffusersCollector:
         fps = ctx["fps"]
         cond_mask = ctx["cond_mask"]
         uncond_mask = ctx["uncond_mask"]
+        padding_mask = ctx["padding_mask"]
         cond_indicator = ctx["cond_indicator"]
         uncond_indicator = ctx["uncond_indicator"]
+        scheduler = ctx["scheduler"]
 
         # Reconstruct DiffusersDenoiseState for the model family
         ms = DiffusersDenoiseState(
             latents=latents,
             timesteps=timesteps[:, timestep_idx] if timesteps.ndim > 1 else timesteps,
+            scheduler=scheduler,
             prompt_embeds=prompt_embeds,
             negative_prompt_embeds=negative_prompt_embeds,
             guidance_scale=guidance_scale,
@@ -310,6 +317,7 @@ class CosmosDiffusersCollector:
             uncond_indicator=uncond_indicator,
             cond_mask=cond_mask,
             uncond_mask=uncond_mask,
+            padding_mask=padding_mask,
             fps=fps,
             model_family="cosmos-predict2",
         )

@@ -53,6 +53,7 @@ class DiffusersDenoiseState:
     uncond_indicator: Any | None = None
     cond_mask: Any | None = None
     uncond_mask: Any | None = None
+    padding_mask: Any | None = None
     fps: int = 16
     sigma_data: float = 1.0
     sigma_conditioning: float = 0.0001
