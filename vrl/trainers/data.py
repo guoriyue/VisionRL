@@ -7,10 +7,58 @@ times across all GPUs — required for GRPO group-relative advantages.
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import torch
 from torch.utils.data import Dataset, Sampler
+
+
+@dataclass
+class PromptExample:
+    """A single training example loaded from a JSONL prompt file."""
+
+    prompt: str
+    target_text: str = ""
+    references: list[str] = field(default_factory=list)
+    task_type: str = "text_to_video"
+    request_overrides: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class JsonlPromptDataset(Dataset):
+    """Dataset that loads :class:`PromptExample` objects from a JSONL file.
+
+    Each line must be a JSON object whose keys match the
+    :class:`PromptExample` fields.  Only ``prompt`` is required; all
+    other fields fall back to their dataclass defaults when absent.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        self.examples: list[PromptExample] = []
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                self.examples.append(PromptExample(**obj))
+
+    def __len__(self) -> int:
+        return len(self.examples)
+
+    def __getitem__(self, idx: int) -> dict[str, Any]:
+        ex = self.examples[idx]
+        return {"prompt": ex.prompt, "metadata": ex.metadata, "example": ex}
+
+    @staticmethod
+    def collate_fn(examples: list[dict[str, Any]]) -> tuple[list[str], list[dict]]:
+        return (
+            [e["prompt"] for e in examples],
+            [e["metadata"] for e in examples],
+        )
 
 
 class TextPromptDataset(Dataset):

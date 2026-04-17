@@ -1,13 +1,14 @@
-"""Wan2.1-1.3B GRPO training (single-GPU, diffusers).
+"""Wan2.1-1.3B OCR GRPO training (single-GPU, diffusers).
 
-Uses diffusers.WanPipeline (Wan2.1-T2V-1.3B-Diffusers) with:
-  WanDiffusersCollector → FlowMatchingEvaluator → GRPO → OnlineTrainer
+Trains the model to generate videos containing readable text matching a target
+string. Uses PromptExample manifests (JSONL) with per-sample target_text.
 
 Usage:
-    python -m vrl.scripts.wan.wan2_1_1_3b_grpo \
-        --model-path Wan-AI/Wan2.1-T2V-1.3B-Diffusers \
-        --reward-type aesthetic \
-        --prompt-file prompts.txt
+    python -m vrl.scripts.wan.wan2_1_1_3b_ocr_grpo \
+        --model-path Wan-AI/Wan2.1-T2V-1.3B-Diffusers
+
+    # Override with your own manifest
+    python -m vrl.scripts.wan.wan2_1_1_3b_ocr_grpo --manifest path/to/prompts.jsonl
 """
 
 from __future__ import annotations
@@ -20,41 +21,43 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_MANIFEST = Path(__file__).parent.parent / "examples" / "ocr_prompts.jsonl"
+
 
 @dataclass
-class Wan1_3BConfig:
-    """Configuration matching flow_grpo general_ocr_wan2_1 defaults."""
+class WanOCRConfig:
+    """Configuration for OCR GRPO training."""
 
-    # Model — HuggingFace model path or local path
+    # Model
     model_path: str = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
 
-    # Generation (from flow_grpo general_ocr_wan2_1)
+    # Generation
     width: int = 416
     height: int = 240
     num_frames: int = 33
     num_steps: int = 20
     guidance_scale: float = 4.5
 
-    # LoRA (from flow_grpo: r=32, alpha=64, target attention layers)
+    # LoRA
     use_lora: bool = True
     lora_rank: int = 32
     lora_alpha: int = 64
     lora_path: str = ""
 
-    # Training (from flow_grpo general_ocr_wan2_1)
+    # Training — matching flow_grpo general_ocr_wan2_1
     lr: float = 1e-4
     num_epochs: int = 10000
     group_size: int = 4
     num_inner_epochs: int = 1
     max_grad_norm: float = 1.0
     mixed_precision: str = "bf16"
-    beta: float = 0.004  # KL loss coefficient
+    beta: float = 0.004
     clip_range: float = 1e-4
     adv_clip_max: float = 5.0
     timestep_fraction: float = 0.99
     gradient_checkpointing: bool = True
 
-    # EMA (from flow_grpo)
+    # EMA
     ema: bool = True
     ema_decay: float = 0.9
     ema_update_interval: int = 8
@@ -67,21 +70,28 @@ class Wan1_3BConfig:
     global_std: bool = True
     cfg: bool = True
 
-    # Data
-    prompt_file: str = ""
-    prompts: list[str] = field(default_factory=list)
-    prompts_per_step: int = 4
+    # Data — JSONL manifest with PromptExample fields
+    manifest: str = str(DEFAULT_MANIFEST)
+    eval_manifest: str = ""
+    prompts_per_step: int = 1
 
-    # Reward
-    reward_type: str = "aesthetic"
+    # Reward mix — weights set to 0 disable the component.
+    # OCR alone is prone to reward hacking (PPT-style text, static frames).
+    # Stack aesthetic + clipscore to regularise visual quality + prompt fidelity.
+    # Note scale: aesthetic raw output ~[3, 9], clipscore ~[0, 1.5], ocr [0, 1].
+    # Weights here are applied AFTER raw reward values, so tune accordingly.
+    ocr_weight: float = 1.0
+    aesthetic_weight: float = 0.0
+    clip_weight: float = 0.0
 
     # Logging
     log_interval: int = 1
-    save_interval: int = 100
-    output_dir: str = "outputs/wan_1_3b_grpo"
+    save_interval: int = 50
+    output_dir: str = "outputs/wan_1_3b_ocr_grpo"
+    ocr_debug_dir: str = ""  # if set, saves OCR debug frames
 
 
-async def train(config: Wan1_3BConfig) -> None:
+async def train(config: WanOCRConfig) -> None:
     """Main training loop."""
     import torch
 
@@ -91,15 +101,15 @@ async def train(config: Wan1_3BConfig) -> None:
         WanDiffusersCollectorConfig,
     )
     from vrl.rollouts.evaluators.diffusion.flow_matching import FlowMatchingEvaluator
-    from vrl.rewards.multi import MultiReward, _register_builtins, get_reward
+    from vrl.rewards.multi import MultiReward
+    from vrl.trainers.data import JsonlPromptDataset, PromptExample
     from vrl.trainers.online import OnlineTrainer
     from vrl.trainers.types import TrainerConfig
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 1. Load Diffusers WanPipeline
+    # 1. Load pipeline
     logger.info("Loading WanPipeline from %s", config.model_path)
-
     from diffusers import WanPipeline
 
     pipeline = WanPipeline.from_pretrained(
@@ -114,11 +124,10 @@ async def train(config: Wan1_3BConfig) -> None:
         dtype=torch.bfloat16 if config.mixed_precision == "bf16" else torch.float16,
     )
 
-    # 2. Apply LoRA to the transformer
+    # 2. Apply LoRA
     if config.use_lora:
         pipeline.transformer.requires_grad_(False)
         pipeline.transformer.to(device)
-
         from peft import LoraConfig, PeftModel, get_peft_model
 
         if config.lora_path:
@@ -138,32 +147,53 @@ async def train(config: Wan1_3BConfig) -> None:
                 init_lora_weights="gaussian",
                 target_modules=target_modules,
             )
-            pipeline.transformer = get_peft_model(
-                pipeline.transformer, lora_config,
-            )
-        logger.info(
-            "Applied LoRA (rank=%d, alpha=%d) to transformer",
-            config.lora_rank, config.lora_alpha,
-        )
+            pipeline.transformer = get_peft_model(pipeline.transformer, lora_config)
+        logger.info("Applied LoRA (rank=%d, alpha=%d)", config.lora_rank, config.lora_alpha)
     else:
         pipeline.transformer.requires_grad_(True)
         pipeline.transformer.to(device)
 
     transformer = pipeline.transformer
 
-    # Gradient checkpointing for memory efficiency
     if config.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
 
-    # 3. Get the scheduler for the evaluator
+    # 3. Scheduler
     pipeline.scheduler.set_timesteps(config.num_steps, device=device)
 
-    # 4. Build reward function
-    _register_builtins()
-    reward_cls = get_reward(config.reward_type)
-    reward_fn = reward_cls(device=str(device))
+    # 4. Build reward function — three-layer defence against reward hacking.
+    # Layer 1: OCR (primary signal, easy to game).
+    # Layer 2: aesthetic (keeps visual quality from collapsing).
+    # Layer 3: clipscore (keeps prompt semantics alive).
+    # KL penalty (beta) is applied inside GRPO, not here.
+    reward_weights: dict[str, float] = {}
+    if config.ocr_weight > 0:
+        reward_weights["ocr"] = config.ocr_weight
+    if config.aesthetic_weight > 0:
+        reward_weights["aesthetic"] = config.aesthetic_weight
+    if config.clip_weight > 0:
+        reward_weights["clipscore"] = config.clip_weight
 
-    # 5. Wire up 4-layer architecture
+    if not reward_weights:
+        raise ValueError(
+            "At least one of --ocr-weight / --aesthetic-weight / --clip-weight must be > 0"
+        )
+
+    # Per-reward init kwargs (currently only OCR takes debug_dir).
+    reward_kwargs: dict[str, dict] = {}
+    if "ocr" in reward_weights and config.ocr_debug_dir:
+        reward_kwargs["ocr"] = {"debug_dir": config.ocr_debug_dir}
+
+    reward_fn = MultiReward.from_dict(
+        reward_weights,
+        device=str(device),
+        reward_kwargs=reward_kwargs,
+    )
+    logger.info("Reward mix: %s", reward_weights)
+    if config.ocr_debug_dir:
+        logger.info("OCR debug frames → %s", config.ocr_debug_dir)
+
+    # 5. Wire up architecture
     collector_config = WanDiffusersCollectorConfig(
         num_steps=config.num_steps,
         guidance_scale=config.guidance_scale,
@@ -183,7 +213,7 @@ async def train(config: Wan1_3BConfig) -> None:
 
     evaluator = FlowMatchingEvaluator(
         pipeline.scheduler,
-        noise_level=1.0,  # WAN uses noise_level=1.0
+        noise_level=1.0,
         sde_type="sde",
     )
 
@@ -211,7 +241,6 @@ async def train(config: Wan1_3BConfig) -> None:
         cfg=config.cfg,
     )
 
-    # Use transformer itself as ref_model (LoRA disable_adapter for ref)
     ref_model = transformer if config.use_lora and config.beta > 0 else None
 
     trainer = OnlineTrainer(
@@ -224,41 +253,35 @@ async def train(config: Wan1_3BConfig) -> None:
         device=device,
     )
 
-    # 6. Load prompts
-    prompts = list(config.prompts)
-    if config.prompt_file and Path(config.prompt_file).exists():
-        prompts = Path(config.prompt_file).read_text().strip().splitlines()
-    if not prompts:
-        prompts = [
-            "a beautiful sunset over the ocean",
-            "a cat playing with a ball of yarn",
-            "a robot walking through a forest",
-            "fireworks exploding in the night sky",
-            "a golden retriever running on a beach",
-            "a waterfall in a lush green jungle",
-            "colorful hot air balloons floating in the sky",
-            "a snow-covered mountain peak at sunrise",
-        ]
+    # 6. Load prompts from manifest
+    manifest_path = Path(config.manifest)
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            f"Manifest not found: {manifest_path}. "
+            f"Default demo manifest is {DEFAULT_MANIFEST}."
+        )
+    dataset = JsonlPromptDataset(str(manifest_path))
+    examples: list[PromptExample] = dataset.examples
 
-    # 7. Training loop
     logger.info(
-        "Starting Wan 1.3B GRPO training — %d epochs, %d prompts, group_size=%d",
-        config.num_epochs, len(prompts), config.group_size,
+        "Starting OCR GRPO training — %d epochs, %d examples, group_size=%d",
+        config.num_epochs, len(examples), config.group_size,
     )
+
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # CSV log for easy plotting
+    # CSV log — include per-component reward columns (empty when unused).
     csv_path = output_dir / "metrics.csv"
+    csv_component_names = list(reward_weights.keys())
     if not csv_path.exists():
+        component_cols = ",".join(f"r_{n}" for n in csv_component_names)
         csv_path.write_text(
             "epoch,loss,policy_loss,kl_penalty,reward_mean,reward_std,"
-            "clip_fraction,approx_kl,advantage_mean\n"
+            "clip_fraction,approx_kl,advantage_mean," + component_cols + "\n"
         )
 
-    # Fixed eval prompts for consistent checkpoint comparison
-    eval_prompts = prompts[:4]
-
+    # 7. Training loop
     if config.global_std and config.prompts_per_step == 1:
         logger.warning(
             "global_std collapses to per-group std with a single prompt per step; "
@@ -266,17 +289,29 @@ async def train(config: Wan1_3BConfig) -> None:
         )
 
     for epoch in range(config.num_epochs):
-        # Cycle through prompts — batch multiple prompts per step
+        # Cycle through examples — batch multiple prompts per step
         n = config.prompts_per_step
-        start = (epoch * n) % len(prompts)
-        prompt_batch = [prompts[(start + i) % len(prompts)] for i in range(n)]
+        start = (epoch * n) % len(examples)
+        example_batch = [examples[(start + i) % len(examples)] for i in range(n)]
 
-        metrics = await trainer.step(prompt_batch)
+        # OnlineTrainer.step() accepts list[str | PromptExample]
+        metrics = await trainer.step(example_batch)
 
         if epoch % config.log_interval == 0:
+            # Pull per-component raw reward means (set on last score call).
+            component_means: dict[str, float] = {}
+            last = getattr(reward_fn, "last_components", {}) or {}
+            for name in csv_component_names:
+                values = last.get(name, [])
+                component_means[name] = (
+                    sum(values) / len(values) if values else float("nan")
+                )
+            component_str = " ".join(
+                f"{n}={component_means[n]:.3f}" for n in csv_component_names
+            )
             logger.info(
                 "Epoch %d | loss=%.4f policy_loss=%.4f kl=%.4f "
-                "reward=%.4f+/-%.4f clip_frac=%.3f",
+                "reward=%.4f+/-%.4f clip_frac=%.3f approx_kl=%.6f | %s",
                 epoch,
                 metrics.loss,
                 metrics.policy_loss,
@@ -284,14 +319,19 @@ async def train(config: Wan1_3BConfig) -> None:
                 metrics.reward_mean,
                 metrics.reward_std,
                 metrics.clip_fraction,
+                metrics.approx_kl,
+                component_str,
             )
-            # Append to CSV
             with open(csv_path, "a") as f:
+                component_vals = ",".join(
+                    f"{component_means[n]:.4f}" for n in csv_component_names
+                )
                 f.write(
                     f"{epoch},{metrics.loss:.6f},{metrics.policy_loss:.6f},"
                     f"{metrics.kl_penalty:.6f},{metrics.reward_mean:.4f},"
                     f"{metrics.reward_std:.4f},{metrics.clip_fraction:.4f},"
-                    f"{metrics.approx_kl:.6f},{metrics.advantage_mean:.4f}\n"
+                    f"{metrics.approx_kl:.6f},{metrics.advantage_mean:.4f},"
+                    + component_vals + "\n"
                 )
 
         if config.save_interval > 0 and (epoch + 1) % config.save_interval == 0:
@@ -300,44 +340,17 @@ async def train(config: Wan1_3BConfig) -> None:
             torch.save(trainer.state_dict(), ckpt_path / "trainer_state.pt")
             if hasattr(transformer, "save_pretrained"):
                 transformer.save_pretrained(ckpt_path / "lora_weights")
+            logger.info("Saved checkpoint to %s", ckpt_path)
 
-            # Generate eval samples for visual comparison
-            logger.info("Generating eval samples at epoch %d...", epoch + 1)
-            transformer.eval()
-            eval_dir = ckpt_path / "eval_samples"
-            eval_dir.mkdir(exist_ok=True)
-            eval_scores = []
-            for i, ep in enumerate(eval_prompts):
-                with torch.no_grad():
-                    eval_batch = await collector.collect([ep], seed=42 + i)
-                score = eval_batch.rewards[0].item()
-                eval_scores.append(score)
-                # Save video frames as a grid image
-                if eval_batch.videos is not None:
-                    vid = eval_batch.videos[0]  # [C, T, H, W]
-                    if vid.ndim == 4:
-                        mid = vid.shape[1] // 2
-                        frame = vid[:, mid, :, :]  # [C, H, W]
-                    else:
-                        frame = vid
-                    frame = (frame * 255).clamp(0, 255).to(torch.uint8)
-                    frame = frame.cpu().permute(1, 2, 0).numpy()
-                    try:
-                        from PIL import Image
-                        img = Image.fromarray(frame)
-                        img.save(eval_dir / f"prompt_{i}_score_{score:.2f}.png")
-                    except Exception:
-                        pass
-            transformer.train()
-
-            avg_eval = sum(eval_scores) / len(eval_scores) if eval_scores else 0
-            logger.info(
-                "Checkpoint %d | eval_reward=%.4f (%s) | saved to %s",
-                epoch + 1,
-                avg_eval,
-                ", ".join(f"{s:.2f}" for s in eval_scores),
-                ckpt_path,
-            )
+    # Always save a final LoRA snapshot so it can be loaded for inference,
+    # regardless of save_interval. Otherwise a full training run leaves nothing
+    # behind on disk for downstream use.
+    final_path = output_dir / "checkpoint-final"
+    final_path.mkdir(parents=True, exist_ok=True)
+    torch.save(trainer.state_dict(), final_path / "trainer_state.pt")
+    if hasattr(transformer, "save_pretrained"):
+        transformer.save_pretrained(final_path / "lora_weights")
+    logger.info("Saved final checkpoint to %s", final_path)
 
     logger.info("Training complete.")
 
@@ -349,18 +362,25 @@ def main() -> None:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
-    parser = argparse.ArgumentParser(
-        description="Wan 1.3B GRPO Training (single GPU)",
+    parser = argparse.ArgumentParser(description="Wan 1.3B OCR GRPO Training")
+    parser.add_argument("--model-path", type=str, default="Wan-AI/Wan2.1-T2V-1.3B-Diffusers")
+    parser.add_argument("--lora-path", type=str, default="")
+    parser.add_argument("--manifest", type=str, default=str(DEFAULT_MANIFEST))
+    parser.add_argument("--eval-manifest", type=str, default="")
+    parser.add_argument("--output-dir", type=str, default="outputs/wan_1_3b_ocr_grpo")
+    parser.add_argument("--ocr-debug-dir", type=str, default="")
+    parser.add_argument(
+        "--ocr-weight", type=float, default=1.0,
+        help="OCR reward weight (primary signal). Set 0 to disable."
     )
     parser.add_argument(
-        "--model-path", type=str,
-        default="Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
-        help="HuggingFace model path or local directory",
+        "--aesthetic-weight", type=float, default=0.0,
+        help="Aesthetic reward weight. Raw score ~[3,9], so small values (0.05-0.3) matter."
     )
-    parser.add_argument("--lora-path", type=str, default="")
-    parser.add_argument("--prompt-file", type=str, default="")
-    parser.add_argument("--output-dir", type=str, default="outputs/wan_1_3b_grpo")
-    parser.add_argument("--reward-type", type=str, default="aesthetic")
+    parser.add_argument(
+        "--clip-weight", type=float, default=0.0,
+        help="CLIP text-image similarity weight for prompt-fidelity regularisation."
+    )
     parser.add_argument("--num-epochs", type=int, default=10000)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--beta", type=float, default=0.004)
@@ -375,19 +395,21 @@ def main() -> None:
     parser.add_argument("--clip-range", type=float, default=1e-4)
     parser.add_argument("--no-lora", action="store_true")
     parser.add_argument("--no-ema", action="store_true")
-    parser.add_argument("--no-gradient-checkpointing", action="store_true")
-    parser.add_argument("--save-interval", type=int, default=100)
+    parser.add_argument("--save-interval", type=int, default=50)
     parser.add_argument("--log-interval", type=int, default=1)
-    parser.add_argument("--prompts-per-step", type=int, default=4)
+    parser.add_argument("--prompts-per-step", type=int, default=1)
 
     args = parser.parse_args()
 
-    config = Wan1_3BConfig(
+    config = WanOCRConfig(
         model_path=args.model_path,
         lora_path=args.lora_path,
-        prompt_file=args.prompt_file,
+        manifest=args.manifest,
         output_dir=args.output_dir,
-        reward_type=args.reward_type,
+        ocr_debug_dir=args.ocr_debug_dir,
+        ocr_weight=args.ocr_weight,
+        aesthetic_weight=args.aesthetic_weight,
+        clip_weight=args.clip_weight,
         num_epochs=args.num_epochs,
         lr=args.lr,
         beta=args.beta,
@@ -402,7 +424,6 @@ def main() -> None:
         clip_range=args.clip_range,
         use_lora=not args.no_lora,
         ema=not args.no_ema,
-        gradient_checkpointing=not args.no_gradient_checkpointing,
         save_interval=args.save_interval,
         log_interval=args.log_interval,
         prompts_per_step=args.prompts_per_step,

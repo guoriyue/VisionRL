@@ -84,23 +84,25 @@ class AestheticReward(RewardFunction):
 
         output = rollout.trajectory.output
         if isinstance(output, torch.Tensor):
-            images = (output * 255).round().clamp(0, 255).to(torch.uint8)
-            if images.ndim == 4 and images.shape[0] > 4:
-                # [B, C, H, W] image batch
-                images = images.cpu().numpy().transpose(0, 2, 3, 1)
-            elif images.ndim == 4 and images.shape[0] <= 4:
-                # [C, T, H, W] video — take middle frame
-                mid = images.shape[1] // 2
-                frame = images[:, mid, :, :]  # [C, H, W]
-                images = [frame.cpu().numpy().transpose(1, 2, 0)]
-            elif images.ndim == 3:
+            images_raw = (output * 255).round().clamp(0, 255).to(torch.uint8)
+            if images_raw.ndim == 4 and images_raw.shape[0] > 4:
+                # [B, C, H, W] image batch — sample 3 evenly spaced
+                b = images_raw.shape[0]
+                indices = [b // 4, b // 2, 3 * b // 4]
+                images = [images_raw[i].cpu().numpy().transpose(1, 2, 0) for i in indices]
+            elif images_raw.ndim == 4 and images_raw.shape[0] <= 4:
+                # [C, T, H, W] video — sample 3 frames at 25%/50%/75%
+                t = images_raw.shape[1]
+                indices = [t // 4, t // 2, 3 * t // 4]
+                images = [images_raw[:, i, :, :].cpu().numpy().transpose(1, 2, 0) for i in indices]
+            elif images_raw.ndim == 3:
                 # [C, H, W] single image
-                images = [images.cpu().numpy().transpose(1, 2, 0)]
+                images = [images_raw.cpu().numpy().transpose(1, 2, 0)]
             else:
-                # [T, C, H, W] or other — take middle frame
-                mid = images.shape[0] // 2
-                images = images[mid].cpu().numpy().transpose(1, 2, 0)
-                images = [images]
+                # [T, C, H, W] or other — sample 3 frames at 25%/50%/75%
+                t = images_raw.shape[0]
+                indices = [t // 4, t // 2, 3 * t // 4]
+                images = [images_raw[i].cpu().numpy().transpose(1, 2, 0) for i in indices]
         else:
             images = [output]
 

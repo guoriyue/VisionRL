@@ -245,3 +245,80 @@ class TestCosmosDiffusersCollectorForwardStep:
         assert "noise_pred_cond" in result
         assert "noise_pred_uncond" in result
         assert result["noise_pred"].shape[0] == B
+
+
+# ---------------------------------------------------------------------------
+# CosmosDiffusersCollector — seed generator selection
+# ---------------------------------------------------------------------------
+
+class TestCosmosDiffusersCollectorSeedGenerator:
+    def test_seed_kwarg_creates_deterministic_generator(self) -> None:
+        """When seed is provided, collect() should create a deterministic SDE generator."""
+        import torch
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from vrl.rollouts.collectors.cosmos import (
+            CosmosDiffusersCollector,
+            CosmosDiffusersCollectorConfig,
+        )
+
+        cfg = CosmosDiffusersCollectorConfig(num_steps=2, cfg=False)
+
+        # Verify the code path: we just need to check that the collector
+        # doesn't crash when seed is provided and that the variable name
+        # change from latent_generator to sde_generator is correct.
+        model = MagicMock()
+        model.device = torch.device("cpu")
+
+        ms = MagicMock()
+        ms.latents = torch.randn(1, 16, 3, 8, 14)
+        ms.timesteps = torch.tensor([999, 500])
+        ms.prompt_embeds = torch.zeros(1, 4, 8)
+        ms.negative_prompt_embeds = torch.zeros(1, 4, 8)
+        ms.guidance_scale = 7.0
+        ms.do_cfg = False
+        ms.scheduler = MagicMock()
+
+        loop = MagicMock()
+        loop.total_steps = 2
+        loop.current_step = 0
+        loop.model_state = ms
+
+        encode_result = MagicMock()
+        encode_result.state_updates = {
+            "prompt_embeds": torch.zeros(1, 4, 8),
+            "negative_prompt_embeds": torch.zeros(1, 4, 8),
+        }
+        model.encode_text = AsyncMock(return_value=encode_result)
+        model.denoise_init = AsyncMock(return_value=loop)
+        model.predict_noise = AsyncMock(
+            return_value={"noise_pred": ms.latents * 0.1}
+        )
+        decode_result = MagicMock()
+        decode_result.state_updates = {"video": torch.zeros(1, 3, 8, 64, 64)}
+        model.decode_vae = AsyncMock(return_value=decode_result)
+
+        reward = MagicMock()
+        reward.score = AsyncMock(return_value=1.0)
+
+        collector = CosmosDiffusersCollector(model=model, reward_fn=reward, config=cfg)
+
+        def _fake_sde(*args, **kwargs):
+            sample = args[3] if len(args) > 3 else kwargs.get("sample")
+            gen = kwargs.get("generator", None)
+            result = MagicMock()
+            if gen is not None:
+                result.prev_sample = torch.randn(sample.shape, generator=gen)
+            else:
+                result.prev_sample = torch.randn_like(sample)
+            result.log_prob = torch.zeros(sample.shape[0])
+            return result
+
+        import asyncio
+        with patch(
+            "vrl.rollouts.evaluators.diffusion.flow_matching.sde_step_with_logprob",
+            side_effect=_fake_sde,
+        ):
+            # Should not crash — validates sde_generator variable name is correct
+            batch = asyncio.run(collector.collect(["test prompt"], seed=42))
+            assert batch.rewards.shape[0] == 1

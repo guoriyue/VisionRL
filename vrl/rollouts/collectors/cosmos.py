@@ -131,13 +131,16 @@ class CosmosDiffusersCollector:
         # SDE window
         sde_window = self._get_sde_window()
 
-        # Same-latent generator
+        # SDE noise generator — deterministic when seed is provided or same_latent
         device = ms.latents.device
-        if cfg.same_latent:
-            latent_generator = torch.Generator(device=device)
-            latent_generator.manual_seed(hash(prompts[0]) % (2**32))
+        if seed is not None:
+            sde_generator = torch.Generator(device=device)
+            sde_generator.manual_seed(seed)
+        elif cfg.same_latent:
+            sde_generator = torch.Generator(device=device)
+            sde_generator.manual_seed(hash(prompts[0]) % (2**32))
         else:
-            latent_generator = None
+            sde_generator = None
 
         # 3. Custom denoise loop with log-prob tracking
         all_observations = []
@@ -169,7 +172,7 @@ class CosmosDiffusersCollector:
                         noise_pred.float(),
                         t.unsqueeze(0),
                         ms.latents.float(),
-                        generator=latent_generator if in_sde_window else None,
+                        generator=sde_generator if in_sde_window else None,
                         deterministic=not in_sde_window,
                         return_dt=cfg.kl_reward > 0,
                     )

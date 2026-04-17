@@ -274,29 +274,35 @@ class OnlineTrainer(Trainer):
         ema = self._ensure_ema()
 
         # 1. Collect group_size samples per prompt
+        from vrl.trainers.data import PromptExample
+
         all_batches: list[ExperienceBatch] = []
-        for prompt_idx, prompt in enumerate(self.prompts):
+        for prompt_idx, item in enumerate(self.prompts):
+            # Support both plain strings and structured PromptExample
+            if isinstance(item, PromptExample):
+                prompt_str = item.prompt
+                collect_kwargs: dict[str, Any] = {
+                    "target_text": item.target_text,
+                    "references": item.references,
+                    "task_type": item.task_type,
+                    "request_overrides": item.request_overrides,
+                    "sample_metadata": item.metadata,
+                }
+            else:
+                prompt_str = str(item)
+                collect_kwargs = {}
+
             for _sample in range(cfg.group_size):
-                b = await self.collector.collect([prompt])
+                b = await self.collector.collect([prompt_str], **collect_kwargs)
                 # Assign group_id = prompt_idx for all samples in this batch
                 b.group_ids[:] = prompt_idx
                 all_batches.append(b)
 
         batch = stack_batches(all_batches)
 
-        # 2. Compute advantages via PerPromptStatTracker (group-relative)
-        prompts_flat = batch.prompts or [
-            self.prompts[gid] for gid in batch.group_ids.tolist()
-        ]
-        adv_np = self._stat_tracker.update(
-            prompts_flat, batch.rewards.tolist(),
-        )
-        # Each trainer step already collects the full comparison group for the
-        # current prompts. Keeping prompt history across steps turns GRPO's
-        # within-group baseline into a stale running baseline.
-        self._stat_tracker.clear()
-        advantages = torch.tensor(
-            adv_np, dtype=batch.rewards.dtype, device=batch.rewards.device,
+        # 2. Compute advantages via GRPO algorithm (group-relative, with adv_clip)
+        advantages = self.algorithm.compute_advantages_from_tensors(
+            batch.rewards, batch.group_ids,
         )
 
         # 3. Train loop

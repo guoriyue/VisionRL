@@ -81,6 +81,7 @@ class CosmosPred2Config:
     # Data
     prompt_file: str = ""
     prompts: list[str] = field(default_factory=list)
+    prompts_per_step: int = 1
 
     # Reward
     reward_type: str = "aesthetic"
@@ -165,6 +166,7 @@ async def train(config: CosmosPred2Config) -> None:
         if config.lora_path:
             pipeline.transformer = PeftModel.from_pretrained(
                 pipeline.transformer, config.lora_path,
+                is_trainable=True,
             )
             pipeline.transformer.set_adapter("default")
         else:
@@ -341,8 +343,16 @@ async def train(config: CosmosPred2Config) -> None:
 
     ref_image_flag = "1" if config.reference_image else "0"
 
+    if config.global_std and config.prompts_per_step == 1:
+        logger.warning(
+            "global_std collapses to per-group std with a single prompt per step; "
+            "consider --prompts-per-step >= 2"
+        )
+
     for epoch in range(config.num_epochs):
-        prompt_batch = [prompts[epoch % len(prompts)]]
+        n = config.prompts_per_step
+        start = (epoch * n) % len(prompts)
+        prompt_batch = [prompts[(start + i) % len(prompts)] for i in range(n)]
 
         metrics = await trainer.step(prompt_batch)
 
@@ -580,6 +590,7 @@ def main() -> None:
     parser.add_argument("--no-gradient-checkpointing", action="store_true")
     parser.add_argument("--save-interval", type=int, default=100)
     parser.add_argument("--log-interval", type=int, default=1)
+    parser.add_argument("--prompts-per-step", type=int, default=1)
     parser.add_argument("--eval-prompts", type=str, default="", help="Path to held-out eval prompts file")
     parser.add_argument("--eval-seeds", type=int, default=1, help="Number of seeds per eval prompt")
     parser.add_argument("--eval-only", action="store_true", help="Eval-only mode: compare base vs LoRA")
@@ -613,6 +624,7 @@ def main() -> None:
         gradient_checkpointing=not args.no_gradient_checkpointing,
         save_interval=args.save_interval,
         log_interval=args.log_interval,
+        prompts_per_step=args.prompts_per_step,
         eval_prompts_file=args.eval_prompts,
         eval_seeds=args.eval_seeds,
         eval_only=args.eval_only,

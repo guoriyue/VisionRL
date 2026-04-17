@@ -96,16 +96,28 @@ class WanDiffusersCollector:
         cfg = self.config
         batch_size = len(prompts)
 
-        # Build request
-        request = VideoGenerationRequest(
-            prompt=prompts[0] if len(prompts) == 1 else prompts[0],
-            num_steps=cfg.num_steps,
-            guidance_scale=cfg.guidance_scale,
-            height=cfg.height,
-            width=cfg.width,
-            frame_count=cfg.num_frames,
-            extra={"max_sequence_length": cfg.max_sequence_length},
-        )
+        # Extract structured kwargs (from PromptExample via OnlineTrainer)
+        target_text = kwargs.get("target_text", "")
+        references = kwargs.get("references", [])
+        task_type = kwargs.get("task_type", "text_to_video")
+        request_overrides = kwargs.get("request_overrides", {})
+        sample_metadata = kwargs.get("sample_metadata", {})
+        seed = kwargs.get("seed", None)
+
+        # Build request — apply overrides from PromptExample
+        req_kwargs: dict[str, Any] = {
+            "prompt": prompts[0] if len(prompts) == 1 else prompts[0],
+            "num_steps": cfg.num_steps,
+            "guidance_scale": cfg.guidance_scale,
+            "height": cfg.height,
+            "width": cfg.width,
+            "frame_count": cfg.num_frames,
+            "extra": {"max_sequence_length": cfg.max_sequence_length},
+        }
+        if seed is not None:
+            req_kwargs["seed"] = seed
+        req_kwargs.update(request_overrides)
+        request = VideoGenerationRequest(**req_kwargs)
 
         # 1. Encode text via model family
         state: dict[str, Any] = {}
@@ -119,13 +131,16 @@ class WanDiffusersCollector:
         # SDE window
         sde_window = self._get_sde_window()
 
-        # Same-latent generator
+        # SDE noise generator — deterministic when seed is provided or same_latent
         device = ms.latents.device
-        if cfg.same_latent:
-            latent_generator = torch.Generator(device=device)
-            latent_generator.manual_seed(hash(prompts[0]) % (2**32))
+        if seed is not None:
+            sde_generator = torch.Generator(device=device)
+            sde_generator.manual_seed(seed)
+        elif cfg.same_latent:
+            sde_generator = torch.Generator(device=device)
+            sde_generator.manual_seed(hash(prompts[0]) % (2**32))
         else:
-            latent_generator = None
+            sde_generator = None
 
         # 3. Custom denoise loop with log-prob tracking
         all_observations = []
@@ -158,7 +173,7 @@ class WanDiffusersCollector:
                         noise_pred.float(),
                         t.unsqueeze(0),
                         ms.latents.float(),
-                        generator=latent_generator if in_sde_window else None,
+                        generator=sde_generator if in_sde_window else None,
                         deterministic=not in_sde_window,
                         return_dt=cfg.kl_reward > 0,
                     )
@@ -195,6 +210,15 @@ class WanDiffusersCollector:
         video = decode_result.state_updates["video"]
 
         # 5. Score with reward function
+        # Build rollout metadata from structured kwargs so reward functions
+        # (e.g. OCRReward) can access target_text, references, etc.
+        rollout_metadata: dict[str, Any] = dict(sample_metadata)
+        if target_text:
+            rollout_metadata["target_text"] = target_text
+        if references:
+            rollout_metadata["references"] = references
+        rollout_metadata["task_type"] = task_type
+
         rewards_list = []
         for i in range(batch_size):
             dummy_trajectory = Trajectory(
@@ -206,6 +230,7 @@ class WanDiffusersCollector:
             dummy_rollout = Rollout(
                 request=None,
                 trajectory=dummy_trajectory,
+                metadata=rollout_metadata,
             )
             r = await self.reward_fn.score(dummy_rollout)
             rewards_list.append(r)

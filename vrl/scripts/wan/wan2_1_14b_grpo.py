@@ -69,6 +69,7 @@ class WanGRPOConfig:
     # Data
     prompt_file: str = ""
     prompts: list[str] = field(default_factory=list)
+    prompts_per_step: int = 1
 
     # Reward
     reward_type: str = "aesthetic"
@@ -210,10 +211,10 @@ async def train(config: WanGRPOConfig) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for epoch in range(config.num_epochs):
-        # Cycle through prompts
-        prompt_batch = [prompts[epoch % len(prompts)]]
+        n = config.prompts_per_step
+        start = (epoch * n) % len(prompts)
+        prompt_batch = [prompts[(start + i) % len(prompts)] for i in range(n)]
 
-        # Update the request prompt for collection
         metrics = await trainer.step(prompt_batch)
 
         if epoch % config.log_interval == 0:

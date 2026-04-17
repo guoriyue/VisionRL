@@ -108,6 +108,11 @@ class DiffusersWanT2VModel(VideoGenerationModel):
         num_channels_latents = pipe.transformer.config.in_channels
         batch_size = prompt_embeds.shape[0]
 
+        seed = request.seed if request.seed is not None else random.randint(0, sys.maxsize)
+
+        generator = torch.Generator(device=device)
+        generator.manual_seed(seed)
+
         latents = pipe.prepare_latents(
             batch_size,
             num_channels_latents,
@@ -116,11 +121,9 @@ class DiffusersWanT2VModel(VideoGenerationModel):
             request.frame_count,
             torch.float32,
             device,
-            None,  # generator
+            generator,
             None,  # latents
         )
-
-        seed = request.seed if request.seed is not None else random.randint(0, sys.maxsize)
 
         ms = DiffusersDenoiseState(
             latents=latents,
