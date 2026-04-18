@@ -101,34 +101,21 @@ class _StubProcessor:
 
 
 class _ConstReward:
-    """Reward = mean pixel value — varies with token ids via the stub VQ."""
+    """Reward scored per-Rollout — matches vrl.rewards.base.RewardFunction."""
 
-    async def score(self, *, videos: torch.Tensor, prompts: list[str]) -> torch.Tensor:
-        return videos.flatten(1).mean(dim=-1)
-
-
-class _SyncReward:
-    """Sync reward — exercises the inspect.iscoroutinefunction branch."""
-
-    def score(self, *, videos: torch.Tensor, prompts: list[str]) -> torch.Tensor:
-        return videos.flatten(1).mean(dim=-1)
+    async def score(self, rollout) -> float:
+        return float(rollout.trajectory.output.flatten().mean().item())
 
 
-class _DictReward:
-    """Async reward that returns a dict with a configurable composite key.
+class _BatchReward:
+    """Reward exposing score_batch — exercises the batched-fast-path."""
 
-    ``composite_key=None`` means *no* canonical key — only sub-components.
-    Used to validate that the collector refuses to silently pick one.
-    """
+    async def score_batch(self, rollouts) -> list[float]:
+        return [float(r.trajectory.output.flatten().mean().item())
+                for r in rollouts]
 
-    def __init__(self, composite_key: str | None) -> None:
-        self._key = composite_key
-
-    async def score(self, *, videos: torch.Tensor, prompts: list[str]) -> dict:
-        scalar = videos.flatten(1).mean(dim=-1)
-        if self._key is None:
-            return {"aesthetic": scalar, "clip": scalar * 0.5}
-        return {self._key: scalar, "aesthetic": scalar * 0.5}
+    async def score(self, rollout) -> float:
+        return float(rollout.trajectory.output.flatten().mean().item())
 
 
 @pytest.fixture
@@ -220,32 +207,17 @@ def _build_collector_with_reward(reward: object) -> JanusCollector:
 
 
 class TestRewardRouting:
-    def test_sync_reward_works(self) -> None:
-        """``inspect.iscoroutinefunction`` must dispatch sync reward fns."""
-        collector = _build_collector_with_reward(_SyncReward())
+    def test_score_batch_fast_path(self) -> None:
+        """Rewards exposing ``score_batch`` should take the batched path."""
+        collector = _build_collector_with_reward(_BatchReward())
         batch = asyncio.run(collector.collect(["x"]))
         assert batch.rewards.shape == (2,)
 
-    def test_dict_with_canonical_reward_key(self) -> None:
-        collector = _build_collector_with_reward(_DictReward("reward"))
+    def test_per_rollout_fallback(self) -> None:
+        """Rewards without ``score_batch`` fall through to per-rollout score."""
+        collector = _build_collector_with_reward(_ConstReward())
         batch = asyncio.run(collector.collect(["x"]))
         assert batch.rewards.shape == (2,)
-
-    def test_dict_with_canonical_total_key(self) -> None:
-        collector = _build_collector_with_reward(_DictReward("total"))
-        batch = asyncio.run(collector.collect(["x"]))
-        assert batch.rewards.shape == (2,)
-
-    def test_dict_with_canonical_composite_key(self) -> None:
-        collector = _build_collector_with_reward(_DictReward("composite"))
-        batch = asyncio.run(collector.collect(["x"]))
-        assert batch.rewards.shape == (2,)
-
-    def test_dict_without_canonical_key_raises(self) -> None:
-        """Red-line: refusing to silently pick a sub-component."""
-        collector = _build_collector_with_reward(_DictReward(None))
-        with pytest.raises(KeyError, match="canonical composite key"):
-            asyncio.run(collector.collect(["x"]))
 
 
 # ---------------------------------------------------------------------------

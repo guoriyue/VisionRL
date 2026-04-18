@@ -213,6 +213,34 @@ class JanusProT2I(nn.Module):
             return inner.model
         return m
 
+    def _lm_trunk(self) -> nn.Module:
+        """Return the LlamaModel trunk that emits ``last_hidden_state``.
+
+        Layering depends on whether LoRA is attached:
+          * No LoRA:  ``language_model`` is ``LlamaForCausalLM``; its
+            ``.model`` is the ``LlamaModel`` trunk.
+          * With LoRA: ``language_model`` is a PEFT ``LoraModel`` wrapping
+            ``LlamaForCausalLM``; the trunk is two hops in via
+            ``base_model.model.model``.
+
+        Calling ``LlamaForCausalLM`` directly returns a ``CausalLMOutputWithPast``
+        which has ``.logits`` over the text vocab — the *wrong* projection
+        for image-token generation. We need the raw hidden states, so we
+        unwrap all the way down to ``LlamaModel``.
+        """
+        lm = self._base().language_model
+        peft_inner = getattr(lm, "base_model", None)
+        if (
+            peft_inner is not None
+            and hasattr(peft_inner, "model")
+            and peft_inner.model is not lm
+        ):
+            # PEFT-wrapped: peft.base_model.model is LlamaForCausalLM
+            cls_lm = peft_inner.model
+        else:
+            cls_lm = lm
+        return cls_lm.model if hasattr(cls_lm, "model") else cls_lm
+
     @property
     def processor(self) -> Any:
         return self._processor
@@ -364,7 +392,7 @@ class JanusProT2I(nn.Module):
             dim=1,
         )
 
-        outputs = base.language_model.model(
+        outputs = self._lm_trunk()(
             inputs_embeds=inputs_embeds,
             attention_mask=attn,
             use_cache=False,
@@ -437,7 +465,7 @@ class JanusProT2I(nn.Module):
         cur_attn = attn
 
         for step in range(L_img):
-            outputs = base.language_model.model(
+            outputs = self._lm_trunk()(
                 inputs_embeds=cur_embeds,
                 attention_mask=cur_attn,
                 use_cache=True,
@@ -452,12 +480,19 @@ class JanusProT2I(nn.Module):
             cond_logits, uncond_logits = logits.chunk(2, dim=0)
             guided = uncond_logits + cfg * (cond_logits - uncond_logits)
 
-            # Sample under guided distribution
+            # Sample under guided distribution (this is what CFG changes).
             probs = F.softmax(guided / temp, dim=-1)
             sampled = torch.multinomial(probs, num_samples=1).squeeze(-1)  # [B]
 
-            # Log-prob of the sampled token under guided dist (= old_logprob)
-            log_probs = F.log_softmax(guided / temp, dim=-1)
+            # IMPORTANT: store log-prob under the *unguided* cond-only dist,
+            # not the guided dist. At training time, forward_image_logits
+            # runs only the conditional trunk (no CFG) — storing guided lp
+            # here would create a ~constant offset between old_lp and new_lp
+            # → ratio far from 1 at step 0, clip_fraction ~0.9, approx_kl ≫0.1.
+            # Treat CFG as a sampling-time augmentation of the underlying
+            # cond policy, and optimise that policy directly — this mirrors
+            # the flow_grpo Wan convention.
+            log_probs = F.log_softmax(cond_logits / temp, dim=-1)
             lp = log_probs.gather(-1, sampled.unsqueeze(-1)).squeeze(-1)
 
             out_tokens[:, step] = sampled

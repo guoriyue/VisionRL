@@ -289,38 +289,38 @@ class JanusCollector:
         images: torch.Tensor,    # [B, 3, H, W] in [0, 1] (or [-1, 1])
         prompts: list[str],
     ) -> torch.Tensor:
-        """Run reward model. Returns ``[B]`` float tensor on the model device."""
+        """Run reward model. Returns ``[B]`` float tensor on the model device.
+
+        Reward-fn contract (shared with ``WanDiffusersCollector``): each
+        ``RewardFunction`` exposes ``async score(rollout: Rollout) -> float``
+        and reads ``rollout.trajectory.output`` (tensor in [0, 1]) to score.
+        We wrap each sample into a minimal ``Rollout`` so aesthetic / CLIP /
+        PickScore / MultiReward work unchanged.
+
+        Some reward fns also expose ``async score_batch(rollouts)`` for
+        throughput — prefer it when available.
+        """
+        from vrl.algorithms.types import Rollout, Trajectory
+
         device = self.model.device
         if self.reward_fn is None:
             return torch.zeros(images.shape[0], device=device)
 
-        # Reward layer convention: same shape as videos in WanCollector,
-        # i.e. [B, 3, T, H, W] with T=1 for images.
-        videos = images.unsqueeze(2)
-        # Detect coroutine-ness via introspection rather than try/except —
-        # try/except TypeError would also swallow real signature bugs in
-        # the reward function and re-raise from a misleading line.
-        if inspect.iscoroutinefunction(self.reward_fn.score):
-            scores = await self.reward_fn.score(videos=videos, prompts=prompts)
-        else:
-            scores = self.reward_fn.score(videos=videos, prompts=prompts)
+        rollouts = [
+            Rollout(
+                request=None,
+                trajectory=Trajectory(
+                    prompt=prompts[i], seed=0, steps=[], output=images[i],
+                ),
+            )
+            for i in range(images.shape[0])
+        ]
 
-        if isinstance(scores, dict):
-            # Multi-reward dict — accept canonical names only. Falling back
-            # to ``next(iter(scores.values()))`` would silently optimise a
-            # single sub-component (e.g. just ``aesthetic``) when the user
-            # intended the composite, with no warning.
-            for key in ("reward", "total", "composite"):
-                if key in scores:
-                    scores = scores[key]
-                    break
-            else:
-                raise KeyError(
-                    f"reward returned a dict without a canonical composite "
-                    f"key. Got keys: {sorted(scores.keys())}. Expected one "
-                    "of {'reward', 'total', 'composite'} — refusing to "
-                    "guess which sub-component to optimise."
-                )
-        if not torch.is_tensor(scores):
-            scores = torch.tensor(scores, device=device, dtype=torch.float32)
-        return scores.to(device).float()
+        batch_fn = getattr(self.reward_fn, "score_batch", None)
+        if batch_fn is not None and inspect.iscoroutinefunction(batch_fn):
+            raw = await batch_fn(rollouts)
+        else:
+            raw = [await self.reward_fn.score(r) for r in rollouts]
+
+        return torch.tensor([float(s) for s in raw], device=device,
+                            dtype=torch.float32)
