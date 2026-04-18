@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import math
+import time
 from collections import defaultdict
 from typing import Any, Protocol, runtime_checkable
 
@@ -83,6 +84,40 @@ def _create_optimizer(
         weight_decay=config.adam_weight_decay,
         eps=config.adam_epsilon,
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase profiler
+# ---------------------------------------------------------------------------
+
+class PhaseTimer:
+    """Accumulating phase timer with optional CUDA sync.
+
+    Each ``time(name)`` call returns a context manager whose wall time is
+    added to ``self.times[name]``. When ``sync=True`` and CUDA is available,
+    ``torch.cuda.synchronize()`` is called on both ends so async GPU kernels
+    are captured.
+    """
+
+    def __init__(self, enabled: bool = False, sync: bool = True) -> None:
+        self.enabled = enabled
+        self.sync = sync and torch.cuda.is_available()
+        self.times: dict[str, float] = defaultdict(float)
+
+    @contextlib.contextmanager
+    def time(self, name: str):
+        if not self.enabled:
+            yield
+            return
+        if self.sync:
+            torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        try:
+            yield
+        finally:
+            if self.sync:
+                torch.cuda.synchronize()
+            self.times[name] += time.perf_counter() - t0
 
 
 # ---------------------------------------------------------------------------
@@ -273,37 +308,47 @@ class OnlineTrainer(Trainer):
         optimizer = self._ensure_optimizer()
         ema = self._ensure_ema()
 
+        timer = PhaseTimer(enabled=cfg.profile)
+
         # 1. Collect group_size samples per prompt
         from vrl.trainers.data import PromptExample
 
         all_batches: list[ExperienceBatch] = []
-        for prompt_idx, item in enumerate(self.prompts):
-            # Support both plain strings and structured PromptExample
-            if isinstance(item, PromptExample):
-                prompt_str = item.prompt
-                collect_kwargs: dict[str, Any] = {
-                    "target_text": item.target_text,
-                    "references": item.references,
-                    "task_type": item.task_type,
-                    "request_overrides": item.request_overrides,
-                    "sample_metadata": item.metadata,
-                }
-            else:
-                prompt_str = str(item)
-                collect_kwargs = {}
+        with timer.time("collect"):
+            for prompt_idx, item in enumerate(self.prompts):
+                # Support both plain strings and structured PromptExample
+                if isinstance(item, PromptExample):
+                    prompt_str = item.prompt
+                    collect_kwargs: dict[str, Any] = {
+                        "target_text": item.target_text,
+                        "references": item.references,
+                        "task_type": item.task_type,
+                        "request_overrides": item.request_overrides,
+                        "sample_metadata": item.metadata,
+                    }
+                else:
+                    prompt_str = str(item)
+                    collect_kwargs = {}
 
-            for _sample in range(cfg.group_size):
-                b = await self.collector.collect([prompt_str], **collect_kwargs)
-                # Assign group_id = prompt_idx for all samples in this batch
+                # Group-batched collect: one call produces cfg.group_size samples.
+                # The collector expands prompt_embeds internally and runs a single
+                # denoise loop with batch == group_size, replacing the old
+                # serial loop of group_size separate rollouts.
+                b = await self.collector.collect(
+                    [prompt_str],
+                    group_size=cfg.group_size,
+                    **collect_kwargs,
+                )
                 b.group_ids[:] = prompt_idx
                 all_batches.append(b)
 
-        batch = stack_batches(all_batches)
+            batch = stack_batches(all_batches)
 
         # 2. Compute advantages via GRPO algorithm (group-relative, with adv_clip)
-        advantages = self.algorithm.compute_advantages_from_tensors(
-            batch.rewards, batch.group_ids,
-        )
+        with timer.time("advantage"):
+            advantages = self.algorithm.compute_advantages_from_tensors(
+                batch.rewards, batch.group_ids,
+            )
 
         # 3. Train loop
         self.model.train()
@@ -344,26 +389,27 @@ class OnlineTrainer(Trainer):
 
         for _inner_epoch in range(cfg.num_inner_epochs):
             for j in train_indices:
-                with autocast_ctx:
-                    signals = self.evaluator.evaluate(
-                        self.collector,
-                        self.model,
-                        batch,
-                        j,
-                        ref_model=self.ref_model,
-                        signal_request=SignalRequest(
-                            need_ref=cfg.beta > 0,
-                            need_kl_intermediates=cfg.beta > 0,
-                        ),
-                    )
+                with timer.time("evaluate"):
+                    with autocast_ctx:
+                        signals = self.evaluator.evaluate(
+                            self.collector,
+                            self.model,
+                            batch,
+                            j,
+                            ref_model=self.ref_model,
+                            signal_request=SignalRequest(
+                                need_ref=cfg.beta > 0,
+                                need_kl_intermediates=cfg.beta > 0,
+                            ),
+                        )
 
-                    old_lp_j = old_log_probs[:, j] if old_log_probs.ndim > 1 else old_log_probs
-                    loss, metrics = self.algorithm.compute_signal_loss(
-                        signals, advantages, old_lp_j
-                    )
+                        old_lp_j = old_log_probs[:, j] if old_log_probs.ndim > 1 else old_log_probs
+                        loss, metrics = self.algorithm.compute_signal_loss(
+                            signals, advantages, old_lp_j
+                        )
 
-                # backward
-                self._backward(loss)
+                with timer.time("backward"):
+                    self._backward(loss)
 
                 agg_metrics["loss"].append(metrics.loss)
                 agg_metrics["policy_loss"].append(metrics.policy_loss)
@@ -372,7 +418,8 @@ class OnlineTrainer(Trainer):
                 agg_metrics["approx_kl"].append(metrics.approx_kl)
 
             # gradient clipping + optimizer step
-            self._clip_and_step(optimizer)
+            with timer.time("optim_step"):
+                self._clip_and_step(optimizer)
 
             # EMA update
             if ema is not None:
@@ -389,6 +436,15 @@ class OnlineTrainer(Trainer):
         reward_std = batch.rewards.std().item() if batch.rewards.numel() > 1 else 0.0
         adv_mean = advantages.mean().item()
 
+        phase_times = dict(timer.times)
+        if cfg.profile and phase_times:
+            total = sum(phase_times.values())
+            parts = " | ".join(
+                f"{k}={v:.3f}s ({100*v/total:.1f}%)" for k, v in phase_times.items()
+            )
+            logger.info("phase_times[step=%d] total=%.3fs | %s",
+                        self.state.step, total, parts)
+
         return TrainStepMetrics(
             loss=avg("loss"),
             policy_loss=avg("policy_loss"),
@@ -398,6 +454,7 @@ class OnlineTrainer(Trainer):
             advantage_mean=adv_mean,
             clip_fraction=avg("clip_fraction"),
             approx_kl=avg("approx_kl"),
+            phase_times=phase_times,
         )
 
     # ------------------------------------------------------------------

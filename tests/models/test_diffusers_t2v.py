@@ -155,8 +155,8 @@ class TestDiffusersWanT2VModelPredictNoise:
         model = DiffusersWanT2VModel(pipeline=MockPipeline())
         result = asyncio.run(model.predict_noise(ds, step_idx=0))
 
-        # With CFG: two forward calls
-        assert call_count[0] == 2
+        # Batched CFG: a single forward with batch doubled (uncond + cond)
+        assert call_count[0] == 1
         assert "noise_pred" in result
 
 

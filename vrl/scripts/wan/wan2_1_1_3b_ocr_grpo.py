@@ -44,6 +44,14 @@ class WanOCRConfig:
     lora_alpha: int = 64
     lora_path: str = ""
 
+    # torch.compile on the transformer (L3 perf)
+    torch_compile: bool = False
+    compile_mode: str = "reduce-overhead"  # "default" | "reduce-overhead" | "max-autotune"
+
+    # Profile each training phase (collect / advantage / evaluate / backward /
+    # optim_step) with CUDA sync. Adds sync overhead — use only for A/B tuning.
+    profile: bool = False
+
     # Training — matching flow_grpo general_ocr_wan2_1
     lr: float = 1e-4
     num_epochs: int = 10000
@@ -158,6 +166,20 @@ async def train(config: WanOCRConfig) -> None:
     if config.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
 
+    # torch.compile the transformer — traces and fuses kernels for the hot path.
+    # Works with LoRA (compile wraps the PeftModel); first call pays a ~1-2 min
+    # trace cost but subsequent denoise steps run significantly faster.
+    # Incompatible with gradient_checkpointing in some cases — if compile breaks,
+    # disable gradient_checkpointing first.
+    if config.torch_compile:
+        logger.info("Compiling transformer with mode=%s", config.compile_mode)
+        pipeline.transformer = torch.compile(
+            pipeline.transformer,
+            mode=config.compile_mode,
+            fullgraph=False,  # Wan DiT has conditional paths; avoid fullgraph
+        )
+        transformer = pipeline.transformer
+
     # 3. Scheduler
     pipeline.scheduler.set_timesteps(config.num_steps, device=device)
 
@@ -239,6 +261,7 @@ async def train(config: WanOCRConfig) -> None:
         ema_update_interval=config.ema_update_interval,
         timestep_fraction=config.timestep_fraction,
         cfg=config.cfg,
+        profile=config.profile,
     )
 
     ref_model = transformer if config.use_lora and config.beta > 0 else None
@@ -398,6 +421,19 @@ def main() -> None:
     parser.add_argument("--save-interval", type=int, default=50)
     parser.add_argument("--log-interval", type=int, default=1)
     parser.add_argument("--prompts-per-step", type=int, default=1)
+    parser.add_argument(
+        "--torch-compile", action="store_true",
+        help="torch.compile the transformer (L3 perf; ~1-2 min trace on first step).",
+    )
+    parser.add_argument(
+        "--compile-mode", type=str, default="reduce-overhead",
+        choices=["default", "reduce-overhead", "max-autotune"],
+        help="torch.compile mode (ignored unless --torch-compile is set).",
+    )
+    parser.add_argument(
+        "--profile", action="store_true",
+        help="Time each training phase with CUDA sync and log per-step results.",
+    )
 
     args = parser.parse_args()
 
@@ -427,6 +463,9 @@ def main() -> None:
         save_interval=args.save_interval,
         log_interval=args.log_interval,
         prompts_per_step=args.prompts_per_step,
+        torch_compile=args.torch_compile,
+        compile_mode=args.compile_mode,
+        profile=args.profile,
     )
 
     asyncio.run(train(config))

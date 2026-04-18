@@ -80,12 +80,17 @@ class WanDiffusersCollector:
         """Collect Wan Diffusers rollouts with per-step log-probabilities.
 
         Steps:
-        1. Encode text via model family
-        2. denoise_init via model family (prepares latents + scheduler)
-        3. Custom SDE loop: model.predict_noise per step + sde_step_with_logprob
-        4. Decode VAE via model family
-        5. Reward scoring
-        6. Stack into ExperienceBatch
+        1. Encode text via model family (once, even for group sampling)
+        2. Expand embeds to ``group_size`` when > 1 (group-batched sampling)
+        3. denoise_init via model family (prepares latents + scheduler)
+        4. Custom SDE loop: model.predict_noise per step + sde_step_with_logprob
+        5. Decode VAE via model family
+        6. Reward scoring
+        7. Stack into ExperienceBatch
+
+        group_size: when > 1, expands a single prompt into ``group_size``
+        parallel rollouts within one denoise loop. GRPO's per-group
+        advantage normalization uses these samples as a group.
         """
         import torch
 
@@ -94,7 +99,6 @@ class WanDiffusersCollector:
         from vrl.rollouts.evaluators.diffusion.flow_matching import sde_step_with_logprob
 
         cfg = self.config
-        batch_size = len(prompts)
 
         # Extract structured kwargs (from PromptExample via OnlineTrainer)
         target_text = kwargs.get("target_text", "")
@@ -103,10 +107,16 @@ class WanDiffusersCollector:
         request_overrides = kwargs.get("request_overrides", {})
         sample_metadata = kwargs.get("sample_metadata", {})
         seed = kwargs.get("seed", None)
+        group_size = int(kwargs.get("group_size", 1))
+
+        if group_size > 1 and len(prompts) != 1:
+            raise ValueError(
+                f"group_size={group_size} requires exactly one prompt; got {len(prompts)}"
+            )
 
         # Build request — apply overrides from PromptExample
         req_kwargs: dict[str, Any] = {
-            "prompt": prompts[0] if len(prompts) == 1 else prompts[0],
+            "prompt": prompts[0],
             "num_steps": cfg.num_steps,
             "guidance_scale": cfg.guidance_scale,
             "height": cfg.height,
@@ -119,14 +129,25 @@ class WanDiffusersCollector:
         req_kwargs.update(request_overrides)
         request = VideoGenerationRequest(**req_kwargs)
 
-        # 1. Encode text via model family
+        # 1. Encode text via model family (once per prompt)
         state: dict[str, Any] = {}
         encode_result = await self.model.encode_text(request, state)
         state.update(encode_result.state_updates)
 
-        # 2. denoise_init via model family
+        # 2. Expand embeds to group_size for parallel group sampling
+        if group_size > 1:
+            pe = state["prompt_embeds"]
+            repeat_shape = (group_size,) + (1,) * (pe.ndim - 1)
+            state["prompt_embeds"] = pe.repeat(*repeat_shape)
+            neg = state.get("negative_prompt_embeds")
+            if neg is not None:
+                state["negative_prompt_embeds"] = neg.repeat(*repeat_shape)
+
+        # 3. denoise_init via model family (batch_size derived from prompt_embeds)
         denoise_loop = await self.model.denoise_init(request, state)
         ms = denoise_loop.model_state
+        # Use actual batch size from model state (reflects group expansion)
+        batch_size = ms.latents.shape[0]
 
         # SDE window
         sde_window = self._get_sde_window()
@@ -219,10 +240,16 @@ class WanDiffusersCollector:
             rollout_metadata["references"] = references
         rollout_metadata["task_type"] = task_type
 
+        # With group sampling, prompts has length 1 but batch_size == group_size.
+        # Each sample shares the source prompt string for reward metadata.
+        effective_prompts = (
+            prompts * batch_size if len(prompts) == 1 else prompts
+        )
+
         rewards_list = []
         for i in range(batch_size):
             dummy_trajectory = Trajectory(
-                prompt=prompts[i],
+                prompt=effective_prompts[i],
                 seed=0,
                 steps=[],
                 output=video[i],
@@ -267,7 +294,7 @@ class WanDiffusersCollector:
                 "model_family": "wan-diffusers-t2v",
             },
             videos=video,
-            prompts=prompts,
+            prompts=effective_prompts,
         )
 
     # ------------------------------------------------------------------

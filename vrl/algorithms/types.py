@@ -78,3 +78,4 @@ class TrainStepMetrics:
     approx_kl: float = 0.0
     grad_norm: float = 0.0
     lr: float = 0.0
+    phase_times: dict[str, float] = field(default_factory=dict)

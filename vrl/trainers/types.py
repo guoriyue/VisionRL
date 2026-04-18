@@ -59,6 +59,11 @@ class TrainerConfig:
     # --- debug ---
     debug_first_step: bool = False
 
+    # --- profiling ---
+    # If True, time each phase (collect / advantage / evaluate / backward /
+    # optim_step) of _step_cea with CUDA sync and log per-step results.
+    profile: bool = False
+
 
 @dataclass(slots=True)
 class TrainState:

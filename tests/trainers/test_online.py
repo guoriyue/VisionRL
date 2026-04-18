@@ -341,20 +341,23 @@ class TestOnlineTrainerCeaRegressions:
                 self._cursor = 0
 
             async def collect(self, prompts, **kwargs):
-                reward = self._reward_values[self._cursor]
-                self._cursor += 1
-                observations = torch.zeros(1, 2, 1)
-                actions = torch.zeros(1, 2, 1)
+                group_size = int(kwargs.get("group_size", 1))
+                rewards = []
+                for _ in range(group_size):
+                    rewards.append(self._reward_values[self._cursor])
+                    self._cursor += 1
                 return ExperienceBatch(
-                    observations=observations,
-                    actions=actions,
-                    rewards=torch.tensor([reward], dtype=torch.float32),
-                    dones=torch.ones(1, dtype=torch.bool),
-                    group_ids=torch.zeros(1, dtype=torch.long),
+                    observations=torch.zeros(group_size, 2, 1),
+                    actions=torch.zeros(group_size, 2, 1),
+                    rewards=torch.tensor(rewards, dtype=torch.float32),
+                    dones=torch.ones(group_size, dtype=torch.bool),
+                    group_ids=torch.zeros(group_size, dtype=torch.long),
                     extras={
-                        "log_probs": torch.tensor([[0.0, 1.0]], dtype=torch.float32),
+                        "log_probs": torch.tensor(
+                            [[0.0, 1.0]] * group_size, dtype=torch.float32,
+                        ),
                     },
-                    prompts=list(prompts),
+                    prompts=list(prompts) * group_size,
                 )
 
         class _Evaluator:
@@ -455,14 +458,17 @@ class TestOnlineTrainerCeaRegressions:
         class _CapturingCollector:
             async def collect(self, prompts, **kwargs):
                 captured_kwargs.append(dict(kwargs))
+                group_size = int(kwargs.get("group_size", 1))
                 return ExperienceBatch(
-                    observations=torch.zeros(1, 2, 1),
-                    actions=torch.zeros(1, 2, 1),
-                    rewards=torch.tensor([1.0]),
-                    dones=torch.ones(1, dtype=torch.bool),
-                    group_ids=torch.zeros(1, dtype=torch.long),
-                    extras={"log_probs": torch.tensor([[0.0, 0.0]])},
-                    prompts=list(prompts),
+                    observations=torch.zeros(group_size, 2, 1),
+                    actions=torch.zeros(group_size, 2, 1),
+                    rewards=torch.ones(group_size, dtype=torch.float32),
+                    dones=torch.ones(group_size, dtype=torch.bool),
+                    group_ids=torch.zeros(group_size, dtype=torch.long),
+                    extras={
+                        "log_probs": torch.zeros(group_size, 2, dtype=torch.float32),
+                    },
+                    prompts=list(prompts) * group_size,
                 )
 
         class _Evaluator:
@@ -493,9 +499,10 @@ class TestOnlineTrainerCeaRegressions:
         )
         asyncio.run(trainer.step([example]))
 
-        # group_size=2, so collector.collect called twice
-        assert len(captured_kwargs) == 2
-        for kw in captured_kwargs:
-            assert kw["target_text"] == "HELLO"
-            assert kw["task_type"] == "text_to_video"
-            assert kw["sample_metadata"]["difficulty"] == "easy"
+        # Group-batched collect: one call per prompt, carrying group_size=2.
+        assert len(captured_kwargs) == 1
+        kw = captured_kwargs[0]
+        assert kw["group_size"] == 2
+        assert kw["target_text"] == "HELLO"
+        assert kw["task_type"] == "text_to_video"
+        assert kw["sample_metadata"]["difficulty"] == "easy"

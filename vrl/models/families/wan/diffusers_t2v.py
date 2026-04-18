@@ -169,7 +169,12 @@ class DiffusersWanT2VModel(VideoGenerationModel):
         denoise_state: Any,
         step_idx: int,
     ) -> dict[str, Any]:
-        """Wan T2V transformer forward + optional CFG."""
+        """Wan T2V transformer forward + optional CFG (batched).
+
+        When CFG is active, uncond + cond are concatenated into a single
+        forward of batch 2*B instead of two separate passes, halving
+        transformer calls per denoise step.
+        """
         import torch
 
         ms = denoise_state.model_state
@@ -180,27 +185,31 @@ class DiffusersWanT2VModel(VideoGenerationModel):
         latent_input = ms.latents.to(transformer_dtype)
         timestep_batch = t.expand(batch_size)
 
-        # Forward pass: cond
-        noise_pred_cond = model(
-            hidden_states=latent_input,
-            timestep=timestep_batch,
-            encoder_hidden_states=ms.prompt_embeds,
-            return_dict=False,
-        )[0]
-        noise_pred_cond = noise_pred_cond.to(ms.prompt_embeds.dtype)
-
-        # CFG: uncond pass
         if ms.do_cfg:
-            noise_pred_uncond = model(
-                hidden_states=latent_input,
-                timestep=timestep_batch,
-                encoder_hidden_states=ms.negative_prompt_embeds,
+            combined_latents = torch.cat([latent_input, latent_input], dim=0)
+            combined_t = torch.cat([timestep_batch, timestep_batch], dim=0)
+            combined_embeds = torch.cat(
+                [ms.negative_prompt_embeds, ms.prompt_embeds], dim=0,
+            )
+            combined_out = model(
+                hidden_states=combined_latents,
+                timestep=combined_t,
+                encoder_hidden_states=combined_embeds,
                 return_dict=False,
             )[0]
+            noise_pred_uncond, noise_pred_cond = combined_out.chunk(2, dim=0)
+            noise_pred_uncond = noise_pred_uncond.to(ms.prompt_embeds.dtype)
+            noise_pred_cond = noise_pred_cond.to(ms.prompt_embeds.dtype)
             noise_pred = noise_pred_uncond + ms.guidance_scale * (
                 noise_pred_cond - noise_pred_uncond
             )
         else:
+            noise_pred_cond = model(
+                hidden_states=latent_input,
+                timestep=timestep_batch,
+                encoder_hidden_states=ms.prompt_embeds,
+                return_dict=False,
+            )[0].to(ms.prompt_embeds.dtype)
             noise_pred_uncond = torch.zeros_like(noise_pred_cond)
             noise_pred = noise_pred_cond
 
