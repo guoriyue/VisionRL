@@ -130,7 +130,22 @@ class JanusCollector:
         else:
             images_for_reward = images
 
-        rewards = await self._score(images_for_reward, repeated_prompts)
+        # Forward PromptExample-level metadata so OCR/ref-based rewards
+        # can read target_text / references. Shared across all group samples.
+        rollout_metadata: dict[str, Any] = {}
+        target_text = kwargs.get("target_text")
+        if target_text:
+            rollout_metadata["target_text"] = target_text
+        references = kwargs.get("references")
+        if references:
+            rollout_metadata["references"] = references
+        sample_md = kwargs.get("sample_metadata")
+        if sample_md:
+            rollout_metadata.update(sample_md)
+
+        rewards = await self._score(
+            images_for_reward, repeated_prompts, rollout_metadata,
+        )
 
         # Per-token mask: every image-token position counts.
         token_mask = torch.ones_like(old_logprobs)
@@ -288,6 +303,7 @@ class JanusCollector:
         self,
         images: torch.Tensor,    # [B, 3, H, W] in [0, 1] (or [-1, 1])
         prompts: list[str],
+        rollout_metadata: dict[str, Any] | None = None,
     ) -> torch.Tensor:
         """Run reward model. Returns ``[B]`` float tensor on the model device.
 
@@ -295,10 +311,11 @@ class JanusCollector:
         ``RewardFunction`` exposes ``async score(rollout: Rollout) -> float``
         and reads ``rollout.trajectory.output`` (tensor in [0, 1]) to score.
         We wrap each sample into a minimal ``Rollout`` so aesthetic / CLIP /
-        PickScore / MultiReward work unchanged.
+        PickScore / MultiReward / OCR work unchanged.
 
-        Some reward fns also expose ``async score_batch(rollouts)`` for
-        throughput — prefer it when available.
+        ``rollout_metadata`` is shared across every rollout in this call
+        (typically ``target_text`` + ``references`` from ``PromptExample``)
+        so e.g. ``OCRReward`` can look up ``rollout.metadata["target_text"]``.
         """
         from vrl.algorithms.types import Rollout, Trajectory
 
@@ -306,12 +323,15 @@ class JanusCollector:
         if self.reward_fn is None:
             return torch.zeros(images.shape[0], device=device)
 
+        meta: dict[str, Any] = dict(rollout_metadata or {})
+
         rollouts = [
             Rollout(
                 request=None,
                 trajectory=Trajectory(
                     prompt=prompts[i], seed=0, steps=[], output=images[i],
                 ),
+                metadata=dict(meta),
             )
             for i in range(images.shape[0])
         ]
