@@ -89,6 +89,7 @@ class CosmosPred2Config:
     # Eval
     eval_prompts_file: str = ""
     eval_seeds: int = 1
+    seed: int = 0
     eval_only: bool = False
 
     # Debug
@@ -349,10 +350,11 @@ async def train(config: CosmosPred2Config) -> None:
             "consider --prompts-per-step >= 2"
         )
 
+    rng = torch.Generator().manual_seed(config.seed)
     for epoch in range(config.num_epochs):
         n = config.prompts_per_step
-        start = (epoch * n) % len(prompts)
-        prompt_batch = [prompts[(start + i) % len(prompts)] for i in range(n)]
+        idx = torch.randperm(len(prompts), generator=rng)[:n].tolist()
+        prompt_batch = [prompts[i] for i in idx]
 
         metrics = await trainer.step(prompt_batch)
 

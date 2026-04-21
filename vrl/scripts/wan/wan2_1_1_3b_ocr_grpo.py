@@ -21,7 +21,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MANIFEST = Path(__file__).parent.parent / "examples" / "ocr_prompts.jsonl"
+DEFAULT_MANIFEST = Path(__file__).resolve().parents[3] / "datasets" / "ocr" / "train.txt"
 
 
 @dataclass
@@ -75,13 +75,18 @@ class WanOCRConfig:
     sde_window_size: int = 0
     sde_window_range: tuple[int, int] = (0, 10)
     same_latent: bool = False
-    global_std: bool = True
+    global_std: bool = False  # flow_grpo general_ocr_wan2_1: False — per-prompt std preserves local signal when prompt difficulty varies
     cfg: bool = True
 
     # Data — JSONL manifest with PromptExample fields
     manifest: str = str(DEFAULT_MANIFEST)
     eval_manifest: str = ""
     prompts_per_step: int = 1
+    # Rollout batches per outer epoch (flow_grpo `num_batches_per_epoch`).
+    # Each epoch collects `num_batches_per_epoch * prompts_per_step` prompts and
+    # trains on the full stack — a larger effective batch without more optimizer
+    # steps. Orthogonal to gradient accumulation.
+    num_batches_per_epoch: int = 1
 
     # Reward mix — weights set to 0 disable the component.
     # OCR alone is prone to reward hacking (PPT-style text, static frames).
@@ -97,6 +102,7 @@ class WanOCRConfig:
     save_interval: int = 50
     output_dir: str = "outputs/wan_1_3b_ocr_grpo"
     ocr_debug_dir: str = ""  # if set, saves OCR debug frames
+    seed: int = 0
 
 
 async def train(config: WanOCRConfig) -> None:
@@ -110,7 +116,7 @@ async def train(config: WanOCRConfig) -> None:
     )
     from vrl.rollouts.evaluators.diffusion.flow_matching import FlowMatchingEvaluator
     from vrl.rewards.multi import MultiReward
-    from vrl.trainers.data import JsonlPromptDataset, PromptExample
+    from vrl.trainers.data import PromptExample, load_prompt_manifest
     from vrl.trainers.online import OnlineTrainer
     from vrl.trainers.types import TrainerConfig
 
@@ -262,6 +268,7 @@ async def train(config: WanOCRConfig) -> None:
         timestep_fraction=config.timestep_fraction,
         cfg=config.cfg,
         profile=config.profile,
+        debug_first_step=True,
     )
 
     ref_model = transformer if config.use_lora and config.beta > 0 else None
@@ -283,8 +290,7 @@ async def train(config: WanOCRConfig) -> None:
             f"Manifest not found: {manifest_path}. "
             f"Default demo manifest is {DEFAULT_MANIFEST}."
         )
-    dataset = JsonlPromptDataset(str(manifest_path))
-    examples: list[PromptExample] = dataset.examples
+    examples: list[PromptExample] = load_prompt_manifest(manifest_path)
 
     logger.info(
         "Starting OCR GRPO training — %d epochs, %d examples, group_size=%d",
@@ -311,11 +317,14 @@ async def train(config: WanOCRConfig) -> None:
             "consider --prompts-per-step >= 2"
         )
 
+    # i.i.d. sampling — GRPO per-prompt stat tracking assumes prompts are drawn
+    # independently; deterministic cycling biases the advantage estimate.
+    rng = torch.Generator().manual_seed(config.seed)
+
     for epoch in range(config.num_epochs):
-        # Cycle through examples — batch multiple prompts per step
-        n = config.prompts_per_step
-        start = (epoch * n) % len(examples)
-        example_batch = [examples[(start + i) % len(examples)] for i in range(n)]
+        n = config.num_batches_per_epoch * config.prompts_per_step
+        idx = torch.randperm(len(examples), generator=rng)[:n].tolist()
+        example_batch = [examples[i] for i in idx]
 
         # OnlineTrainer.step() accepts list[str | PromptExample]
         metrics = await trainer.step(example_batch)
@@ -422,6 +431,16 @@ def main() -> None:
     parser.add_argument("--log-interval", type=int, default=1)
     parser.add_argument("--prompts-per-step", type=int, default=1)
     parser.add_argument(
+        "--num-batches-per-epoch", type=int, default=1,
+        help="Rollout batches per epoch (flow_grpo sample.num_batches_per_epoch). "
+             "Effective prompts/epoch = this × --prompts-per-step.",
+    )
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--global-std", action="store_true",
+        help="Use global-batch std for advantage normalization (default: per-prompt std, flow_grpo wan2_1).",
+    )
+    parser.add_argument(
         "--torch-compile", action="store_true",
         help="torch.compile the transformer (L3 perf; ~1-2 min trace on first step).",
     )
@@ -443,6 +462,7 @@ def main() -> None:
         manifest=args.manifest,
         output_dir=args.output_dir,
         ocr_debug_dir=args.ocr_debug_dir,
+        seed=args.seed,
         ocr_weight=args.ocr_weight,
         aesthetic_weight=args.aesthetic_weight,
         clip_weight=args.clip_weight,
@@ -463,6 +483,8 @@ def main() -> None:
         save_interval=args.save_interval,
         log_interval=args.log_interval,
         prompts_per_step=args.prompts_per_step,
+        num_batches_per_epoch=args.num_batches_per_epoch,
+        global_std=args.global_std,
         torch_compile=args.torch_compile,
         compile_mode=args.compile_mode,
         profile=args.profile,

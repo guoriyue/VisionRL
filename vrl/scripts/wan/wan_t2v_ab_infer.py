@@ -6,30 +6,24 @@ runs OCR scoring to produce a side-by-side quantitative comparison.
 Usage:
     python -m vrl.scripts.wan.wan_t2v_ab_infer \
         --lora-path outputs/wan_1_3b_ocr_50ep_save/checkpoint-final/lora_weights \
-        --manifest vrl/scripts/examples/ocr_prompts.jsonl \
+        --manifest datasets/ocr/train.txt \
         --output-dir outputs/ab_infer
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 from pathlib import Path
+
+from vrl.trainers.data import load_prompt_manifest
 
 logger = logging.getLogger(__name__)
 
 
 def _load_prompts(manifest_path: Path) -> list[tuple[str, str]]:
     """Return list of (prompt, target_text) pairs."""
-    pairs: list[tuple[str, str]] = []
-    for line in manifest_path.read_text().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        row = json.loads(line)
-        pairs.append((row["prompt"], row.get("target_text", "")))
-    return pairs
+    return [(ex.prompt, ex.target_text) for ex in load_prompt_manifest(manifest_path)]
 
 
 def _generate(pipeline, prompt: str, seed: int, cfg: dict) -> "torch.Tensor":
@@ -108,8 +102,10 @@ def main() -> None:
     parser.add_argument("--model-path", type=str, default="Wan-AI/Wan2.1-T2V-1.3B-Diffusers")
     parser.add_argument("--lora-path", type=str, required=True,
                         help="Path to LoRA weights dir (from PeftModel.save_pretrained)")
-    parser.add_argument("--manifest", type=str,
-                        default="vrl/scripts/examples/ocr_prompts.jsonl")
+    parser.add_argument(
+        "--manifest", type=str,
+        default=str(Path(__file__).resolve().parents[3] / "datasets" / "ocr" / "train.txt"),
+    )
     parser.add_argument("--output-dir", type=str, default="outputs/ab_infer")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--height", type=int, default=240)

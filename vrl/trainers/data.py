@@ -28,6 +28,32 @@ class PromptExample:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+def load_prompt_manifest(path: str | Path) -> list[PromptExample]:
+    """Load prompt examples from a manifest file. Supports two formats:
+
+    * ``.jsonl``: one JSON per line with explicit fields — native
+      :class:`PromptExample` manifest.
+    * ``.txt``:   one prompt per line with target in double quotes,
+      matching flow_grpo's ``dataset/ocr/train.txt`` convention. The
+      target is extracted via ``prompt.split('"')[1]``.
+    """
+    p = Path(path)
+    if p.suffix == ".jsonl":
+        return list(JsonlPromptDataset(p).examples)
+    if p.suffix == ".txt":
+        examples: list[PromptExample] = []
+        with p.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split('"')
+                target = parts[1] if len(parts) >= 3 else ""
+                examples.append(PromptExample(prompt=line, target_text=target))
+        return examples
+    raise ValueError(f"Unsupported manifest suffix: {p.suffix}")
+
+
 class JsonlPromptDataset(Dataset):
     """Dataset that loads :class:`PromptExample` objects from a JSONL file.
 

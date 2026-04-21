@@ -38,33 +38,6 @@ class Rollout:
 
 
 @dataclass(slots=True)
-class Advantages:
-    """Computed advantages for a rollout group."""
-
-    values: Any  # list[float] or Tensor — per-rollout advantage
-    method: str = "grpo"  # e.g. "grpo", "gae"
-    stats: dict[str, float] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class RolloutGroup:
-    """Group of rollouts sharing the same prompt (for GRPO-style advantage)."""
-
-    prompt: str
-    rollouts: list[Rollout]
-    advantages: Advantages | None = None
-    baseline: float = 0.0
-
-
-@dataclass(slots=True)
-class RolloutBatch:
-    """Batch of rollout groups for a single training step."""
-
-    groups: list[RolloutGroup]
-    global_stats: dict[str, float] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
 class TrainStepMetrics:
     """Metrics produced by a single training step."""
 

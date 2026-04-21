@@ -79,6 +79,7 @@ class Wan1_3BConfig:
     log_interval: int = 1
     save_interval: int = 100
     output_dir: str = "outputs/wan_1_3b_grpo"
+    seed: int = 0
 
 
 async def train(config: Wan1_3BConfig) -> None:
@@ -265,11 +266,11 @@ async def train(config: Wan1_3BConfig) -> None:
             "consider --prompts-per-step >= 2"
         )
 
+    rng = torch.Generator().manual_seed(config.seed)
     for epoch in range(config.num_epochs):
-        # Cycle through prompts — batch multiple prompts per step
         n = config.prompts_per_step
-        start = (epoch * n) % len(prompts)
-        prompt_batch = [prompts[(start + i) % len(prompts)] for i in range(n)]
+        idx = torch.randperm(len(prompts), generator=rng)[:n].tolist()
+        prompt_batch = [prompts[i] for i in idx]
 
         metrics = await trainer.step(prompt_batch)
 

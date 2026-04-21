@@ -6,7 +6,7 @@ the target when passed through ``rapidocr_onnxruntime``.
 
 Usage:
     python -m vrl.scripts.janus.janus_pro_1b_ocr_grpo \\
-        --manifest vrl/scripts/examples/ocr_prompts.jsonl \\
+        --manifest datasets/ocr/train.txt \\
         --max-train-steps 50 \\
         --n-samples-per-prompt 4
 
@@ -35,12 +35,11 @@ import csv
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MANIFEST = (
-    Path(__file__).parent.parent / "examples" / "ocr_prompts.jsonl"
+    Path(__file__).resolve().parents[3] / "datasets" / "ocr" / "train.txt"
 )
 
 
@@ -72,12 +71,15 @@ class JanusOCRConfig:
     mixed_precision: str = "bf16"
     max_train_steps: int = 50
     batch_prompts: int = 1
+    # Rollout batches per outer epoch (flow_grpo `num_batches_per_epoch`).
+    # Effective prompts/step = num_batches_per_epoch × batch_prompts.
+    num_batches_per_epoch: int = 1
 
     # algorithm
     clip_eps: float = 0.2
     kl_coeff: float = 0.0
     adv_clip_max: float = 5.0
-    global_std: bool = True
+    global_std: bool = False  # flow_grpo OCR convention: per-prompt std — preserves local signal when prompt difficulty varies
     kl_estimator: str = "k3"
 
     # IO
@@ -85,12 +87,6 @@ class JanusOCRConfig:
     checkpointing_steps: int = 999
     log_every: int = 1
     seed: int = 0
-
-
-def _load_manifest(path: str) -> list[Any]:
-    from vrl.trainers.data import JsonlPromptDataset
-    ds = JsonlPromptDataset(path)
-    return [ds.examples[i] for i in range(len(ds))]
 
 
 async def _train(config: JanusOCRConfig) -> None:
@@ -166,7 +162,8 @@ async def _train(config: JanusOCRConfig) -> None:
         device=model.device,
     )
 
-    examples = _load_manifest(config.manifest)
+    from vrl.trainers.data import load_prompt_manifest
+    examples = load_prompt_manifest(config.manifest)
     logger.info("Loaded %d OCR prompt examples from %s", len(examples), config.manifest)
     rng = torch.Generator().manual_seed(config.seed)
 
@@ -179,7 +176,8 @@ async def _train(config: JanusOCRConfig) -> None:
         ])
 
         for step in range(1, config.max_train_steps + 1):
-            idx = torch.randperm(len(examples), generator=rng)[:config.batch_prompts].tolist()
+            n = config.num_batches_per_epoch * config.batch_prompts
+            idx = torch.randperm(len(examples), generator=rng)[:n].tolist()
             batch_examples = [examples[i] for i in idx]
 
             metrics = await trainer.step(batch_examples)
@@ -217,6 +215,11 @@ def main() -> None:
     p.add_argument("--lr", type=float, default=JanusOCRConfig.lr)
     p.add_argument("--n-samples-per-prompt", type=int, default=JanusOCRConfig.n_samples_per_prompt)
     p.add_argument("--batch-prompts", type=int, default=JanusOCRConfig.batch_prompts)
+    p.add_argument(
+        "--num-batches-per-epoch", type=int, default=JanusOCRConfig.num_batches_per_epoch,
+        help="Rollout batches per epoch (flow_grpo sample.num_batches_per_epoch). "
+             "Effective prompts/step = this × --batch-prompts.",
+    )
     p.add_argument("--cfg-weight", type=float, default=JanusOCRConfig.cfg_weight)
     p.add_argument("--kl-coeff", type=float, default=JanusOCRConfig.kl_coeff)
     p.add_argument("--clip-eps", type=float, default=JanusOCRConfig.clip_eps)
@@ -225,6 +228,10 @@ def main() -> None:
     p.add_argument("--ocr-debug-dir", default=JanusOCRConfig.ocr_debug_dir)
     p.add_argument("--checkpointing-steps", type=int, default=JanusOCRConfig.checkpointing_steps)
     p.add_argument("--seed", type=int, default=JanusOCRConfig.seed)
+    p.add_argument(
+        "--global-std", action="store_true",
+        help="Use global-batch std for advantage normalization (default: per-prompt std).",
+    )
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args()
 
@@ -241,6 +248,7 @@ def main() -> None:
         lr=args.lr,
         n_samples_per_prompt=args.n_samples_per_prompt,
         batch_prompts=args.batch_prompts,
+        num_batches_per_epoch=args.num_batches_per_epoch,
         cfg_weight=args.cfg_weight,
         kl_coeff=args.kl_coeff,
         clip_eps=args.clip_eps,
@@ -249,6 +257,7 @@ def main() -> None:
         ocr_debug_dir=args.ocr_debug_dir,
         checkpointing_steps=args.checkpointing_steps,
         seed=args.seed,
+        global_std=args.global_std,
     )
     asyncio.run(_train(cfg))
 

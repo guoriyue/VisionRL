@@ -10,29 +10,23 @@ Usage:
         --lora ep25=outputs/wan_1_3b_ocr_50ep_save/checkpoint-25/lora_weights \
         --lora ep50=outputs/wan_1_3b_ocr_50ep_save/checkpoint-50/lora_weights \
         --lora final=outputs/wan_1_3b_ocr_50ep_save/checkpoint-final/lora_weights \
-        --manifest vrl/scripts/examples/ocr_prompts.jsonl \
+        --manifest datasets/ocr/train.txt \
         --output-dir outputs/multi_ckpt_ab
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 from pathlib import Path
+
+from vrl.trainers.data import load_prompt_manifest
 
 logger = logging.getLogger(__name__)
 
 
 def _load_prompts(manifest_path: Path) -> list[tuple[str, str]]:
-    pairs: list[tuple[str, str]] = []
-    for line in manifest_path.read_text().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        row = json.loads(line)
-        pairs.append((row["prompt"], row.get("target_text", "")))
-    return pairs
+    return [(ex.prompt, ex.target_text) for ex in load_prompt_manifest(manifest_path)]
 
 
 def _generate(pipeline, prompt: str, seed: int, cfg: dict) -> "torch.Tensor":
@@ -122,8 +116,10 @@ def main() -> None:
         required=True,
         help="name=path entry for a LoRA checkpoint. Repeatable.",
     )
-    parser.add_argument("--manifest", type=str,
-                        default="vrl/scripts/examples/ocr_prompts.jsonl")
+    parser.add_argument(
+        "--manifest", type=str,
+        default=str(Path(__file__).resolve().parents[3] / "datasets" / "ocr" / "train.txt"),
+    )
     parser.add_argument("--output-dir", type=str, default="outputs/multi_ckpt_ab")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--height", type=int, default=240)

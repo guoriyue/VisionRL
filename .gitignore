@@ -58,6 +58,7 @@ htmlcov/
 .ipynb_checkpoints/
 
 outputs/
+datasets/
 
 # Claude Code
 .claude/

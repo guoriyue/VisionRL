@@ -78,6 +78,7 @@ class WanGRPOConfig:
     log_interval: int = 1
     save_interval: int = 100
     output_dir: str = "outputs/wan_grpo"
+    seed: int = 0
 
 
 async def train(config: WanGRPOConfig) -> None:
@@ -210,10 +211,11 @@ async def train(config: WanGRPOConfig) -> None:
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    rng = torch.Generator().manual_seed(config.seed)
     for epoch in range(config.num_epochs):
         n = config.prompts_per_step
-        start = (epoch * n) % len(prompts)
-        prompt_batch = [prompts[(start + i) % len(prompts)] for i in range(n)]
+        idx = torch.randperm(len(prompts), generator=rng)[:n].tolist()
+        prompt_batch = [prompts[i] for i in idx]
 
         metrics = await trainer.step(prompt_batch)
 
