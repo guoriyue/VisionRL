@@ -1,0 +1,9 @@
+# Video sampling preset: 832×480, 33 frames, 50 denoise steps, CFG 5.0.
+# Default for Wan 2.1 14B (matches its training resolution).
+sampling:
+  width: 832
+  height: 480
+  num_frames: 33
+  num_steps: 50
+  guidance_scale: 5.0
+  cfg: true

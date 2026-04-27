@@ -2,10 +2,10 @@
 defaults:
   - /base/algorithm/grpo
   - /base/actor
-  - /base/rollout/sd3_5
+  - /base/rollout/flow_matching_sde
   - /base/trainer
-  - /model/sd3_5/sd3_5_medium
-  - /model/sd3_5/generation
+  - /model/sd3_5/sd3_5
+  - /sampling/image_512
 
 reward:
   components:

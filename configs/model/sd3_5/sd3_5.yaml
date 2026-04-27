@@ -1,4 +1,5 @@
-# SD 3.5 Medium MMDiT (LoRA + torch.compile)
+# SD 3.5 Medium MMDiT — checkpoint + LoRA + compile only.
+# Sampling defaults live separately in configs/sampling/sd3_5.yaml.
 model:
   family: sd3_5
   path: stabilityai/stable-diffusion-3.5-medium

@@ -5,7 +5,7 @@ defaults:
   - /base/rollout/diffusion
   - /base/trainer
   - /model/wan/wan_2_1_1_3b
-  - /model/wan/generation
+  - /sampling/video_240p_33f
 
 reward:
   components:

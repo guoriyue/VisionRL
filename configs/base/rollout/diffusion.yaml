@@ -1,13 +1,9 @@
-# Rollout / sampling config for diffusion models
+# Rollout / sampling config for diffusion models — pure RL sampling knobs.
+# Sampling shape (resolution / steps / guidance_scale / cfg flag) lives in
+# model.sampling.* so it travels with the model checkpoint.
 rollout:
   n: 4
   rollout_batch_size: 4
-  timestep_fraction: 0.99       # subsample denoise timesteps for training
-  cfg: true
-  guidance_scale: 4.5
-
-  # Subtract kl_reward * per_step_kl from reward before advantages.
-  kl_reward: 0.0
 
   # Stochastic SDE sampling window (0 = SDE all steps; >0 = SDE only inside window).
   sde:

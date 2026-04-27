@@ -161,7 +161,7 @@ def build_configs(cfg: DictConfig) -> dict[str, Any]:
         gradient_checkpointing=actor.get("gradient_checkpointing", True),
         n=rollout.get("n", 4),
         rollout_batch_size=rollout.get("rollout_batch_size", 4),
-        timestep_fraction=rollout.get("timestep_fraction", 1.0),
+        timestep_fraction=actor.get("timestep_fraction", 1.0),
         total_epochs=trainer_section.get("total_epochs", 10000),
         save_freq=trainer_section.get("save_freq", 50),
         log_freq=trainer_section.get("log_freq", 1),

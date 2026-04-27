@@ -95,7 +95,7 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
         )
         transformer = pipeline.transformer
 
-    pipeline.scheduler.set_timesteps(cfg.generation.num_steps, device=device)
+    pipeline.scheduler.set_timesteps(cfg.sampling.num_steps, device=device)
 
     # 3. Reward
     reward_weights = {
@@ -113,14 +113,14 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
 
     # 4. Collector + algorithm
     collector_config = SD3_5CollectorConfig(
-        num_steps=cfg.generation.num_steps,
-        guidance_scale=cfg.generation.guidance_scale,
-        height=cfg.generation.height,
-        width=cfg.generation.width,
+        num_steps=cfg.sampling.num_steps,
+        guidance_scale=cfg.sampling.guidance_scale,
+        height=cfg.sampling.height,
+        width=cfg.sampling.width,
         noise_level=cfg.rollout.get("noise_level", 0.7),
-        cfg=cfg.rollout.cfg,
+        cfg=cfg.sampling.cfg,
         sample_batch_size=cfg.rollout.get("sample_batch_size", 8),
-        kl_reward=cfg.rollout.kl_reward,
+        kl_reward=cfg.algorithm.kl_reward,
         sde_window_size=cfg.rollout.sde.window_size,
         sde_window_range=tuple(cfg.rollout.sde.window_range),
     )

@@ -1,4 +1,5 @@
-# SD3.5 rollout config — extends diffusion base with SD3-specific knobs.
+# Flow-matching SDE rollout — extends diffusion base with stochastic-sampling knobs.
+# Used by SD 3.5 (flow_grpo paper Eq.9).
 defaults:
   - /base/rollout/diffusion
 

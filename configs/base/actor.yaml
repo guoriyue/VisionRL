@@ -14,6 +14,12 @@ actor:
   bf16: true
   gradient_checkpointing: true
 
+  # Train loss only on a subset of denoising timesteps (compute saving).
+  # Diffusion-RL specific — LLM RL has no analog. Belongs in actor because
+  # it controls which timesteps participate in the loss, not which steps
+  # are sampled at rollout.
+  timestep_fraction: 0.99
+
   ema:
     enable: true
     decay: 0.9

@@ -1,4 +1,4 @@
-# Wan 2.1 14B T2V transformer (LoRA + torch.compile)
+# Wan 2.1 14B T2V transformer.
 model:
   family: wan
   path: Wan-AI/Wan2.1-T2V-14B-Diffusers

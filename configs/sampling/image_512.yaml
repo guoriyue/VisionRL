@@ -1,0 +1,8 @@
+# Image sampling preset: 512×512, 10 denoise steps, CFG 4.5.
+# Default for SD 3.5 (paper Appendix B.3).
+sampling:
+  width: 512
+  height: 512
+  num_steps: 10
+  guidance_scale: 4.5
+  cfg: true

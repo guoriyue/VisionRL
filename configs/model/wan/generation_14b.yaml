@@ -1,7 +1,0 @@
-# Wan 14B generation (higher resolution, more steps)
-generation:
-  width: 832
-  height: 480
-  num_frames: 33
-  num_steps: 50
-  guidance_scale: 5.0

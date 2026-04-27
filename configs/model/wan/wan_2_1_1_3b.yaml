@@ -1,4 +1,5 @@
-# Wan 2.1 1.3B T2V transformer (LoRA + torch.compile)
+# Wan 2.1 1.3B T2V transformer — checkpoint + LoRA + compile only.
+# Sampling defaults live separately in configs/sampling/wan_2_1_1_3b.yaml.
 model:
   family: wan
   path: Wan-AI/Wan2.1-T2V-1.3B-Diffusers

@@ -95,7 +95,7 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
         transformer = pipeline.transformer
 
     # 3. Scheduler + reward
-    pipeline.scheduler.set_timesteps(cfg.generation.num_steps, device=device)
+    pipeline.scheduler.set_timesteps(cfg.sampling.num_steps, device=device)
 
     reward_weights = {
         name: float(w) for name, w in cfg.reward.components.items() if float(w) > 0
@@ -112,13 +112,13 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
 
     # 4. Collector + evaluator + algorithm
     collector_config = Wan_2_1CollectorConfig(
-        num_steps=cfg.generation.num_steps,
-        guidance_scale=cfg.generation.guidance_scale,
-        height=cfg.generation.height,
-        width=cfg.generation.width,
-        num_frames=cfg.generation.num_frames,
-        cfg=cfg.rollout.cfg,
-        kl_reward=cfg.rollout.kl_reward,
+        num_steps=cfg.sampling.num_steps,
+        guidance_scale=cfg.sampling.guidance_scale,
+        height=cfg.sampling.height,
+        width=cfg.sampling.width,
+        num_frames=cfg.sampling.num_frames,
+        cfg=cfg.sampling.cfg,
+        kl_reward=cfg.algorithm.kl_reward,
         sde_window_size=cfg.rollout.sde.window_size,
         sde_window_range=tuple(cfg.rollout.sde.window_range),
         same_latent=cfg.rollout.same_latent,

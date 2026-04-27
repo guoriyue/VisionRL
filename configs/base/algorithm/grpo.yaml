@@ -7,3 +7,7 @@ algorithm:
   adv_clip_max: 5.0
   global_std: false             # per-prompt std (false) vs global-batch std
   per_prompt_stat_tracking: true
+
+  # Subtract kl_reward * per-step KL from reward before computing advantages.
+  # Reward shaping, not loss-side KL — verl: algorithm.use_kl_in_reward.
+  kl_reward: 0.0
