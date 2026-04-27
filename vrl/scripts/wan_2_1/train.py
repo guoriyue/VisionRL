@@ -2,7 +2,7 @@
 
 Every Wan entry-point in this directory (1.3B basic / multi-reward / OCR,
 14B) is a thin wrapper that picks a YAML config and delegates to
-``train_wan_grpo`` here. Pipeline construction, LoRA, collector wiring,
+``train_wan_2_1_grpo`` here. Pipeline construction, LoRA, collector wiring,
 training loop, and checkpointing live in this module.
 """
 
@@ -16,7 +16,7 @@ from omegaconf import DictConfig, OmegaConf
 logger = logging.getLogger(__name__)
 
 
-async def train_wan_grpo(cfg: DictConfig) -> None:
+async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
     """Run Wan-family GRPO training driven by a merged YAML config."""
     import os
 
@@ -26,9 +26,9 @@ async def train_wan_grpo(cfg: DictConfig) -> None:
     from vrl.algorithms.stat_tracking import PerPromptStatTracker
     from vrl.config.loader import build_configs
     from vrl.rewards.multi import MultiReward
-    from vrl.rollouts.collectors.wan2_1 import (
-        Wan21Collector,
-        Wan21CollectorConfig,
+    from vrl.rollouts.collectors.wan_2_1 import (
+        Wan_2_1Collector,
+        Wan_2_1CollectorConfig,
     )
     from vrl.rollouts.evaluators.diffusion.flow_matching import FlowMatchingEvaluator
     from vrl.trainers.data import PromptExample, load_prompt_manifest
@@ -111,7 +111,7 @@ async def train_wan_grpo(cfg: DictConfig) -> None:
     logger.info("Reward mix: %s", reward_weights)
 
     # 4. Collector + evaluator + algorithm
-    collector_config = Wan21CollectorConfig(
+    collector_config = Wan_2_1CollectorConfig(
         num_steps=cfg.generation.num_steps,
         guidance_scale=cfg.generation.guidance_scale,
         height=cfg.generation.height,
@@ -123,10 +123,10 @@ async def train_wan_grpo(cfg: DictConfig) -> None:
         sde_window_range=tuple(cfg.rollout.sde.window_range),
         same_latent=cfg.rollout.same_latent,
     )
-    from vrl.models.families.wan2_1.diffusers_t2v import DiffusersWanT2VModel
+    from vrl.models.families.wan_2_1.diffusers_t2v import DiffusersWanT2VModel
 
     wan_model = DiffusersWanT2VModel(pipeline=pipeline, device=device)
-    collector = Wan21Collector(wan_model, reward_fn, collector_config)
+    collector = Wan_2_1Collector(wan_model, reward_fn, collector_config)
 
     evaluator = FlowMatchingEvaluator(
         pipeline.scheduler, noise_level=1.0, sde_type="sde",

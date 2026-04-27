@@ -1,10 +1,4 @@
-"""Trainer configuration and training state.
-
-Schema aligned with verl (`actor_rollout_ref.actor.*`) and OpenRLHF
-(`actor_learning_rate`, `n_samples_per_prompt`, `init_kl_coef`,
-`max_norm`). Diffusion-specific knobs (`timestep_fraction`) live alongside
-the rollout block.
-"""
+"""Trainer configuration and training state."""
 
 from __future__ import annotations
 
@@ -13,7 +7,7 @@ from dataclasses import dataclass, field
 
 @dataclass(slots=True)
 class OptimConfig:
-    """Optimizer hyper-parameters (verl: `actor.optim.*`)."""
+    """Optimizer hyper-parameters."""
 
     lr: float = 1e-4
     adam_beta1: float = 0.9
@@ -45,16 +39,7 @@ class DebugConfig:
 
 @dataclass(slots=True)
 class TrainerConfig:
-    """Configuration for the online RL training loop.
-
-    Field naming follows verl + OpenRLHF conventions:
-      - ``optim.lr``                 (was ``lr``)
-      - ``ppo_epochs``               (was ``num_inner_epochs``)
-      - ``max_norm``                 (was ``max_grad_norm``)
-      - ``bf16``                     (was ``mixed_precision == "bf16"``)
-      - ``n``                        (was ``group_size`` — verl: ``rollout.n``)
-      - ``rollout_batch_size``       (was ``prompts_per_step``)
-    """
+    """Configuration for the online RL training loop."""
 
     # --- nested groups ---
     optim: OptimConfig = field(default_factory=OptimConfig)

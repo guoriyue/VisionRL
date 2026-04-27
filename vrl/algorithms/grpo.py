@@ -12,12 +12,7 @@ from vrl.rollouts.evaluators.types import SignalBatch
 
 @dataclass(slots=True)
 class GRPOConfig:
-    """Hyper-parameters for GRPO.
-
-    Field names follow verl/OpenRLHF conventions:
-      - ``eps_clip``        (was ``clip_eps``; verl: ``algorithm.eps_clip``)
-      - ``init_kl_coef``    (was ``kl_coeff``; OpenRLHF: ``init_kl_coef``)
-    """
+    """Hyper-parameters for GRPO."""
 
     eps_clip: float = 0.2
     init_kl_coef: float = 0.0

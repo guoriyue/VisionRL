@@ -8,7 +8,7 @@ to ``num_frames`` along the temporal dim before VAE encoding. Use
 ``num_frames=1`` for the fastest sanity-check loop.
 
 Usage:
-    python -m vrl.scripts.wan2_1.wan2_1_1_3b_dpo \
+    python -m vrl.scripts.wan_2_1.wan_2_1_1_3b_dpo \
         --model-path Wan-AI/Wan2.1-T2V-1.3B-Diffusers \
         --max-train-steps 2000 \
         --beta-dpo 5000 \

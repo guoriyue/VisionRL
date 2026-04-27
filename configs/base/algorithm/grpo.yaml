@@ -1,9 +1,9 @@
-# GRPO algorithm hyper-parameters (verl: algorithm.*)
+# GRPO algorithm hyper-parameters
 algorithm:
   adv_estimator: grpo
-  eps_clip: 1.0e-4         # was clip_range; verl: algorithm.eps_clip
-  init_kl_coef: 0.0        # was beta; OpenRLHF: init_kl_coef
-  eps: 1.0e-8              # numerical stability for advantage division
+  eps_clip: 1.0e-4
+  init_kl_coef: 0.0
+  eps: 1.0e-8                   # numerical stability for advantage division
   adv_clip_max: 5.0
-  global_std: false        # per-prompt std (false) vs global-batch std
+  global_std: false             # per-prompt std (false) vs global-batch std
   per_prompt_stat_tracking: true

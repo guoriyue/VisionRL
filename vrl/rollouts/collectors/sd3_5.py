@@ -2,7 +2,7 @@
 
 Collector → FlowMatchingEvaluator → GRPO → OnlineTrainer
 
-Mirrors ``wan2_1.py`` but for image generation:
+Mirrors ``wan_2_1.py`` but for image generation:
 - 4D latents [B, C, H, W] (no temporal dim)
 - ``sample_batch_size`` controls rollout-side micro-batching: when
   ``group_size > sample_batch_size``, the group is split into
@@ -40,8 +40,8 @@ def _sync_time() -> float:
 
 
 @dataclass(slots=True)
-class SD35CollectorConfig:
-    """Configuration for SD35Collector."""
+class SD3_5CollectorConfig:
+    """Configuration for SD3_5Collector."""
 
     # Diffusion sampling — paper B.3: sampling T=10, eval T=40, resolution 512
     num_steps: int = 10
@@ -72,7 +72,7 @@ class SD35CollectorConfig:
     same_latent: bool = False
 
 
-class SD35Collector:
+class SD3_5Collector:
     """Collect rollouts from SD3.5-M with per-step log-probabilities.
 
     Group rollouts of size ``group_size`` are split into micro-rollouts
@@ -84,13 +84,13 @@ class SD35Collector:
 
     def __init__(
         self,
-        model: Any,  # DiffusersSD3T2IModel
+        model: Any,  # DiffusersSD3_5T2IModel
         reward_fn: Any,  # RewardFunction instance
-        config: SD35CollectorConfig | None = None,
+        config: SD3_5CollectorConfig | None = None,
     ) -> None:
         self.model = model
         self.reward_fn = reward_fn
-        self.config = config or SD35CollectorConfig()
+        self.config = config or SD3_5CollectorConfig()
 
     def _get_sde_window(self) -> tuple[int, int] | None:
         cfg = self.config

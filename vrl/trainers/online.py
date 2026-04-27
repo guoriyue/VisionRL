@@ -560,7 +560,7 @@ class OnlineTrainer(Trainer):
         phase_times = dict(timer.times)
         if cfg.profile:
             try:
-                from vrl.rollouts.collectors import wan2_1 as _wdc
+                from vrl.rollouts.collectors import wan_2_1 as _wdc
                 phase_times.update(_wdc._LAST_COLLECT_PHASES)
             except Exception:
                 pass

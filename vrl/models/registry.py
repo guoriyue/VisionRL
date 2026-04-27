@@ -9,8 +9,8 @@ if TYPE_CHECKING:
     from vrl.models.base import VideoGenerationModel
 
 _REGISTRY: dict[str, str] = {
-    "wan-official": "vrl.models.families.wan2_1.official:OfficialWanModel",
-    "wan-diffusers-i2v": "vrl.models.families.wan2_1.diffusers_i2v:DiffusersWanI2VModel",
+    "wan-official": "vrl.models.families.wan_2_1.official:OfficialWanModel",
+    "wan-diffusers-i2v": "vrl.models.families.wan_2_1.diffusers_i2v:DiffusersWanI2VModel",
     "cosmos": "vrl.models.families.cosmos.model:CosmosGenerationModel",
 }
 

@@ -17,10 +17,10 @@ from typing import Any
 from vrl.models.base import ModelResult, VideoGenerationModel, VideoGenerationRequest
 
 
-class DiffusersSD3T2IModel(VideoGenerationModel):
-    """Diffusers-based SD3 T2I model (targets stabilityai/stable-diffusion-3.5-medium)."""
+class DiffusersSD3_5T2IModel(VideoGenerationModel):
+    """Diffusers-based SD 3.5 T2I model (targets stabilityai/stable-diffusion-3.5-medium)."""
 
-    model_family = "sd3-diffusers-t2i"
+    model_family = "sd3_5-diffusers-t2i"
 
     def __init__(
         self,

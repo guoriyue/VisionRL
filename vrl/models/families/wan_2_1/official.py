@@ -12,8 +12,8 @@ from typing import Any
 
 from vrl.engine.model_executor.execution_state import DenoiseLoopState
 from vrl.models.base import VideoGenerationModel
-from vrl.models.families.wan2_1.shared import resolve_wan_reference_path, stable_hash
-from vrl.models.families.wan2_1.state import WanDenoiseState
+from vrl.models.families.wan_2_1.shared import resolve_wan_reference_path, stable_hash
+from vrl.models.families.wan_2_1.state import WanDenoiseState
 from vrl.models.base import ModelResult, VideoGenerationRequest
 
 

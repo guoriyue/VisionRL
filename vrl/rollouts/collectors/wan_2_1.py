@@ -33,8 +33,8 @@ def _sync_time() -> float:
 
 
 @dataclass(slots=True)
-class Wan21CollectorConfig:
-    """Configuration for Wan21Collector."""
+class Wan_2_1CollectorConfig:
+    """Configuration for Wan_2_1Collector."""
 
     num_steps: int = 20
     guidance_scale: float = 4.5
@@ -57,7 +57,7 @@ class Wan21CollectorConfig:
     same_latent: bool = False
 
 
-class Wan21Collector:
+class Wan_2_1Collector:
     """Collect rollouts from Wan 1.3B with per-step log-probabilities.
 
     Delegates model-specific forward passes to the model family's
@@ -70,11 +70,11 @@ class Wan21Collector:
         self,
         model: Any,  # DiffusersWanT2VModel
         reward_fn: Any,  # RewardFunction instance
-        config: Wan21CollectorConfig | None = None,
+        config: Wan_2_1CollectorConfig | None = None,
     ) -> None:
         self.model = model
         self.reward_fn = reward_fn
-        self.config = config or Wan21CollectorConfig()
+        self.config = config or Wan_2_1CollectorConfig()
 
     def _get_sde_window(self) -> tuple[int, int] | None:
         """Compute random SDE window for this collection."""

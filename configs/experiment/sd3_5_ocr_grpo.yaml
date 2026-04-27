@@ -2,7 +2,7 @@
 defaults:
   - /base/algorithm/grpo
   - /base/actor
-  - /base/rollout/sd3
+  - /base/rollout/sd3_5
   - /base/trainer
   - /model/sd3_5/sd3_5_medium
   - /model/sd3_5/generation

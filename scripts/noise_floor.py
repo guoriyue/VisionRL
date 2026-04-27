@@ -31,11 +31,11 @@ async def run_eval(args: argparse.Namespace) -> None:
     from diffusers import WanPipeline
     from peft import LoraConfig, PeftModel, get_peft_model
 
-    from vrl.models.families.wan2_1.diffusers_t2v import DiffusersWanT2VModel
+    from vrl.models.families.wan_2_1.diffusers_t2v import DiffusersWanT2VModel
     from vrl.rewards.multi import MultiReward
-    from vrl.rollouts.collectors.wan2_1 import (
-        Wan21Collector,
-        Wan21CollectorConfig,
+    from vrl.rollouts.collectors.wan_2_1 import (
+        Wan_2_1Collector,
+        Wan_2_1CollectorConfig,
     )
     from vrl.trainers.data import load_prompt_manifest
 
@@ -91,7 +91,7 @@ async def run_eval(args: argparse.Namespace) -> None:
 
     reward_fn.score = tracked_score  # type: ignore[method-assign]
 
-    collector_config = Wan21CollectorConfig(
+    collector_config = Wan_2_1CollectorConfig(
         num_steps=args.num_steps,
         guidance_scale=args.guidance_scale,
         height=args.height,
@@ -101,7 +101,7 @@ async def run_eval(args: argparse.Namespace) -> None:
         kl_reward=0.0,
     )
     wan_model = DiffusersWanT2VModel(pipeline=pipeline, device=device)
-    collector = Wan21Collector(wan_model, reward_fn, collector_config)
+    collector = Wan_2_1Collector(wan_model, reward_fn, collector_config)
 
     examples = load_prompt_manifest(args.manifest)
     rng = torch.Generator().manual_seed(args.prompt_seed)

@@ -59,7 +59,7 @@ class JanusProCollectorConfig:
 class JanusProCollector:
     """Collect on-policy rollouts from a ``JanusProT2I`` wrapper.
 
-    Implements the same ``Collector`` Protocol as ``Wan21Collector``
+    Implements the same ``Collector`` Protocol as ``Wan_2_1Collector``
     so ``OnlineTrainer`` can use it without code changes.
     """
 
@@ -89,7 +89,7 @@ class JanusProCollector:
 
         ``group_size`` kwarg (passed by ``OnlineTrainer._step_cea``) overrides
         ``n_samples_per_prompt`` for that call; this matches the
-        ``Wan21Collector`` contract so the two collectors are swap-ins
+        ``Wan_2_1Collector`` contract so the two collectors are swap-ins
         for each other.
         """
         cfg = self.config
@@ -150,7 +150,7 @@ class JanusProCollector:
         # Per-token mask: every image-token position counts.
         token_mask = torch.ones_like(old_logprobs)
 
-        # OnlineTrainer CEA convention (see Wan21Collector):
+        # OnlineTrainer CEA convention (see Wan_2_1Collector):
         #   observations shape[1] == num_timesteps  (AR has 1 "step")
         #   extras["log_probs"] shape == [B, num_timesteps, ...]
         # so trainer's ``old_log_probs[:, j]`` with j=0 yields ``[B, L_img]``,
@@ -307,7 +307,7 @@ class JanusProCollector:
     ) -> torch.Tensor:
         """Run reward model. Returns ``[B]`` float tensor on the model device.
 
-        Reward-fn contract (shared with ``Wan21Collector``): each
+        Reward-fn contract (shared with ``Wan_2_1Collector``): each
         ``RewardFunction`` exposes ``async score(rollout: Rollout) -> float``
         and reads ``rollout.trajectory.output`` (tensor in [0, 1]) to score.
         We wrap each sample into a minimal ``Rollout`` so aesthetic / CLIP /

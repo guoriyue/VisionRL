@@ -1,6 +1,6 @@
 """SD 3.5 GRPO training recipe.
 
-Entry-point scripts in this directory delegate to ``train_sd3_grpo`` here.
+Entry-point scripts in this directory delegate to ``train_sd3_5_grpo`` here.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ from omegaconf import DictConfig, OmegaConf
 logger = logging.getLogger(__name__)
 
 
-async def train_sd3_grpo(cfg: DictConfig) -> None:
-    """Run SD3.5 GRPO training driven by a merged YAML config."""
+async def train_sd3_5_grpo(cfg: DictConfig) -> None:
+    """Run SD 3.5 GRPO training driven by a merged YAML config."""
     import os
 
     import torch
@@ -24,8 +24,8 @@ async def train_sd3_grpo(cfg: DictConfig) -> None:
     from vrl.config.loader import build_configs
     from vrl.rewards.multi import MultiReward
     from vrl.rollouts.collectors.sd3_5 import (
-        SD35Collector,
-        SD35CollectorConfig,
+        SD3_5Collector,
+        SD3_5CollectorConfig,
     )
     from vrl.rollouts.evaluators.diffusion.flow_matching import FlowMatchingEvaluator
     from vrl.trainers.data import PromptExample, load_prompt_manifest
@@ -112,7 +112,7 @@ async def train_sd3_grpo(cfg: DictConfig) -> None:
     logger.info("Reward mix: %s", reward_weights)
 
     # 4. Collector + algorithm
-    collector_config = SD35CollectorConfig(
+    collector_config = SD3_5CollectorConfig(
         num_steps=cfg.generation.num_steps,
         guidance_scale=cfg.generation.guidance_scale,
         height=cfg.generation.height,
@@ -124,10 +124,10 @@ async def train_sd3_grpo(cfg: DictConfig) -> None:
         sde_window_size=cfg.rollout.sde.window_size,
         sde_window_range=tuple(cfg.rollout.sde.window_range),
     )
-    from vrl.models.families.sd3.diffusers_t2i import DiffusersSD3T2IModel
+    from vrl.models.families.sd3_5.diffusers_t2i import DiffusersSD3_5T2IModel
 
-    sd3_model = DiffusersSD3T2IModel(pipeline=pipeline, device=device)
-    collector = SD35Collector(sd3_model, reward_fn, collector_config)
+    sd3_5_model = DiffusersSD3_5T2IModel(pipeline=pipeline, device=device)
+    collector = SD3_5Collector(sd3_5_model, reward_fn, collector_config)
 
     evaluator = FlowMatchingEvaluator(
         pipeline.scheduler, noise_level=cfg.rollout.get("noise_level", 0.7), sde_type="sde",
