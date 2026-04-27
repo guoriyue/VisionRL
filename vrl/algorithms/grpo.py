@@ -146,7 +146,7 @@ class GRPO(Algorithm):
         self._last_policy_loss_tensor = policy_loss
 
         # Metrics
-        clip_fraction = torch.mean((torch.abs(ratio - 1.0) > cfg.clip_eps).float()).item()
+        clip_fraction = torch.mean((torch.abs(ratio - 1.0) > cfg.eps_clip).float()).item()
         approx_kl = 0.5 * torch.mean((signals.log_prob - old_log_probs) ** 2).item()
 
         metrics = TrainStepMetrics(
