@@ -15,7 +15,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from vrl.algorithms.grpo_lm import TokenGRPO, TokenGRPOConfig
+from vrl.algorithms.grpo_token import TokenGRPO, TokenGRPOConfig
 from vrl.models.families.janus_pro.model import (
     JANUS_IMAGE_VOCAB_SIZE,
     JanusProConfig,

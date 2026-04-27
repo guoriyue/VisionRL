@@ -143,7 +143,7 @@ def _build_reward(config: JanusGRPOConfig) -> Any:
 async def _train_async(config: JanusGRPOConfig) -> None:
     import torch
 
-    from vrl.algorithms.grpo_lm import TokenGRPO, TokenGRPOConfig
+    from vrl.algorithms.grpo_token import TokenGRPO, TokenGRPOConfig
     from vrl.models.families.janus_pro import JanusProConfig, JanusProT2I
     from vrl.rollouts.collectors.janus_pro import JanusProCollector, JanusProCollectorConfig
     from vrl.rollouts.evaluators.lm import TokenLogProbEvaluator

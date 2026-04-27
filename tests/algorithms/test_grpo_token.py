@@ -1,4 +1,4 @@
-"""Tests for vrl.algorithms.grpo_lm.TokenGRPO.
+"""Tests for vrl.algorithms.grpo_token.TokenGRPO.
 
 Validates:
   * Inherits group-relative advantage from GRPO unchanged.
@@ -15,7 +15,7 @@ import math
 import pytest
 import torch
 
-from vrl.algorithms.grpo_lm import TokenGRPO, TokenGRPOConfig
+from vrl.algorithms.grpo_token import TokenGRPO, TokenGRPOConfig
 from vrl.rollouts.evaluators.types import SignalBatch
 
 

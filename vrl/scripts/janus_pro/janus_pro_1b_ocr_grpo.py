@@ -92,7 +92,7 @@ class JanusOCRConfig:
 async def _train(config: JanusOCRConfig) -> None:
     import torch
 
-    from vrl.algorithms.grpo_lm import TokenGRPO, TokenGRPOConfig
+    from vrl.algorithms.grpo_token import TokenGRPO, TokenGRPOConfig
     from vrl.models.families.janus_pro import JanusProConfig, JanusProT2I
     from vrl.rewards.ocr import OCRReward
     from vrl.rollouts.collectors.janus_pro import JanusProCollector, JanusProCollectorConfig
