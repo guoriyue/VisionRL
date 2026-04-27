@@ -1,0 +1,7 @@
+# Wan generation / video shape
+generation:
+  width: 416
+  height: 240
+  num_frames: 33
+  num_steps: 20
+  guidance_scale: 4.5

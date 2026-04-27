@@ -1,4 +1,4 @@
-"""Tests for vrl.models.families.wan.diffusers_t2v (DiffusersWanT2VModel)."""
+"""Tests for vrl.models.families.wan2_1.diffusers_t2v (DiffusersWanT2VModel)."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ class TestDiffusersWanT2VModelDenoiseInit:
         from vrl.engine.model_executor.execution_state import DenoiseLoopState
         from vrl.models.base import VideoGenerationRequest
         from vrl.models.families.diffusers_state import DiffusersDenoiseState
-        from vrl.models.families.wan.diffusers_t2v import DiffusersWanT2VModel
+        from vrl.models.families.wan2_1.diffusers_t2v import DiffusersWanT2VModel
 
         B, C, D, H, W = 2, 16, 5, 8, 12
         num_steps = 3
@@ -87,7 +87,7 @@ class TestDiffusersWanT2VModelPredictNoise:
 
         from vrl.engine.model_executor.execution_state import DenoiseLoopState
         from vrl.models.families.diffusers_state import DiffusersDenoiseState
-        from vrl.models.families.wan.diffusers_t2v import DiffusersWanT2VModel
+        from vrl.models.families.wan2_1.diffusers_t2v import DiffusersWanT2VModel
 
         B, C, D, H, W = 2, 4, 3, 8, 8
         prompt_embeds = torch.randn(B, 10, 64)
@@ -126,7 +126,7 @@ class TestDiffusersWanT2VModelPredictNoise:
 
         from vrl.engine.model_executor.execution_state import DenoiseLoopState
         from vrl.models.families.diffusers_state import DiffusersDenoiseState
-        from vrl.models.families.wan.diffusers_t2v import DiffusersWanT2VModel
+        from vrl.models.families.wan2_1.diffusers_t2v import DiffusersWanT2VModel
 
         B, C, D, H, W = 1, 4, 3, 8, 8
 
@@ -168,7 +168,7 @@ class TestDiffusersWanT2VModelPredictNoiseWithModel:
 
         from vrl.engine.model_executor.execution_state import DenoiseLoopState
         from vrl.models.families.diffusers_state import DiffusersDenoiseState
-        from vrl.models.families.wan.diffusers_t2v import DiffusersWanT2VModel
+        from vrl.models.families.wan2_1.diffusers_t2v import DiffusersWanT2VModel
 
         B, C, D, H, W = 1, 4, 3, 8, 8
 

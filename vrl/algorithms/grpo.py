@@ -12,10 +12,15 @@ from vrl.rollouts.evaluators.types import SignalBatch
 
 @dataclass(slots=True)
 class GRPOConfig:
-    """Hyper-parameters for GRPO."""
+    """Hyper-parameters for GRPO.
 
-    clip_eps: float = 0.2
-    kl_coeff: float = 0.0
+    Field names follow verl/OpenRLHF conventions:
+      - ``eps_clip``        (was ``clip_eps``; verl: ``algorithm.eps_clip``)
+      - ``init_kl_coef``    (was ``kl_coeff``; OpenRLHF: ``init_kl_coef``)
+    """
+
+    eps_clip: float = 0.2
+    init_kl_coef: float = 0.0
     eps: float = 1e-8
     adv_clip_max: float = 5.0
     global_std: bool = False
@@ -33,6 +38,11 @@ class GRPO(Algorithm):
 
     def __init__(self, config: GRPOConfig | None = None) -> None:
         self.config = config or GRPOConfig()
+        # Diagnostic stash: last call's policy_loss and (init_kl_coef * kl_loss)
+        # tensors, kept alive (not detached) for grad-split diagnostics in
+        # the trainer. Set to None when not applicable.
+        self._last_policy_loss_tensor: Any = None
+        self._last_kl_term_tensor: Any = None
 
     # ------------------------------------------------------------------
     # Advantages from tensors
@@ -98,13 +108,22 @@ class GRPO(Algorithm):
         cfg = self.config
 
         ratio = torch.exp(signals.log_prob - old_log_probs)
-        clipped_ratio = torch.clamp(ratio, 1.0 - cfg.clip_eps, 1.0 + cfg.clip_eps)
+        clipped_ratio = torch.clamp(ratio, 1.0 - cfg.eps_clip, 1.0 + cfg.eps_clip)
         unclipped_loss = -advantages * ratio
         clipped_loss = -advantages * clipped_ratio
         policy_loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
 
-        # KL penalty
-        if cfg.kl_coeff > 0 and signals.ref_log_prob is not None:
+        # KL penalty. Hard-error when init_kl_coef > 0 but ref_log_prob is
+        # missing — otherwise KL silently becomes 0 and the user thinks
+        # regularization is active when it isn't.
+        if cfg.init_kl_coef > 0:
+            if signals.ref_log_prob is None:
+                raise RuntimeError(
+                    f"GRPOConfig.init_kl_coef={cfg.init_kl_coef} > 0 but "
+                    "signals.ref_log_prob is None. Check: (1) ref_model "
+                    "passed to OnlineTrainer, (2) SignalRequest(need_ref=True) "
+                    "in the evaluator call."
+                )
             if (
                 signals.dist_family == "flow_matching"
                 and signals.prev_sample_mean is not None
@@ -121,10 +140,15 @@ class GRPO(Algorithm):
             else:
                 # Log-prob KL fallback
                 kl_loss = torch.mean(signals.log_prob - signals.ref_log_prob)
-            loss = policy_loss + cfg.kl_coeff * kl_loss
+            kl_term = cfg.init_kl_coef * kl_loss
+            loss = policy_loss + kl_term
+            self._last_kl_term_tensor = kl_term
         else:
             kl_loss = torch.tensor(0.0, device=signals.log_prob.device)
             loss = policy_loss
+            self._last_kl_term_tensor = None
+
+        self._last_policy_loss_tensor = policy_loss
 
         # Metrics
         clip_fraction = torch.mean((torch.abs(ratio - 1.0) > cfg.clip_eps).float()).item()

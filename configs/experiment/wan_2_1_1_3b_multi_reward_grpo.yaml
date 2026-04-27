@@ -1,0 +1,20 @@
+# Wan 2.1 1.3B + multi-reward GRPO (aesthetic + clipscore + ocr stack)
+defaults:
+  - /base/algorithm/grpo
+  - /base/actor
+  - /base/rollout/diffusion
+  - /base/trainer
+  - /model/wan/wan_2_1_1_3b
+  - /model/wan/generation
+
+reward:
+  components:
+    aesthetic: 0.5
+    clipscore: 0.5
+    ocr: 0.0
+
+data:
+  manifest: datasets/wan/prompts.txt
+
+trainer:
+  output_dir: outputs/wan_1_3b_multi_reward_grpo

@@ -1,0 +1,20 @@
+# Actor / training-loop config (verl: actor_rollout_ref.actor.*)
+actor:
+  optim:
+    lr: 1.0e-4
+    adam_beta1: 0.9
+    adam_beta2: 0.999
+    weight_decay: 1.0e-4
+    eps: 1.0e-8
+    use_8bit_adam: false
+    allow_tf32: true
+
+  max_norm: 1.0             # was max_grad_norm
+  ppo_epochs: 1             # was num_inner_epochs; verl: actor.ppo_epochs
+  bf16: true                # was mixed_precision == "bf16"
+  gradient_checkpointing: true
+
+  ema:
+    enable: true
+    decay: 0.9
+    update_interval: 8

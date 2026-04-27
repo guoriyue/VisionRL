@@ -40,6 +40,11 @@ class DiffusersDenoiseState:
     prompt_embeds: Any = None
     negative_prompt_embeds: Any | None = None
 
+    # SD3 pooled embeddings (CLIP pooled output, fed alongside joint T5+CLIP embed).
+    # None for Wan / Cosmos which use only the sequence-level embedding.
+    pooled_prompt_embeds: Any | None = None
+    negative_pooled_prompt_embeds: Any | None = None
+
     # CFG
     guidance_scale: float = 1.0
     do_cfg: bool = False

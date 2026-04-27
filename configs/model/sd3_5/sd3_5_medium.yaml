@@ -1,0 +1,23 @@
+# SD 3.5 Medium MMDiT (LoRA + torch.compile)
+model:
+  family: sd3_5
+  path: stabilityai/stable-diffusion-3.5-medium
+
+  use_lora: true
+  lora:
+    rank: 32
+    alpha: 64
+    path: ""
+    target_modules:
+      - to_k
+      - to_q
+      - to_v
+      - to_out.0
+      - add_k_proj
+      - add_q_proj
+      - add_v_proj
+      - to_add_out
+
+  torch_compile:
+    enable: true
+    mode: default

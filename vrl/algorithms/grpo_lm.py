@@ -6,7 +6,7 @@ sequence-level advantages across the token dimension and supports a
 ``[B, L]`` mask for "score-only-image-token" semantics.
 
 This is the algorithm half of the Janus-Pro RL closed loop. Pair with
-``vrl.rollouts.collectors.janus.JanusCollector`` and
+``vrl.rollouts.collectors.janus_pro.JanusProCollector`` and
 ``vrl.rollouts.evaluators.lm.token_logprob.TokenLogProbEvaluator``.
 
 Why subclass instead of fork?
@@ -61,7 +61,7 @@ class TokenGRPO(GRPO):
                                   *sampled* tokens under the current policy.
       * ``signals.ref_log_prob``  shape ``[B, L]`` — same under the LoRA-off
                                   reference policy. Optional (only when
-                                  ``kl_coeff > 0``).
+                                  ``init_kl_coef > 0``).
       * ``old_log_probs``         shape ``[B, L]`` — log-probs captured at
                                   collection time (from
                                   ``JanusProT2I.sample_image_tokens``).
@@ -111,7 +111,7 @@ class TokenGRPO(GRPO):
 
         # PPO clipped surrogate, per token.
         ratio = torch.exp(new_lp - old_lp)
-        clipped_ratio = torch.clamp(ratio, 1.0 - cfg.clip_eps, 1.0 + cfg.clip_eps)
+        clipped_ratio = torch.clamp(ratio, 1.0 - cfg.eps_clip, 1.0 + cfg.eps_clip)
         unclipped_loss = -adv_bL * ratio
         clipped_loss = -adv_bL * clipped_ratio
         per_token_loss = torch.maximum(unclipped_loss, clipped_loss)
@@ -122,7 +122,7 @@ class TokenGRPO(GRPO):
         policy_loss = (per_token_loss * mask).sum() / denom
 
         # KL penalty
-        if cfg.kl_coeff > 0 and signals.ref_log_prob is not None:
+        if cfg.init_kl_coef > 0 and signals.ref_log_prob is not None:
             ref_lp: torch.Tensor = signals.ref_log_prob
             log_ratio = new_lp - ref_lp
             if cfg.kl_estimator == "k3":
@@ -133,7 +133,7 @@ class TokenGRPO(GRPO):
             else:
                 raise ValueError(f"unknown kl_estimator: {cfg.kl_estimator}")
             kl_loss = (kl_per_tok * mask).sum() / denom
-            loss = policy_loss + cfg.kl_coeff * kl_loss
+            loss = policy_loss + cfg.init_kl_coef * kl_loss
         else:
             kl_loss = torch.zeros((), device=new_lp.device)
             loss = policy_loss
@@ -144,7 +144,7 @@ class TokenGRPO(GRPO):
             if valid.any():
                 ratio_valid = ratio[valid]
                 clip_fraction = (
-                    (torch.abs(ratio_valid - 1.0) > cfg.clip_eps).float().mean().item()
+                    (torch.abs(ratio_valid - 1.0) > cfg.eps_clip).float().mean().item()
                 )
                 approx_kl = 0.5 * ((new_lp - old_lp) ** 2)[valid].mean().item()
             else:

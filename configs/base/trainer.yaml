@@ -1,0 +1,12 @@
+# Trainer lifecycle / IO / debug
+trainer:
+  total_epochs: 10000
+  save_freq: 50
+  log_freq: 1
+  output_dir: outputs/
+  seed: 0
+  profile: false
+
+  debug:
+    first_step: false
+    grad_split: false

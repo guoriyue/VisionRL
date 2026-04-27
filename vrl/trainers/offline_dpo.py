@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 
 from vrl.algorithms.dpo import DiffusionDPOConfig, diffusion_dpo_loss, diffusion_sft_loss
-from vrl.data.preference import PreferenceBatch
+from vrl.trainers.pickapic import PreferenceBatch
 
 logger = logging.getLogger(__name__)
 

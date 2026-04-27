@@ -1,0 +1,7 @@
+# SD3.5 rollout config — extends diffusion base with SD3-specific knobs.
+defaults:
+  - /base/rollout/diffusion
+
+rollout:
+  noise_level: 0.7              # flow-grpo Eq.9 SDE noise level
+  sample_batch_size: 8          # micro-rollout batch when n > sample_batch_size

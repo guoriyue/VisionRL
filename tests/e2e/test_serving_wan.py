@@ -11,7 +11,7 @@ from tests.e2e.helpers import (
     require_real_model_opt_in,
     resolve_hf_snapshot,
 )
-from vrl.models.families.wan.diffusers_i2v import DiffusersWanI2VModel
+from vrl.models.families.wan2_1.diffusers_i2v import DiffusersWanI2VModel
 from vrl.models.base import VideoGenerationRequest
 
 

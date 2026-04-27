@@ -1,4 +1,4 @@
-"""Tests for vrl.models.families.janus.JanusProT2I.
+"""Tests for vrl.models.families.janus_pro.JanusProT2I.
 
 Uses a stub MultiModalityCausalLM (identity trunk + tiny gen_head) so
 we can validate the shape contracts of the wrapper without downloading
@@ -13,7 +13,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from vrl.models.families.janus.model import (
+from vrl.models.families.janus_pro.model import (
     JANUS_IMAGE_PIXEL_SIZE,
     JANUS_IMAGE_TOKEN_NUM,
     JANUS_IMAGE_VOCAB_SIZE,

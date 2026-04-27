@@ -1,0 +1,17 @@
+# Rollout / sampling config for diffusion models (verl: rollout.*)
+rollout:
+  n: 4                          # was group_size; verl: rollout.n
+  rollout_batch_size: 4         # was prompts_per_step
+  timestep_fraction: 0.99       # diffusion-specific: subsample denoise timesteps
+  cfg: true                     # classifier-free guidance during training rollout
+  guidance_scale: 4.5           # CFG scale during training rollout
+
+  # KL-as-reward (subtract kl_reward * per_step_kl from reward before advantages)
+  kl_reward: 0.0
+
+  # Stochastic SDE sampling window (0 = SDE all steps; >0 = SDE only inside window)
+  sde:
+    window_size: 0
+    window_range: [0, 10]
+
+  same_latent: false            # share noise across group (debug only)

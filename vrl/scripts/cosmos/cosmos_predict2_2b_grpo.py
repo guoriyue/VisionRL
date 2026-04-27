@@ -1,7 +1,7 @@
 """Cosmos Predict2-2B GRPO training (single-GPU, diffusers).
 
 Uses diffusers.Cosmos2VideoToWorldPipeline with:
-  CosmosDiffusersCollector → FlowMatchingEvaluator → GRPO → OnlineTrainer
+  CosmosPredict2Collector → FlowMatchingEvaluator → GRPO → OnlineTrainer
 
 Usage:
     python -m vrl.scripts.cosmos.cosmos_predict2_2b_grpo \
@@ -106,14 +106,19 @@ async def train(config: CosmosPred2Config) -> None:
     import torch
 
     from vrl.algorithms.grpo import GRPO, GRPOConfig
-    from vrl.rollouts.collectors.cosmos import (
-        CosmosDiffusersCollector,
-        CosmosDiffusersCollectorConfig,
+    from vrl.rollouts.collectors.cosmos_predict2 import (
+        CosmosPredict2Collector,
+        CosmosPredict2CollectorConfig,
     )
     from vrl.rollouts.evaluators.diffusion.flow_matching import FlowMatchingEvaluator
     from vrl.rewards.multi import _register_builtins, get_reward
     from vrl.trainers.online import OnlineTrainer
-    from vrl.trainers.types import TrainerConfig
+    from vrl.trainers.types import (
+        DebugConfig,
+        EMAConfig,
+        OptimConfig,
+        TrainerConfig,
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -215,7 +220,7 @@ async def train(config: CosmosPred2Config) -> None:
         logger.info("Loaded reference image from %s", config.reference_image)
 
     # 6. Wire up 4-layer architecture
-    collector_config = CosmosDiffusersCollectorConfig(
+    collector_config = CosmosPredict2CollectorConfig(
         num_steps=config.num_steps,
         guidance_scale=config.guidance_scale,
         height=config.height,
@@ -238,7 +243,7 @@ async def train(config: CosmosPred2Config) -> None:
     cosmos_executor._pipeline = pipeline
     cosmos_executor._load_modules()
 
-    collector = CosmosDiffusersCollector(
+    collector = CosmosPredict2Collector(
         cosmos_executor, reward_fn, collector_config,
         reference_image=reference_image,
     )
@@ -250,28 +255,26 @@ async def train(config: CosmosPred2Config) -> None:
     )
 
     grpo_config = GRPOConfig(
-        clip_eps=config.clip_range,
-        kl_coeff=config.beta,
+        eps_clip=config.clip_range,
+        init_kl_coef=config.beta,
         adv_clip_max=config.adv_clip_max,
         global_std=config.global_std,
     )
     algorithm = GRPO(grpo_config)
 
     trainer_config = TrainerConfig(
-        lr=config.lr,
-        max_grad_norm=config.max_grad_norm,
-        num_inner_epochs=config.num_inner_epochs,
-        group_size=config.group_size,
-        clip_range=config.clip_range,
-        adv_clip_max=config.adv_clip_max,
-        beta=config.beta,
-        mixed_precision=config.mixed_precision,
-        ema=config.ema,
-        ema_decay=config.ema_decay,
-        ema_update_interval=config.ema_update_interval,
+        optim=OptimConfig(lr=config.lr),
+        ema=EMAConfig(
+            enable=config.ema,
+            decay=config.ema_decay,
+            update_interval=config.ema_update_interval,
+        ),
+        debug=DebugConfig(first_step=config.debug_first_step),
+        max_norm=config.max_grad_norm,
+        ppo_epochs=config.num_inner_epochs,
+        bf16=(config.mixed_precision == "bf16"),
+        n=config.group_size,
         timestep_fraction=config.timestep_fraction,
-        cfg=config.cfg,
-        debug_first_step=config.debug_first_step,
     )
 
     # Use transformer itself as ref_model (LoRA disable_adapter for ref)

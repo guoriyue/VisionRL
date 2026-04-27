@@ -1,0 +1,6 @@
+# SD 3.5 generation (paper B.3: sampling T=10, resolution 512)
+generation:
+  width: 512
+  height: 512
+  num_steps: 10
+  guidance_scale: 4.5

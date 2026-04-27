@@ -18,7 +18,7 @@ from vrl.algorithms.types import Rollout, Trajectory
 from vrl.models.base import VideoGenerationRequest
 from vrl.rollouts.evaluators.diffusion.flow_matching import SDEStepResult, sde_step_with_logprob
 from vrl.rollouts.types import ExperienceBatch
-from vrl.models.families.wan.state import WanDenoiseState
+from vrl.models.families.wan2_1.state import WanDenoiseState
 from vrl.rewards.base import RewardFunction
 
 logger = logging.getLogger(__name__)

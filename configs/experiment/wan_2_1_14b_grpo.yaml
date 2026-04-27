@@ -1,0 +1,18 @@
+# Wan 2.1 14B GRPO
+defaults:
+  - /base/algorithm/grpo
+  - /base/actor
+  - /base/rollout/diffusion
+  - /base/trainer
+  - /model/wan/wan_2_1_14b
+  - /model/wan/generation_14b
+
+reward:
+  components:
+    aesthetic: 1.0
+
+data:
+  manifest: datasets/wan/prompts.txt
+
+trainer:
+  output_dir: outputs/wan_14b_grpo

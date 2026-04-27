@@ -1,0 +1,23 @@
+# SD 3.5 Medium + OCR GRPO
+defaults:
+  - /base/algorithm/grpo
+  - /base/actor
+  - /base/rollout/sd3
+  - /base/trainer
+  - /model/sd3_5/sd3_5_medium
+  - /model/sd3_5/generation
+
+reward:
+  components:
+    ocr: 1.0
+    aesthetic: 0.0
+    clipscore: 0.0
+  ocr_debug_dir: ""
+
+data:
+  manifest: datasets/ocr/train.txt
+
+trainer:
+  output_dir: outputs/sd3_5_ocr_grpo
+  debug:
+    first_step: true

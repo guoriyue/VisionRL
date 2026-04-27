@@ -1,0 +1,24 @@
+# Wan 2.1 1.3B + OCR GRPO (flow_grpo general_ocr_wan2_1 parity)
+defaults:
+  - /base/algorithm/grpo
+  - /base/actor
+  - /base/rollout/diffusion
+  - /base/trainer
+  - /model/wan/wan_2_1_1_3b
+  - /model/wan/generation
+
+reward:
+  components:
+    ocr: 1.0
+    aesthetic: 0.0
+    clipscore: 0.0
+  ocr_debug_dir: ""
+
+data:
+  manifest: datasets/ocr/train.txt
+  eval_manifest: ""
+
+trainer:
+  output_dir: outputs/wan_1_3b_ocr_grpo
+  debug:
+    first_step: true

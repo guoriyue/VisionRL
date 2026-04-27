@@ -1,67 +1,89 @@
 """Trainer configuration and training state.
 
-Config fields ported from flow_grpo/config/base.py.
+Schema aligned with verl (`actor_rollout_ref.actor.*`) and OpenRLHF
+(`actor_learning_rate`, `n_samples_per_prompt`, `init_kl_coef`,
+`max_norm`). Diffusion-specific knobs (`timestep_fraction`) live alongside
+the rollout block.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+
+
+@dataclass(slots=True)
+class OptimConfig:
+    """Optimizer hyper-parameters (verl: `actor.optim.*`)."""
+
+    lr: float = 1e-4
+    adam_beta1: float = 0.9
+    adam_beta2: float = 0.999
+    weight_decay: float = 1e-4
+    eps: float = 1e-8
+    use_8bit_adam: bool = False
+    allow_tf32: bool = True
+
+
+@dataclass(slots=True)
+class EMAConfig:
+    """Exponential moving average of model weights."""
+
+    enable: bool = False
+    decay: float = 0.9999
+    update_interval: int = 1
+
+
+@dataclass(slots=True)
+class DebugConfig:
+    """Diagnostic toggles consumed by the trainer."""
+
+    # First-step log-prob round-trip check (collected old_lp vs fresh_lp).
+    first_step: bool = False
+    # One-shot ||grad(policy)|| vs ||grad(beta*kl)|| split.
+    grad_split: bool = False
 
 
 @dataclass(slots=True)
 class TrainerConfig:
-    """Configuration for the training loop.
+    """Configuration for the online RL training loop.
 
-    Mirrors flow_grpo config.train.* with the same defaults.
+    Field naming follows verl + OpenRLHF conventions:
+      - ``optim.lr``                 (was ``lr``)
+      - ``ppo_epochs``               (was ``num_inner_epochs``)
+      - ``max_norm``                 (was ``max_grad_norm``)
+      - ``bf16``                     (was ``mixed_precision == "bf16"``)
+      - ``n``                        (was ``group_size`` — verl: ``rollout.n``)
+      - ``rollout_batch_size``       (was ``prompts_per_step``)
     """
 
-    # --- optimizer ---
-    lr: float = 3e-4
-    adam_beta1: float = 0.9
-    adam_beta2: float = 0.999
-    adam_weight_decay: float = 1e-4
-    adam_epsilon: float = 1e-8
-    use_8bit_adam: bool = False
+    # --- nested groups ---
+    optim: OptimConfig = field(default_factory=OptimConfig)
+    ema: EMAConfig = field(default_factory=EMAConfig)
+    debug: DebugConfig = field(default_factory=DebugConfig)
 
     # --- gradient ---
-    max_grad_norm: float = 1.0
-    gradient_accumulation_steps: int = 1
+    max_norm: float = 1.0
 
-    # --- batch ---
-    batch_size: int = 1
-    group_size: int = 4
-    num_inner_epochs: int = 1
+    # --- PPO/GRPO loop ---
+    ppo_epochs: int = 1
 
-    # --- PPO / GRPO ---
-    clip_range: float = 1e-4
-    adv_clip_max: float = 5.0
-    beta: float = 0.0  # KL coefficient (flow_grpo: config.train.beta)
+    # --- precision ---
+    bf16: bool = True
+    gradient_checkpointing: bool = True
 
-    # --- timestep ---
+    # --- rollout knobs the trainer drives ---
+    n: int = 4
+    rollout_batch_size: int = 4
     timestep_fraction: float = 1.0
 
-    # --- EMA ---
-    ema: bool = False
-    ema_decay: float = 0.9999
-    ema_update_interval: int = 1
-
-    # --- mixed precision ---
-    mixed_precision: str = "fp16"  # "fp16", "bf16", "no"
-    allow_tf32: bool = True
-
-    # --- CFG during training ---
-    cfg: bool = True
-
-    # --- misc ---
-    epochs_per_step: int = 1
-
-    # --- debug ---
-    debug_first_step: bool = False
+    # --- lifecycle ---
+    total_epochs: int = 10000
+    save_freq: int = 50
+    log_freq: int = 1
+    output_dir: str = "outputs/"
+    seed: int = 0
 
     # --- profiling ---
-    # If True, time each phase (collect / advantage / evaluate / backward /
-    # optim_step) of _step_cea with CUDA sync and log per-step results.
     profile: bool = False
 
 
