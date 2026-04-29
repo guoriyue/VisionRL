@@ -213,13 +213,19 @@ class FlowMatchingEvaluator:
         ref_model: Any | None = None,
         signal_request: SignalRequest | None = None,
     ) -> SignalBatch:
-        """Run collector.forward_step() -> sde_step_with_logprob -> SignalBatch.
+        """Replay one diffusion step -> sde_step_with_logprob -> SignalBatch.
 
-        Gap 7: When ref_model is the same object as model (LoRA scenario),
-        uses disable_adapter() to get base-model predictions — matching
-        flow_grpo train_wan2_1.py:940.
+        Replay forward ownership lives on the policy (``model.replay_forward``).
+        ``collector`` is retained in the signature for trainer-interface
+        compatibility; the body never reads it.
+
+        When ref_model is the same object as model (LoRA scenario),
+        uses ``disable_adapter()`` to get base-model predictions —
+        matching flow_grpo train_wan2_1.py:940.
         """
         import torch
+
+        del collector  # replay ownership now on the policy
 
         if signal_request is None:
             signal_request = SignalRequest()
@@ -230,8 +236,8 @@ class FlowMatchingEvaluator:
         observations = batch.observations[:, timestep_idx]  # x_t
         actions = batch.actions[:, timestep_idx]             # x_{t-1}
 
-        # Forward pass through current model
-        fwd = collector.forward_step(model, batch, timestep_idx)
+        # Forward pass through current model — policy owns the replay math.
+        fwd = model.replay_forward(batch, timestep_idx, model=model)
         noise_pred = fwd["noise_pred"]
 
         # SDE step with log-prob
@@ -264,7 +270,9 @@ class FlowMatchingEvaluator:
                 ctx = model.disable_adapter() if use_adapter_disable else contextlib.nullcontext()
 
                 with ctx:
-                    ref_fwd = collector.forward_step(ref_model, batch, timestep_idx)
+                    ref_fwd = ref_model.replay_forward(
+                        batch, timestep_idx, model=ref_model,
+                    )
                     ref_noise_pred = ref_fwd["noise_pred"]
 
                     ref_result = sde_step_with_logprob(

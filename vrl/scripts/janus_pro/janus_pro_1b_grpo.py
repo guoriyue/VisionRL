@@ -3,7 +3,7 @@
 Single-GPU H100 reference recipe. Wraps the four building blocks into
 one CLI entry point:
 
-    JanusProT2I  --(rollout)-->  JanusProCollector
+    JanusProPolicy  --(rollout)-->  JanusProCollector
                                        │
                                        ▼
                           TokenLogProbEvaluator
@@ -144,7 +144,7 @@ async def _train_async(config: JanusGRPOConfig) -> None:
     import torch
 
     from vrl.algorithms.grpo_token import TokenGRPO, TokenGRPOConfig
-    from vrl.models.families.janus_pro import JanusProConfig, JanusProT2I
+    from vrl.models.families.janus_pro import JanusProConfig, JanusProPolicy
     from vrl.rollouts.collectors.janus_pro import JanusProCollector, JanusProCollectorConfig
     from vrl.rollouts.evaluators.lm import TokenLogProbEvaluator
     from vrl.trainers.online import OnlineTrainer
@@ -156,7 +156,7 @@ async def _train_async(config: JanusGRPOConfig) -> None:
 
     # 1. Model -----------------------------------------------------------
     logger.info("Loading Janus-Pro from %s ...", config.model_path)
-    model = JanusProT2I(JanusProConfig(
+    model = JanusProPolicy(JanusProConfig(
         model_path=config.model_path,
         dtype=config.dtype,
         use_lora=config.use_lora,

@@ -4,20 +4,20 @@ This file isolates every Janus-specific detail (image-token vocab range,
 ``gen_head`` projection, CFG sampling, VQ decode) behind a small surface
 that the generic GRPO trainer can call:
 
-  * ``JanusProT2I.forward_image_logits(...)``
+  * ``JanusProPolicy.forward_image_logits(...)``
         Train-time forward — returns logits over the *image* vocab for
         each image-token position. Used by the evaluator to recompute
         new log-probs under the current policy.
 
-  * ``JanusProT2I.sample_image_tokens(...)``
+  * ``JanusProPolicy.sample_image_tokens(...)``
         Inference-time AR sampler with classifier-free guidance.
         Returns ``(image_token_ids, sampling_logprobs)`` — these
         log-probs are the ``old_logprob`` of GRPO.
 
-  * ``JanusProT2I.decode_image_tokens(...)``
+  * ``JanusProPolicy.decode_image_tokens(...)``
         Decode 24×24 image tokens → pixels via the frozen VQ model.
 
-  * ``JanusProT2I.disable_adapter()``
+  * ``JanusProPolicy.disable_adapter()``
         Context manager that turns LoRA off so the same module can serve
         as the reference policy (DPO-style ``disable_adapter`` trick).
 
@@ -49,6 +49,8 @@ from typing import TYPE_CHECKING, Any, Iterator
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from vrl.models.ar import AutoregressivePolicy
 
 if TYPE_CHECKING:  # pragma: no cover
     from PIL import Image
@@ -127,7 +129,7 @@ def image_token_logits_from_hidden(
       ``[B, L_img, JANUS_IMAGE_VOCAB_SIZE]``.
     """
     # ``gen_head`` lives on the underlying mmgpt; PEFT wrapping preserves it.
-    # See JanusProT2I._base for why we can't use hasattr(base_model) as the key.
+    # See JanusProPolicy._base for why we can't use hasattr(base_model) as the key.
     inner = getattr(mmgpt, "base_model", None)
     if inner is not None and hasattr(inner, "model") and inner.model is not mmgpt:
         base = inner.model
@@ -141,7 +143,7 @@ def image_token_logits_from_hidden(
 # ---------------------------------------------------------------------------
 
 
-class JanusProT2I(nn.Module):
+class JanusProPolicy(nn.Module, AutoregressivePolicy):
     """Train-and-sample wrapper for Janus-Pro text-to-image generation.
 
     Keeps the LoRA-wrapped language model + frozen vq / vision / aligner
@@ -329,7 +331,7 @@ class JanusProT2I(nn.Module):
         """
         if not self.has_lora_adapter:
             raise RuntimeError(
-                "JanusProT2I.disable_adapter() called but no PEFT adapter "
+                "JanusProPolicy.disable_adapter() called but no PEFT adapter "
                 "is attached (use_lora=False or LoRA wrap was skipped). "
                 "A no-op yield would silently make ref_pred == policy_pred "
                 "and KL ≡ 0. Either construct with use_lora=True, or pass "
@@ -404,6 +406,47 @@ class JanusProT2I(nn.Module):
         # are L_text - 1, L_text, ..., L_text + L_img - 2.
         gen_hidden = hidden[:, L_text - 1 : L_text - 1 + L_img, :]
         return image_token_logits_from_hidden(self.mmgpt, gen_hidden)
+
+    # ------------------------------------------------------------------
+    # Replay forward — recompute logits at training time
+    # ------------------------------------------------------------------
+
+    def replay_forward(
+        self,
+        batch: Any,
+        timestep_idx: int = 0,
+    ) -> dict[str, Any]:
+        """Single forward producing per-token logits over the image vocab.
+
+        Train-time replay: given an ``ExperienceBatch`` that recorded
+        ``observations`` (text prompt ids), ``extras["prompt_attention_mask"]``,
+        and ``actions`` (sampled image tokens), recompute the conditional
+        logits over the image vocab so the evaluator can gather log-probs
+        of the sampled tokens under the *current* policy.
+
+        AR has no notion of "denoising step" — ``timestep_idx`` is accepted
+        for protocol compatibility but ignored.
+
+        See ``vrl/models/ar.py::AutoregressivePolicy`` for the shared AR
+        replay protocol; see ``SPRINT_ar_support.md`` §5 for why Janus and
+        NextStep do not share a return-dict schema.
+
+        Returns:
+          ``{"logits": Tensor[B, L_img, V_img], "image_token_ids": Tensor[B, L_img]}``.
+        """
+        # observations may be [B, L_text] (direct-use) or [B, 1, L_text]
+        # (OnlineTrainer path). Squeeze the T=1 axis if present.
+        obs = batch.observations
+        prompt_ids = obs.squeeze(1) if obs.dim() == 3 else obs
+        prompt_mask = batch.extras["prompt_attention_mask"]
+        image_token_ids = batch.actions
+
+        embed = self.language_model.get_input_embeddings()
+        prompt_embeds = embed(prompt_ids)
+        logits = self.forward_image_logits(
+            prompt_embeds, prompt_mask, image_token_ids,
+        )  # [B, L_img, V_img]
+        return {"logits": logits, "image_token_ids": image_token_ids}
 
     # ------------------------------------------------------------------
     # Inference-time AR sampler with classifier-free guidance

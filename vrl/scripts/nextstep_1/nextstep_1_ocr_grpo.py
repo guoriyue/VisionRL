@@ -1,30 +1,18 @@
-"""Janus-Pro-1B OCR GRPO — autoregressive image RL with OCR reward.
+"""NextStep-1 OCR GRPO — continuous-token AR image RL with OCR reward.
 
 Reads ``PromptExample`` manifests (JSONL) with per-sample ``target_text``
-and trains Janus-Pro-1B to generate images whose rendered text matches
-the target when passed through ``rapidocr_onnxruntime``.
+and trains NextStep-1's LoRA + flow-head to generate images whose
+rendered text matches the target when run through ``rapidocr_onnxruntime``.
+
+Mirror of ``vrl.scripts.janus_pro.janus_pro_1b_ocr_grpo`` — only the
+model wrapper, collector, and evaluator change. The ``OnlineTrainer``
++ ``TokenGRPO`` machinery is identical.
 
 Usage:
-    python -m vrl.scripts.janus_pro.janus_pro_1b_ocr_grpo \\
+    python -m vrl.scripts.nextstep_1.nextstep_1_ocr_grpo \\
         --manifest datasets/ocr/train.txt \\
         --max-train-steps 50 \\
         --n-samples-per-prompt 4
-
-Architecture:
-    JsonlPromptDataset (PromptExample with target_text)
-            │
-            ▼
-    OnlineTrainer._step_cea
-            │ forwards target_text via collect(**kwargs)
-            ▼
-    JanusProCollector.collect → Rollout.metadata["target_text"]
-            │
-            ▼
-    OCRReward.score(rollout)
-            │  reads rollout.metadata["target_text"]
-            │  reads rollout.trajectory.output (image in [0,1])
-            ▼
-    reward ∈ [0, 1]  (1 - normalized edit distance)
 """
 
 from __future__ import annotations
@@ -44,20 +32,22 @@ _DEFAULT_MANIFEST = (
 
 
 @dataclass
-class JanusOCRConfig:
+class NextStep1OCRConfig:
     # model
-    model_path: str = "deepseek-ai/Janus-Pro-1B"
+    model_path: str = "stepfun-ai/NextStep-1.1"
+    vae_path: str = "stepfun-ai/NextStep-1-f8ch16-Tokenizer"
     use_lora: bool = True
-    lora_rank: int = 16
-    lora_alpha: int = 32
+    lora_rank: int = 32
+    lora_alpha: int = 64
     dtype: str = "bfloat16"
 
     # rollout
     n_samples_per_prompt: int = 4
-    cfg_weight: float = 5.0
-    temperature: float = 1.0
-    image_token_num: int = 576
-    image_size: int = 384
+    cfg_scale: float = 4.5
+    num_flow_steps: int = 20
+    noise_level: float = 1.0
+    image_token_num: int = 1024
+    image_size: int = 256
 
     # reward
     manifest: str = str(_DEFAULT_MANIFEST)
@@ -71,32 +61,33 @@ class JanusOCRConfig:
     mixed_precision: str = "bf16"
     max_train_steps: int = 50
     batch_prompts: int = 1
-    # Rollout batches per outer epoch (flow_grpo `num_batches_per_epoch`).
-    # Effective prompts/step = num_batches_per_epoch × batch_prompts.
     num_batches_per_epoch: int = 1
 
     # algorithm
     clip_eps: float = 0.2
     kl_coeff: float = 0.0
     adv_clip_max: float = 5.0
-    global_std: bool = False  # flow_grpo OCR convention: per-prompt std — preserves local signal when prompt difficulty varies
+    global_std: bool = False
     kl_estimator: str = "k3"
 
     # IO
-    output_dir: str = "outputs/janus_1b_ocr_grpo"
+    output_dir: str = "outputs/nextstep_1_ocr_grpo"
     checkpointing_steps: int = 999
     log_every: int = 1
     seed: int = 0
 
 
-async def _train(config: JanusOCRConfig) -> None:
+async def _train(config: NextStep1OCRConfig) -> None:
     import torch
 
     from vrl.algorithms.grpo_token import TokenGRPO, TokenGRPOConfig
-    from vrl.models.families.janus_pro import JanusProConfig, JanusProPolicy
+    from vrl.models.families.nextstep_1 import NextStep1Config, NextStep1Policy
     from vrl.rewards.ocr import OCRReward
-    from vrl.rollouts.collectors.janus_pro import JanusProCollector, JanusProCollectorConfig
-    from vrl.rollouts.evaluators.lm import TokenLogProbEvaluator
+    from vrl.rollouts.collectors.nextstep_1 import (
+        NextStep1Collector,
+        NextStep1CollectorConfig,
+    )
+    from vrl.rollouts.evaluators.lm import ContinuousTokenLogProbEvaluator
     from vrl.trainers.online import OnlineTrainer
     from vrl.trainers.types import OptimConfig, TrainerConfig
 
@@ -104,36 +95,38 @@ async def _train(config: JanusOCRConfig) -> None:
     out = Path(config.output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Loading Janus-Pro from %s ...", config.model_path)
-    model = JanusProPolicy(JanusProConfig(
+    logger.info("Loading NextStep-1 from %s ...", config.model_path)
+    model = NextStep1Policy(NextStep1Config(
         model_path=config.model_path,
+        vae_path=config.vae_path,
         dtype=config.dtype,
         use_lora=config.use_lora,
         lora_rank=config.lora_rank,
         lora_alpha=config.lora_alpha,
-        cfg_weight=config.cfg_weight,
-        temperature=config.temperature,
+        cfg_scale=config.cfg_scale,
+        num_flow_steps=config.num_flow_steps,
+        noise_level=config.noise_level,
         image_token_num=config.image_token_num,
+        image_size=config.image_size,
     ))
     logger.info("Trainable params: %.2f M", model.trainable_param_count() / 1e6)
 
-    reward = OCRReward(
-        debug_dir=config.ocr_debug_dir or None,
-    )
+    reward = OCRReward(debug_dir=config.ocr_debug_dir or None)
     if config.ocr_debug_dir:
         logger.info("OCR debug frames → %s", config.ocr_debug_dir)
 
-    collector = JanusProCollector(
+    collector = NextStep1Collector(
         model=model, reward_fn=reward,
-        config=JanusProCollectorConfig(
+        config=NextStep1CollectorConfig(
             n_samples_per_prompt=config.n_samples_per_prompt,
-            cfg_weight=config.cfg_weight,
-            temperature=config.temperature,
+            cfg_scale=config.cfg_scale,
+            num_flow_steps=config.num_flow_steps,
+            noise_level=config.noise_level,
             image_token_num=config.image_token_num,
             image_size=config.image_size,
         ),
     )
-    evaluator = TokenLogProbEvaluator()
+    evaluator = ContinuousTokenLogProbEvaluator()
     algorithm = TokenGRPO(TokenGRPOConfig(
         eps_clip=config.clip_eps,
         init_kl_coef=config.kl_coeff,
@@ -203,27 +196,29 @@ async def _train(config: JanusOCRConfig) -> None:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Janus-Pro-1B OCR GRPO trainer")
+    p = argparse.ArgumentParser(description="NextStep-1 OCR GRPO trainer")
     p.add_argument("--manifest", default=str(_DEFAULT_MANIFEST))
-    p.add_argument("--model-path", default=JanusOCRConfig.model_path)
-    p.add_argument("--output-dir", default=JanusOCRConfig.output_dir)
-    p.add_argument("--max-train-steps", type=int, default=JanusOCRConfig.max_train_steps)
-    p.add_argument("--lr", type=float, default=JanusOCRConfig.lr)
-    p.add_argument("--n-samples-per-prompt", type=int, default=JanusOCRConfig.n_samples_per_prompt)
-    p.add_argument("--batch-prompts", type=int, default=JanusOCRConfig.batch_prompts)
-    p.add_argument(
-        "--num-batches-per-epoch", type=int, default=JanusOCRConfig.num_batches_per_epoch,
-        help="Rollout batches per epoch (flow_grpo sample.num_batches_per_epoch). "
-             "Effective prompts/step = this × --batch-prompts.",
-    )
-    p.add_argument("--cfg-weight", type=float, default=JanusOCRConfig.cfg_weight)
-    p.add_argument("--kl-coeff", type=float, default=JanusOCRConfig.kl_coeff)
-    p.add_argument("--clip-eps", type=float, default=JanusOCRConfig.clip_eps)
-    p.add_argument("--lora-rank", type=int, default=JanusOCRConfig.lora_rank)
-    p.add_argument("--lora-alpha", type=int, default=JanusOCRConfig.lora_alpha)
-    p.add_argument("--ocr-debug-dir", default=JanusOCRConfig.ocr_debug_dir)
-    p.add_argument("--checkpointing-steps", type=int, default=JanusOCRConfig.checkpointing_steps)
-    p.add_argument("--seed", type=int, default=JanusOCRConfig.seed)
+    p.add_argument("--model-path", default=NextStep1OCRConfig.model_path)
+    p.add_argument("--vae-path", default=NextStep1OCRConfig.vae_path)
+    p.add_argument("--output-dir", default=NextStep1OCRConfig.output_dir)
+    p.add_argument("--max-train-steps", type=int, default=NextStep1OCRConfig.max_train_steps)
+    p.add_argument("--lr", type=float, default=NextStep1OCRConfig.lr)
+    p.add_argument("--n-samples-per-prompt", type=int,
+                   default=NextStep1OCRConfig.n_samples_per_prompt)
+    p.add_argument("--batch-prompts", type=int, default=NextStep1OCRConfig.batch_prompts)
+    p.add_argument("--num-batches-per-epoch", type=int,
+                   default=NextStep1OCRConfig.num_batches_per_epoch)
+    p.add_argument("--cfg-scale", type=float, default=NextStep1OCRConfig.cfg_scale)
+    p.add_argument("--num-flow-steps", type=int, default=NextStep1OCRConfig.num_flow_steps)
+    p.add_argument("--noise-level", type=float, default=NextStep1OCRConfig.noise_level)
+    p.add_argument("--kl-coeff", type=float, default=NextStep1OCRConfig.kl_coeff)
+    p.add_argument("--clip-eps", type=float, default=NextStep1OCRConfig.clip_eps)
+    p.add_argument("--lora-rank", type=int, default=NextStep1OCRConfig.lora_rank)
+    p.add_argument("--lora-alpha", type=int, default=NextStep1OCRConfig.lora_alpha)
+    p.add_argument("--ocr-debug-dir", default=NextStep1OCRConfig.ocr_debug_dir)
+    p.add_argument("--checkpointing-steps", type=int,
+                   default=NextStep1OCRConfig.checkpointing_steps)
+    p.add_argument("--seed", type=int, default=NextStep1OCRConfig.seed)
     p.add_argument(
         "--global-std", action="store_true",
         help="Use global-batch std for advantage normalization (default: per-prompt std).",
@@ -236,16 +231,19 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
-    cfg = JanusOCRConfig(
+    cfg = NextStep1OCRConfig(
         manifest=args.manifest,
         model_path=args.model_path,
+        vae_path=args.vae_path,
         output_dir=args.output_dir,
         max_train_steps=args.max_train_steps,
         lr=args.lr,
         n_samples_per_prompt=args.n_samples_per_prompt,
         batch_prompts=args.batch_prompts,
         num_batches_per_epoch=args.num_batches_per_epoch,
-        cfg_weight=args.cfg_weight,
+        cfg_scale=args.cfg_scale,
+        num_flow_steps=args.num_flow_steps,
+        noise_level=args.noise_level,
         kl_coeff=args.kl_coeff,
         clip_eps=args.clip_eps,
         lora_rank=args.lora_rank,

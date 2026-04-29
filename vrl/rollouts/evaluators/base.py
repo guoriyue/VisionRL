@@ -13,8 +13,12 @@ from vrl.rollouts.types import ExperienceBatch
 class Evaluator(Protocol):
     """Extract training signals from model forward results.
 
-    Uses the collector's forward_step for model-specific forward passes
-    and extracts distribution-family-specific signals (log_prob, KL, etc.).
+    Uses ``model.replay_forward`` for the train-time forward pass and
+    extracts distribution-family-specific signals (log_prob, KL, etc.).
+
+    The ``collector`` parameter is retained for trainer-interface
+    compatibility but evaluators do not use it — replay ownership lives
+    on the policy.
     """
 
     def evaluate(
@@ -26,5 +30,5 @@ class Evaluator(Protocol):
         ref_model: Any | None = None,
         signal_request: SignalRequest | None = None,
     ) -> SignalBatch:
-        """Run collector.forward_step() -> extract log_prob, KL, etc."""
+        """Run model.replay_forward() -> extract log_prob, KL, etc."""
         ...

@@ -64,7 +64,7 @@ class TokenGRPO(GRPO):
                                   ``init_kl_coef > 0``).
       * ``old_log_probs``         shape ``[B, L]`` — log-probs captured at
                                   collection time (from
-                                  ``JanusProT2I.sample_image_tokens``).
+                                  ``JanusProPolicy.sample_image_tokens``).
       * ``advantages``            shape ``[B]``  — sequence-level advantages
                                   from ``compute_advantages_from_tensors``.
       * ``signals.aux[mask_key]`` shape ``[B, L]`` — float mask over tokens

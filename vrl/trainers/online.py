@@ -72,6 +72,7 @@ class PhaseTimer:
         self.enabled = enabled
         self.sync = sync and torch.cuda.is_available()
         self.times: dict[str, float] = defaultdict(float)
+        self.events: list[tuple[str, float, float]] = []
 
     @contextlib.contextmanager
     def time(self, name: str):
@@ -81,12 +82,15 @@ class PhaseTimer:
         if self.sync:
             torch.cuda.synchronize()
         t0 = time.perf_counter()
+        wall0 = time.time()
         try:
             yield
         finally:
             if self.sync:
                 torch.cuda.synchronize()
-            self.times[name] += time.perf_counter() - t0
+            t1 = time.perf_counter()
+            self.times[name] += t1 - t0
+            self.events.append((name, wall0, time.time()))
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +577,21 @@ class OnlineTrainer(Trainer):
             )
             logger.info("phase_times[step=%d] total=%.3fs | %s",
                         self.state.step, total, parts)
+            try:
+                import json as _json, os as _os
+                _evt_path = _os.path.join(cfg.output_dir, "phase_events.jsonl")
+                _os.makedirs(cfg.output_dir, exist_ok=True)
+                with open(_evt_path, "a") as _f:
+                    for _n, _s, _e in timer.events:
+                        _f.write(_json.dumps({
+                            "step": self.state.step,
+                            "phase": _n,
+                            "start": _s,
+                            "end": _e,
+                        }) + "\n")
+                timer.events.clear()
+            except Exception:
+                pass
 
         metrics = TrainStepMetrics(
             loss=avg("loss"),

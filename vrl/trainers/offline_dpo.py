@@ -122,7 +122,7 @@ def wan_forward(
     encoder_hidden_states: torch.Tensor,
     extra: dict[str, Any] | None = None,
 ) -> torch.Tensor:
-    """Wan transformer forward — matches DiffusersWanT2VModel signature."""
+    """Wan transformer forward — matches WanT2VDiffusersPolicy signature."""
     out = model(
         hidden_states=noisy_latents,
         timestep=timesteps,

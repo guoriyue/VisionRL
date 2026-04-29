@@ -11,6 +11,13 @@ Mirrors ``wan_2_1.py`` but for image generation:
   full ``group_size`` set, matching paper's distributed G=24 setup on a
   single GPU.
 - SDE step uses ``sde_type="cps"`` with paper noise_level a=0.7 (Eq.9).
+
+Adapter contract (post-refactor):
+``self.model`` is a ``SD3_5Policy`` exposing five methods —
+``encode_prompt``, ``prepare_sampling``, ``forward_step``,
+``decode_latents`` (and the inherited ``inference``). The collector owns
+the SDE step / log-prob bookkeeping; the adapter owns one transformer
+forward per step.
 """
 
 from __future__ import annotations
@@ -84,7 +91,7 @@ class SD3_5Collector:
 
     def __init__(
         self,
-        model: Any,  # DiffusersSD3_5T2IModel
+        model: Any,  # SD3_5Policy
         reward_fn: Any,  # RewardFunction instance
         config: SD3_5CollectorConfig | None = None,
     ) -> None:
@@ -109,16 +116,16 @@ class SD3_5Collector:
         """Collect SD3 rollouts with per-step log-probabilities.
 
         Steps:
-        1. Encode text via model family (once per prompt)
+        1. Encode prompt via adapter (once per prompt)
         2. Split group_size into micro-batches of sample_batch_size
-        3. For each micro-batch: denoise_init → SDE loop → decode VAE
+        3. For each micro-batch: prepare_sampling → SDE loop → decode_latents
         4. Reward scoring on all samples
         5. Concatenate micro-batch trajectories into one ExperienceBatch
         """
         import torch
 
         from vrl.algorithms.types import Rollout, Trajectory
-        from vrl.models.base import VideoGenerationRequest
+        from vrl.models.diffusion import VideoGenerationRequest
         from vrl.rollouts.evaluators.diffusion.flow_matching import sde_step_with_logprob
 
         cfg = self.config
@@ -155,13 +162,16 @@ class SD3_5Collector:
         _phases: dict[str, float] = {}
         _t = _sync_time() if _prof else 0.0
 
-        # 1. Encode text once for the prompt (re-used across micro-batches)
-        text_state: dict[str, Any] = {}
-        encode_result = await self.model.encode_text(request, text_state)
-        text_state.update(encode_result.state_updates)
+        # 1. Encode prompt once (re-used across micro-batches)
+        encoded = self.model.encode_prompt(
+            prompts[0],
+            request.negative_prompt or None,
+            max_sequence_length=cfg.max_sequence_length,
+            guidance_scale=cfg.guidance_scale,
+        )
         if _prof:
             _now = _sync_time()
-            _phases["collect.encode_text"] = _now - _t
+            _phases["collect.encode_prompt"] = _now - _t
             _t = _now
 
         # 2. Plan micro-batches — split group_size into chunks of sample_batch_size
@@ -182,36 +192,38 @@ class SD3_5Collector:
         all_t_chunks: list[Any] = []
         all_kl_chunks: list[Any] = []
         all_video_chunks: list[Any] = []
-        prompt_embeds_full: Any = None
-        neg_embeds_full: Any = None
-        pooled_full: Any = None
-        neg_pooled_full: Any = None
+        # Per-chunk training-extras dicts (prompt_embeds etc.) — populated
+        # via adapter.export_training_extras and concat'd along dim=0 after
+        # the loop. Keeps the collector opaque to SD3SamplingState fields.
+        all_extras_chunks: list[dict[str, Any]] = []
+        rollout_context: dict[str, Any] | None = None
         do_cfg = cfg.cfg and cfg.guidance_scale > 1.0
         sde_window = self._get_sde_window()
 
         chunk_offset = 0
         for chunk_idx, chunk_g in enumerate(chunk_sizes):
-            # Build per-chunk text state by repeating embeds chunk_g times
-            state: dict[str, Any] = {}
-            pe = text_state["prompt_embeds"]
-            pp = text_state["pooled_prompt_embeds"]
+            # Build per-chunk encoded dict by repeating embeds chunk_g times
+            pe = encoded["prompt_embeds"]
+            pp = encoded["pooled_prompt_embeds"]
             repeat_seq = (chunk_g,) + (1,) * (pe.ndim - 1)
             repeat_pool = (chunk_g,) + (1,) * (pp.ndim - 1)
-            state["prompt_embeds"] = pe.repeat(*repeat_seq)
-            state["pooled_prompt_embeds"] = pp.repeat(*repeat_pool)
-            neg = text_state.get("negative_prompt_embeds")
-            neg_pool = text_state.get("negative_pooled_prompt_embeds")
+            chunk_encoded: dict[str, Any] = {
+                "prompt_embeds": pe.repeat(*repeat_seq),
+                "pooled_prompt_embeds": pp.repeat(*repeat_pool),
+            }
+            neg = encoded.get("negative_prompt_embeds")
+            neg_pool = encoded.get("negative_pooled_prompt_embeds")
             if neg is not None:
-                state["negative_prompt_embeds"] = neg.repeat(*repeat_seq)
+                chunk_encoded["negative_prompt_embeds"] = neg.repeat(*repeat_seq)
             if neg_pool is not None:
-                state["negative_pooled_prompt_embeds"] = neg_pool.repeat(*repeat_pool)
-            state["pipeline"] = text_state["pipeline"]
+                chunk_encoded["negative_pooled_prompt_embeds"] = neg_pool.repeat(
+                    *repeat_pool,
+                )
 
-            # denoise_init for this chunk
-            denoise_loop = await self.model.denoise_init(request, state)
-            ms = denoise_loop.model_state
-            chunk_batch = ms.latents.shape[0]
-            device = ms.latents.device
+            # prepare_sampling for this chunk
+            state = self.model.prepare_sampling(request, chunk_encoded)
+            chunk_batch = state.latents.shape[0]
+            device = state.latents.device
 
             # Per-chunk SDE generator (deterministic when seed is provided)
             if seed is not None:
@@ -230,15 +242,15 @@ class SD3_5Collector:
             lp_steps: list[Any] = []
             kl_steps: list[Any] = []
             t_steps: list[Any] = []
-            transformer_dtype = ms.prompt_embeds.dtype
+            transformer_dtype = chunk_encoded["prompt_embeds"].dtype
 
             with torch.amp.autocast("cuda", dtype=transformer_dtype):
                 with torch.no_grad():
-                    for step_idx in range(denoise_loop.total_steps):
-                        latents_ori = ms.latents.clone()
-                        t = ms.timesteps[step_idx]
+                    for step_idx in range(len(state.timesteps)):
+                        latents_ori = state.latents.clone()
+                        t = state.timesteps[step_idx]
 
-                        fwd = await self.model.predict_noise(denoise_loop, step_idx)
+                        fwd = self.model.forward_step(state, step_idx)
                         noise_pred = fwd["noise_pred"]
 
                         in_sde_window = sde_window is None or (
@@ -246,10 +258,10 @@ class SD3_5Collector:
                         )
 
                         sde_result = sde_step_with_logprob(
-                            ms.scheduler,
+                            state.scheduler,
                             noise_pred.float(),
                             t.unsqueeze(0),
-                            ms.latents.float(),
+                            state.latents.float(),
                             generator=gen if in_sde_window else None,
                             deterministic=not in_sde_window,
                             return_dt=cfg.kl_reward > 0,
@@ -257,7 +269,7 @@ class SD3_5Collector:
                             sde_type="cps",
                         )
                         prev_latents = sde_result.prev_sample
-                        ms.latents = prev_latents
+                        state.latents = prev_latents
 
                         obs_steps.append(latents_ori.detach())
                         act_steps.append(prev_latents.detach())
@@ -271,8 +283,6 @@ class SD3_5Collector:
                                 torch.zeros(chunk_batch, device=device)
                             )
 
-                        denoise_loop.current_step = step_idx + 1
-
             # Stack chunk-step tensors → [chunk_batch, T, ...]
             obs_chunk = torch.stack(obs_steps, dim=1)
             act_chunk = torch.stack(act_steps, dim=1)
@@ -282,10 +292,8 @@ class SD3_5Collector:
             )
             kl_chunk = torch.stack(kl_steps, dim=1)
 
-            # Decode VAE for this chunk
-            decode_state: dict[str, Any] = {"latents": ms.latents}
-            decode_result = await self.model.decode_vae(request, decode_state)
-            video_chunk = decode_result.state_updates["video"]
+            # Decode latents for this chunk
+            video_chunk = self.model.decode_latents(state.latents)
 
             all_obs_chunks.append(obs_chunk)
             all_act_chunks.append(act_chunk)
@@ -294,31 +302,14 @@ class SD3_5Collector:
             all_kl_chunks.append(kl_chunk)
             all_video_chunks.append(video_chunk)
 
-            # Save embeds from the LAST chunk so trainer's forward_step can
-            # re-build the full state. Because the trainer evaluator slices
-            # the batch directly, we need embeds aligned to the full
-            # concatenated batch — build below after concat.
-            if chunk_idx == 0:
-                prompt_embeds_full = state["prompt_embeds"]
-                pooled_full = state["pooled_prompt_embeds"]
-                neg_embeds_full = state.get("negative_prompt_embeds")
-                neg_pooled_full = state.get("negative_pooled_prompt_embeds")
-            else:
-                prompt_embeds_full = torch.cat(
-                    [prompt_embeds_full, state["prompt_embeds"]], dim=0,
-                )
-                pooled_full = torch.cat(
-                    [pooled_full, state["pooled_prompt_embeds"]], dim=0,
-                )
-                if neg_embeds_full is not None and "negative_prompt_embeds" in state:
-                    neg_embeds_full = torch.cat(
-                        [neg_embeds_full, state["negative_prompt_embeds"]], dim=0,
-                    )
-                if neg_pooled_full is not None and "negative_pooled_prompt_embeds" in state:
-                    neg_pooled_full = torch.cat(
-                        [neg_pooled_full, state["negative_pooled_prompt_embeds"]],
-                        dim=0,
-                    )
+            # Pull per-chunk training extras from the adapter (opaque to
+            # SamplingState internals); concat after the loop on dim=0.
+            all_extras_chunks.append(self.model.export_training_extras(state))
+
+            # Capture rollout-level context once — guidance_scale / do_cfg
+            # are shared across chunks, so any chunk's state suffices.
+            if rollout_context is None:
+                rollout_context = self.model.export_batch_context(state)
 
             chunk_offset += chunk_g
 
@@ -388,73 +379,44 @@ class SD3_5Collector:
             _LAST_COLLECT_PHASES.clear()
             _LAST_COLLECT_PHASES.update(_phases)
 
+        # Concat per-chunk training extras along the batch dim (None entries
+        # — e.g. negative_*_embeds when CFG is off — propagate as None).
+        training_extras: dict[str, Any] = {}
+        if all_extras_chunks:
+            for key in all_extras_chunks[0].keys():
+                vals = [c[key] for c in all_extras_chunks]
+                if any(v is None for v in vals):
+                    training_extras[key] = None
+                else:
+                    training_extras[key] = torch.cat(vals, dim=0)
+
+        extras: dict[str, Any] = {
+            "log_probs": log_probs,
+            "timesteps": timesteps_tensor,
+            "kl": kl_tensor,
+            "reward_before_kl": rewards_raw,
+        }
+        extras.update(training_extras)
+
+        # rollout_context is populated by the first chunk; fall back to a
+        # synthesized minimal dict if no chunks ran (defensive — chunk_sizes
+        # is non-empty in practice).
+        if rollout_context is None:
+            rollout_context = {
+                "guidance_scale": cfg.guidance_scale,
+                "cfg": do_cfg,
+                "model_family": self.model.family,
+            }
+
         return ExperienceBatch(
             observations=observations,
             actions=actions,
             rewards=rewards_adjusted,
             dones=dones,
             group_ids=group_ids,
-            extras={
-                "log_probs": log_probs,
-                "timesteps": timesteps_tensor,
-                "kl": kl_tensor,
-                "reward_before_kl": rewards_raw,
-                "prompt_embeds": prompt_embeds_full,
-                "negative_prompt_embeds": neg_embeds_full,
-                "pooled_prompt_embeds": pooled_full,
-                "negative_pooled_prompt_embeds": neg_pooled_full,
-            },
-            context={
-                "guidance_scale": cfg.guidance_scale,
-                "cfg": do_cfg,
-                "model_family": "sd3-diffusers-t2i",
-            },
+            extras=extras,
+            context=rollout_context,
             videos=video,
             prompts=effective_prompts,
         )
 
-    # ------------------------------------------------------------------
-    # forward_step — used by Evaluator during training
-    # ------------------------------------------------------------------
-
-    def forward_step(
-        self,
-        model: Any,
-        batch: ExperienceBatch,
-        timestep_idx: int,
-    ) -> dict[str, Any]:
-        """SD3 forward: transformer + optional CFG.
-
-        Used by the evaluator to compute fresh log-probs under the current
-        policy during training.
-        """
-        from vrl.engine.model_executor.execution_state import DenoiseLoopState
-        from vrl.models.families.diffusers_state import DiffusersDenoiseState
-
-        timesteps = batch.extras["timesteps"]
-        prompt_embeds = batch.extras["prompt_embeds"]
-        negative_prompt_embeds = batch.extras["negative_prompt_embeds"]
-        pooled_prompt_embeds = batch.extras["pooled_prompt_embeds"]
-        negative_pooled_prompt_embeds = batch.extras["negative_pooled_prompt_embeds"]
-        latents = batch.observations[:, timestep_idx]
-
-        ctx = batch.context
-        guidance_scale = ctx["guidance_scale"]
-        do_cfg = ctx["cfg"]
-
-        t = timesteps[:, timestep_idx] if timesteps.ndim > 1 else timesteps
-
-        ms = DiffusersDenoiseState(
-            latents=latents,
-            timesteps=t,
-            prompt_embeds=prompt_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
-            pooled_prompt_embeds=pooled_prompt_embeds,
-            negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
-            guidance_scale=guidance_scale,
-            do_cfg=do_cfg and guidance_scale > 1.0,
-            model_family="sd3-diffusers-t2i",
-        )
-
-        ds = DenoiseLoopState(current_step=0, total_steps=1, model_state=ms)
-        return self.model._predict_noise_with_model(model, ds, step_idx=0)

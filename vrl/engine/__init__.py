@@ -13,7 +13,6 @@ from vrl.engine.model_executor.execution_state import (
     DenoiseLoopState,
     WorkloadSignature,
 )
-from vrl.engine.model_executor.iteration_runner import PipelineRunner
 from vrl.engine.types import (
     ModelRunnerOutput,
     RequestOutput,
@@ -29,7 +28,6 @@ __all__ = [
     "DenoiseLoopState",
     "EngineLoop",
     "ModelRunnerOutput",
-    "PipelineRunner",
     "RequestOutput",
     "ResourceManager",
     "Scheduler",

@@ -4,7 +4,6 @@ import numpy as np
 
 from vrl.engine.ipc.artifacts import ArtifactStore
 from vrl.engine.types import RequestOutput
-from vrl.models.base import ModelResult
 
 
 def test_write_and_read_video_tensor(tmp_path):
@@ -13,7 +12,7 @@ def test_write_and_read_video_tensor(tmp_path):
     result = RequestOutput(
         request_id="req-1",
         finished=True,
-        data=[ModelResult(state_updates={"video_tensor": video_tensor})],
+        data=[{"video_tensor": video_tensor}],
     )
 
     artifact = store.write_result("req-1", result)

@@ -6,16 +6,17 @@ import importlib
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from vrl.models.base import VideoGenerationModel
+    pass  # all registry entries are DiffusionPolicy subclasses; resolve_model returns Any
 
 _REGISTRY: dict[str, str] = {
-    "wan-official": "vrl.models.families.wan_2_1.official:OfficialWanModel",
-    "wan-diffusers-i2v": "vrl.models.families.wan_2_1.diffusers_i2v:DiffusersWanI2VModel",
-    "cosmos": "vrl.models.families.cosmos.model:CosmosGenerationModel",
+    "sd3_5-diffusers-t2i": "vrl.models.families.sd3_5.policy:SD3_5Policy",
+    "wan-diffusers-t2v": "vrl.models.families.wan_2_1.diffusers_policy:WanT2VDiffusersPolicy",
+    "wan-official-t2v": "vrl.models.families.wan_2_1.official_policy:WanT2VOfficialPolicy",
+    "cosmos-predict2": "vrl.models.families.cosmos.predict2_policy:CosmosPredict2Policy",
 }
 
 
-def resolve_model(name: str) -> type[VideoGenerationModel]:
+def resolve_model(name: str) -> type:
     """Resolve model class by name."""
     spec = _REGISTRY[name]
     module_path, cls_name = spec.rsplit(":", 1)

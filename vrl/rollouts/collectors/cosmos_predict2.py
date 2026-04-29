@@ -1,6 +1,14 @@
-"""Cosmos Predict2 collector for RL training.
+"""Cosmos Predict2 collector for RL training (DiffusionPolicy contract).
 
 Collector → FlowMatchingEvaluator → GRPO → OnlineTrainer
+
+Drives the new single-protocol :class:`DiffusionPolicy` API:
+
+    encode_prompt → prepare_sampling → forward_step ×N → decode_latents
+
+The collector owns the SDE step / log-prob recording / reward scoring;
+the adapter owns the transformer forward and the family-specific
+conditioning bundle.
 """
 
 from __future__ import annotations
@@ -45,17 +53,17 @@ class CosmosPredict2CollectorConfig:
 
 
 class CosmosPredict2Collector:
-    """Collect rollouts from Cosmos Predict2 with per-step log-probs.
+    """Collect rollouts from Cosmos Predict2 V2W with per-step log-probs.
 
-    Delegates model-specific forward passes to the model family's
-    ``denoise_init`` / ``predict_noise`` / ``decode_vae`` methods.
-    The collector only owns the SDE-step loop, reward scoring,
-    and ``ExperienceBatch`` assembly.
+    Calls the adapter's ``encode_prompt`` / ``prepare_sampling`` /
+    ``forward_step`` / ``decode_latents`` directly. The collector only
+    owns the SDE-step loop, reward scoring, and ``ExperienceBatch``
+    assembly.
     """
 
     def __init__(
         self,
-        model: Any,  # CosmosGenerationModel or DiffusersCosmosPredict2Executor
+        model: Any,  # CosmosPredict2Policy
         reward_fn: Any,  # RewardFunction instance
         config: CosmosPredict2CollectorConfig | None = None,
         reference_image: Any = None,  # PIL.Image for Video2World conditioning
@@ -83,23 +91,24 @@ class CosmosPredict2Collector:
         """Collect Cosmos Predict2 rollouts with per-step log-probabilities.
 
         Steps:
-        1. Encode text via model family
-        2. denoise_init via model family (prepares latents + conditioning)
-        3. Custom SDE loop: model.predict_noise per step + sde_step_with_logprob
-        4. Decode VAE via model family
-        5. Reward scoring
-        6. Stack into ExperienceBatch
+        1. Encode prompt via adapter (single forward pass for the whole
+           prompt; CFG controlled by ``guidance_scale``).
+        2. Build the per-request opaque sampling state via
+           ``prepare_sampling`` (sets up latents + V2W conditioning).
+        3. Custom SDE loop calling ``forward_step`` per step + the shared
+           ``sde_step_with_logprob`` to record log-probs.
+        4. Decode video via ``decode_latents``.
+        5. Reward scoring + ``ExperienceBatch`` assembly.
         """
         import torch
 
         from vrl.algorithms.types import Rollout, Trajectory
-        from vrl.models.base import VideoGenerationRequest
+        from vrl.models.diffusion import VideoGenerationRequest
         from vrl.rollouts.evaluators.diffusion.flow_matching import sde_step_with_logprob
 
         cfg = self.config
         batch_size = len(prompts)
 
-        # Build request
         seed = kwargs.get("seed", None)
         request = VideoGenerationRequest(
             prompt=prompts[0] if len(prompts) == 1 else prompts[0],
@@ -112,27 +121,25 @@ class CosmosPredict2Collector:
             seed=seed,
         )
 
-        # 1. Encode text via model family
-        state: dict[str, Any] = {}
         reference_image = kwargs.get("reference_image", self.reference_image)
-        if reference_image is not None:
-            state["reference_image"] = reference_image
 
-        encode_result = await self.model.encode_text(request, state)
-        state.update(encode_result.state_updates)
+        # 1. Encode prompt via the adapter
+        encoded = self.model.encode_prompt(
+            prompts[0],
+            request.negative_prompt or None,
+            max_sequence_length=cfg.max_sequence_length,
+            guidance_scale=cfg.guidance_scale,
+            reference_image=reference_image,
+        )
 
-        # For batched prompts, re-encode if needed (model encode_text handles single prompt)
-        # The prompt_embeds from encode_text are already in state
+        # 2. Build the sampling state (latents, V2W conditioning bundle, ...)
+        sampling_state = self.model.prepare_sampling(
+            request, encoded, reference_image=reference_image,
+        )
 
-        # 2. denoise_init via model family
-        denoise_loop = await self.model.denoise_init(request, state)
-        ms = denoise_loop.model_state
-
-        # SDE window
         sde_window = self._get_sde_window()
 
-        # SDE noise generator — deterministic when seed is provided or same_latent
-        device = ms.latents.device
+        device = sampling_state.latents.device
         if seed is not None:
             sde_generator = torch.Generator(device=device)
             sde_generator.manual_seed(seed)
@@ -149,50 +156,49 @@ class CosmosPredict2Collector:
         all_kls = []
         all_timestep_values = []
 
-        transformer_dtype = ms.prompt_embeds.dtype
+        # Derive transformer dtype from the encoded prompt (returned by
+        # the adapter) instead of poking into SamplingState; collectors
+        # treat SamplingState as opaque past ``latents``/``timesteps``/
+        # ``scheduler``.
+        transformer_dtype = encoded["prompt_embeds"].dtype
+        total_steps = len(sampling_state.timesteps)
 
         with torch.amp.autocast("cuda", dtype=transformer_dtype):
             with torch.no_grad():
-                for step_idx in range(denoise_loop.total_steps):
-                    latents_ori = ms.latents.clone()
-                    t = ms.timesteps[step_idx]
+                for step_idx in range(total_steps):
+                    latents_ori = sampling_state.latents.clone()
+                    t = sampling_state.timesteps[step_idx]
 
-                    # Forward pass via model family
-                    fwd = await self.model.predict_noise(denoise_loop, step_idx)
+                    fwd = self.model.forward_step(sampling_state, step_idx)
                     noise_pred = fwd["noise_pred"]
 
-                    # Check SDE window
                     in_sde_window = sde_window is None or (
                         sde_window[0] <= step_idx < sde_window[1]
                     )
 
-                    # SDE step with log-prob
                     sde_result = sde_step_with_logprob(
-                        ms.scheduler,
+                        sampling_state.scheduler,
                         noise_pred.float(),
                         t.unsqueeze(0),
-                        ms.latents.float(),
+                        sampling_state.latents.float(),
                         generator=sde_generator if in_sde_window else None,
                         deterministic=not in_sde_window,
                         return_dt=cfg.kl_reward > 0,
                     )
                     prev_latents = sde_result.prev_sample
-                    ms.latents = prev_latents
+                    sampling_state.latents = prev_latents
 
                     all_observations.append(latents_ori.detach())
                     all_actions.append(prev_latents.detach())
                     all_log_probs.append(sde_result.log_prob.detach())
                     all_timestep_values.append(t.detach())
 
-                    # Per-step KL tracking for kl_reward
                     if cfg.kl_reward > 0:
                         all_kls.append(sde_result.log_prob.detach().abs())
                     else:
                         all_kls.append(
                             torch.zeros(batch_size, device=device)
                         )
-
-                    denoise_loop.current_step = step_idx + 1
 
         # Stack: [T, B, ...] -> [B, T, ...]
         observations = torch.stack(all_observations, dim=1)
@@ -203,10 +209,8 @@ class CosmosPredict2Collector:
         )
         kl_tensor = torch.stack(all_kls, dim=1)
 
-        # 4. Decode VAE via model family
-        decode_state: dict[str, Any] = {"latents": ms.latents}
-        decode_result = await self.model.decode_vae(request, decode_state)
-        video = decode_result.state_updates["video"]
+        # 4. Decode latents to video [B, C, T, H, W]
+        video = self.model.decode_latents(sampling_state.latents)
 
         # 5. Score with reward function
         rewards_list = []
@@ -224,7 +228,6 @@ class CosmosPredict2Collector:
             r = await self.reward_fn.score(dummy_rollout)
             rewards_list.append(r)
 
-        # 6. Subtract kl_reward * kl from rewards
         rewards_raw = torch.tensor(rewards_list, dtype=torch.float32, device=device)
         if cfg.kl_reward > 0:
             kl_total = kl_tensor.sum(dim=1)
@@ -232,9 +235,14 @@ class CosmosPredict2Collector:
         else:
             rewards_adjusted = rewards_raw
 
-        # 7. Build ExperienceBatch
         dones = torch.ones(batch_size, dtype=torch.bool, device=device)
         group_ids = torch.zeros(batch_size, dtype=torch.long, device=device)
+
+        # Boundary helpers — adapter projects SamplingState into the
+        # collector-visible dicts so the collector never reads private
+        # state fields directly.
+        training_extras = self.model.export_training_extras(sampling_state)
+        rollout_context = self.model.export_batch_context(sampling_state)
 
         return ExperienceBatch(
             observations=observations,
@@ -247,95 +255,10 @@ class CosmosPredict2Collector:
                 "timesteps": timesteps_tensor,
                 "kl": kl_tensor,
                 "reward_before_kl": rewards_raw,
-                "prompt_embeds": ms.prompt_embeds,
-                "negative_prompt_embeds": ms.negative_prompt_embeds,
-                "init_latents": ms.init_latents,
+                **training_extras,
             },
-            context={
-                "guidance_scale": ms.guidance_scale,
-                "cfg": ms.do_cfg,
-                "fps": ms.fps,
-                "cond_mask": ms.cond_mask,
-                "uncond_mask": ms.uncond_mask,
-                "padding_mask": ms.padding_mask,
-                "cond_indicator": ms.cond_indicator,
-                "uncond_indicator": ms.uncond_indicator,
-                "scheduler": ms.scheduler,
-                "model_family": "cosmos-predict2",
-            },
+            context=rollout_context,
             videos=video,
             prompts=prompts,
         )
 
-    # ------------------------------------------------------------------
-    # forward_step — used by Evaluator during training
-    # ------------------------------------------------------------------
-
-    def forward_step(
-        self,
-        model: Any,
-        batch: ExperienceBatch,
-        timestep_idx: int,
-    ) -> dict[str, Any]:
-        """Cosmos Predict2 forward: single transformer + optional CFG.
-
-        Used by the evaluator to compute fresh log-probs under the
-        current policy during training.  Delegates to the executor's
-        ``_predict_noise_with_model`` so model-specific kwargs stay
-        in the model layer.
-        """
-        from vrl.engine.model_executor.execution_state import DenoiseLoopState
-        from vrl.models.families.diffusers_state import DiffusersDenoiseState
-
-        # Read per-sample tensors from extras
-        timesteps = batch.extras["timesteps"]
-        prompt_embeds = batch.extras["prompt_embeds"]
-        negative_prompt_embeds = batch.extras["negative_prompt_embeds"]
-        init_latents = batch.extras["init_latents"]
-        latents = batch.observations[:, timestep_idx]
-
-        # Read shared metadata from context
-        ctx = batch.context
-        guidance_scale = ctx["guidance_scale"]
-        do_cfg = ctx["cfg"]
-        fps = ctx["fps"]
-        cond_mask = ctx["cond_mask"]
-        uncond_mask = ctx["uncond_mask"]
-        padding_mask = ctx["padding_mask"]
-        cond_indicator = ctx["cond_indicator"]
-        uncond_indicator = ctx["uncond_indicator"]
-        scheduler = ctx["scheduler"]
-
-        # Reconstruct DiffusersDenoiseState for the model family
-        ms = DiffusersDenoiseState(
-            latents=latents,
-            timesteps=timesteps[:, timestep_idx] if timesteps.ndim > 1 else timesteps,
-            scheduler=scheduler,
-            prompt_embeds=prompt_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
-            guidance_scale=guidance_scale,
-            do_cfg=do_cfg and guidance_scale > 1.0,
-            init_latents=init_latents,
-            cond_indicator=cond_indicator,
-            uncond_indicator=uncond_indicator,
-            cond_mask=cond_mask,
-            uncond_mask=uncond_mask,
-            padding_mask=padding_mask,
-            fps=fps,
-            model_family="cosmos-predict2",
-        )
-
-        # Build a temporary DenoiseLoopState for the predict call
-        # We set timesteps to just the single timestep
-        t = timesteps[:, timestep_idx] if timesteps.ndim > 1 else timesteps
-        # For _predict_noise_with_model, we need timesteps[step_idx] to work,
-        # so set it as a single-element tensor
-        ms.timesteps = t
-        ds = DenoiseLoopState(current_step=0, total_steps=1, model_state=ms)
-
-        # Get the executor from the model
-        executor = self.model
-        if hasattr(executor, "_executor"):
-            executor = executor._executor
-
-        return executor._predict_noise_with_model(model, ds, step_idx=0)

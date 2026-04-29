@@ -11,8 +11,18 @@ from vrl.rollouts.types import ExperienceBatch
 class Collector(Protocol):
     """Collects training experience from model rollouts.
 
-    Each model family implements both ``collect()`` (rollout) and
-    ``forward_step()`` (single-timestep forward for training).
+    A collector owns rollout semantics only:
+
+      - prompt expansion / group sampling
+      - calling the policy's sampling path
+      - reward scoring
+      - ``ExperienceBatch`` packing
+      - prompt / reference / metadata forwarding
+
+    Train-time replay forward used to live here as ``forward_step``; that
+    ownership has moved to the policy (``model.replay_forward``). Evaluators
+    call the policy directly. New collectors must NOT add training-replay
+    math — keep this protocol to ``collect()`` only.
     """
 
     async def collect(
@@ -20,17 +30,4 @@ class Collector(Protocol):
         prompts: list[str],
         **kwargs: Any,
     ) -> ExperienceBatch:
-        ...
-
-    def forward_step(
-        self,
-        model: Any,
-        batch: ExperienceBatch,
-        timestep_idx: int,
-    ) -> dict[str, Any]:
-        """Run model forward for one timestep.
-
-        Returns dict with at least 'noise_pred' key.
-        Model-specific keys also allowed.
-        """
         ...

@@ -1,4 +1,4 @@
-"""Tests for vrl.models.families.janus_pro.JanusProT2I.
+"""Tests for vrl.models.families.janus_pro.JanusProPolicy.
 
 Uses a stub MultiModalityCausalLM (identity trunk + tiny gen_head) so
 we can validate the shape contracts of the wrapper without downloading
@@ -13,12 +13,12 @@ import pytest
 import torch
 import torch.nn as nn
 
-from vrl.models.families.janus_pro.model import (
+from vrl.models.families.janus_pro.policy import (
     JANUS_IMAGE_PIXEL_SIZE,
     JANUS_IMAGE_TOKEN_NUM,
     JANUS_IMAGE_VOCAB_SIZE,
     JanusProConfig,
-    JanusProT2I,
+    JanusProPolicy,
     image_token_logits_from_hidden,
 )
 
@@ -78,9 +78,9 @@ class _StubMMGPT(nn.Module):
 
 
 @pytest.fixture
-def stub_model() -> JanusProT2I:
+def stub_model() -> JanusProPolicy:
     cfg = JanusProConfig(use_lora=False)
-    return JanusProT2I(config=cfg, mmgpt=_StubMMGPT(), processor=object())
+    return JanusProPolicy(config=cfg, mmgpt=_StubMMGPT(), processor=object())
 
 
 # ---------------------------------------------------------------------------
@@ -94,14 +94,14 @@ class TestSurface:
         assert JANUS_IMAGE_VOCAB_SIZE == 16_384
         assert JANUS_IMAGE_PIXEL_SIZE == 384
 
-    def test_loads_with_stub(self, stub_model: JanusProT2I) -> None:
+    def test_loads_with_stub(self, stub_model: JanusProPolicy) -> None:
         # Frozen base, no LoRA → 0 trainable
         assert stub_model.trainable_param_count() == 0
 
     def test_missing_attr_raises(self) -> None:
         broken = nn.Module()  # no language_model / gen_head / gen_vision_model
         with pytest.raises(RuntimeError, match="Janus"):
-            JanusProT2I(JanusProConfig(use_lora=False), mmgpt=broken, processor=object())
+            JanusProPolicy(JanusProConfig(use_lora=False), mmgpt=broken, processor=object())
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@ class TestSurface:
 
 
 class TestForwardImageLogits:
-    def test_shape(self, stub_model: JanusProT2I) -> None:
+    def test_shape(self, stub_model: JanusProPolicy) -> None:
         B, L_text, L_img = 2, 5, 8
         text_emb = torch.randn(B, L_text, HIDDEN)
         text_mask = torch.ones(B, L_text)
@@ -118,7 +118,7 @@ class TestForwardImageLogits:
         out = stub_model.forward_image_logits(text_emb, text_mask, img_ids)
         assert out.shape == (B, L_img, IMG_VOCAB)
 
-    def test_uses_gen_head_not_lm_head(self, stub_model: JanusProT2I) -> None:
+    def test_uses_gen_head_not_lm_head(self, stub_model: JanusProPolicy) -> None:
         """Catches the silent bug where someone replaces gen_head with lm_head."""
         B, L_text, L_img = 1, 3, 2
         text_emb = torch.randn(B, L_text, HIDDEN)
@@ -136,7 +136,7 @@ class TestForwardImageLogits:
 
 
 class TestSampleImageTokens:
-    def test_shapes_and_dtypes(self, stub_model: JanusProT2I) -> None:
+    def test_shapes_and_dtypes(self, stub_model: JanusProPolicy) -> None:
         B, L_text = 2, 4
         cond = torch.randn(B, L_text, HIDDEN)
         uncond = torch.randn(B, L_text, HIDDEN)
@@ -149,7 +149,7 @@ class TestSampleImageTokens:
         assert toks.dtype == torch.long
         assert lps.dtype == torch.float32
 
-    def test_logprobs_are_negative(self, stub_model: JanusProT2I) -> None:
+    def test_logprobs_are_negative(self, stub_model: JanusProPolicy) -> None:
         """log_softmax entries are always <= 0."""
         B = 1
         cond = torch.randn(B, 2, HIDDEN)
@@ -160,7 +160,7 @@ class TestSampleImageTokens:
         )
         assert (lps <= 0.0).all()
 
-    def test_token_ids_in_range(self, stub_model: JanusProT2I) -> None:
+    def test_token_ids_in_range(self, stub_model: JanusProPolicy) -> None:
         B = 2
         cond = torch.randn(B, 2, HIDDEN)
         uncond = torch.randn(B, 2, HIDDEN)
@@ -177,12 +177,12 @@ class TestSampleImageTokens:
 
 
 class TestDecode:
-    def test_pixel_shape(self, stub_model: JanusProT2I) -> None:
+    def test_pixel_shape(self, stub_model: JanusProPolicy) -> None:
         B, L = 2, 16  # 4x4 grid
         out = stub_model.decode_image_tokens(torch.randint(0, IMG_VOCAB, (B, L)))
         assert out.shape == (B, 3, 64, 64)
 
-    def test_pixel_range_clipped(self, stub_model: JanusProT2I) -> None:
+    def test_pixel_range_clipped(self, stub_model: JanusProPolicy) -> None:
         out = stub_model.decode_image_tokens(torch.zeros(1, 4, dtype=torch.long))
         assert out.min() >= -1.0 and out.max() <= 1.0
 
@@ -208,10 +208,10 @@ class _ConfigStubVQ(nn.Module):
         return torch.zeros(B, 3, h * 16, w * 16)
 
 
-def _build_with_vq(vq: nn.Module) -> JanusProT2I:
+def _build_with_vq(vq: nn.Module) -> JanusProPolicy:
     mmgpt = _StubMMGPT()
     mmgpt.gen_vision_model = vq
-    return JanusProT2I(JanusProConfig(use_lora=False), mmgpt=mmgpt, processor=object())
+    return JanusProPolicy(JanusProConfig(use_lora=False), mmgpt=mmgpt, processor=object())
 
 
 class TestVQLatentChannels:
@@ -282,14 +282,14 @@ class TestVQLatentChannels:
 
 
 class TestDisableAdapter:
-    def test_raises_when_no_lora_adapter(self, stub_model: JanusProT2I) -> None:
+    def test_raises_when_no_lora_adapter(self, stub_model: JanusProPolicy) -> None:
         """Silent-failure red-line: yielding a no-op would make ref == policy."""
         assert stub_model.has_lora_adapter is False
         with pytest.raises(RuntimeError, match="no PEFT adapter"):
             with stub_model.disable_adapter():
                 pass
 
-    def test_has_lora_adapter_flag(self, stub_model: JanusProT2I) -> None:
+    def test_has_lora_adapter_flag(self, stub_model: JanusProPolicy) -> None:
         # Stub LM has no ``disable_adapter`` attr → flag must be False.
         assert stub_model.has_lora_adapter is False
 
@@ -299,7 +299,7 @@ class TestDisableAdapter:
 # ---------------------------------------------------------------------------
 
 
-def test_image_token_logits_helper(stub_model: JanusProT2I) -> None:
+def test_image_token_logits_helper(stub_model: JanusProPolicy) -> None:
     h = torch.randn(2, 7, HIDDEN)
     out = image_token_logits_from_hidden(stub_model.mmgpt, h)
     assert out.shape == (2, 7, IMG_VOCAB)

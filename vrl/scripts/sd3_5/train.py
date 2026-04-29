@@ -41,63 +41,17 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     weight_dtype = torch.bfloat16 if trainer_config.bf16 else torch.float16
 
-    # 1. Pipeline
-    from diffusers import StableDiffusion3Pipeline
+    # 1. Build runtime (backend construction lives in family builder)
+    from vrl.models.families.sd3_5.builder import build_sd3_5_runtime_bundle_from_cfg
 
-    logger.info("Loading StableDiffusion3Pipeline from %s", cfg.model.path)
-    pipeline = StableDiffusion3Pipeline.from_pretrained(
-        cfg.model.path, torch_dtype=weight_dtype,
-    )
-    pipeline.vae.requires_grad_(False)
-    for enc in (pipeline.text_encoder, pipeline.text_encoder_2, pipeline.text_encoder_3):
-        if enc is not None:
-            enc.requires_grad_(False)
-            enc.to(device, dtype=weight_dtype)
-    pipeline.vae.to(device, dtype=torch.float32)
-
-    # 2. LoRA
-    if cfg.model.use_lora:
-        pipeline.transformer.requires_grad_(False)
-        pipeline.transformer.to(device)
-        from peft import LoraConfig, PeftModel, get_peft_model
-
-        lora_path = cfg.model.lora.path
-        if lora_path:
-            pipeline.transformer = PeftModel.from_pretrained(
-                pipeline.transformer, lora_path, is_trainable=True,
-            )
-            pipeline.transformer.set_adapter("default")
-        else:
-            lora_config = LoraConfig(
-                r=cfg.model.lora.rank,
-                lora_alpha=cfg.model.lora.alpha,
-                init_lora_weights="gaussian",
-                target_modules=list(cfg.model.lora.target_modules),
-            )
-            pipeline.transformer = get_peft_model(pipeline.transformer, lora_config)
-        logger.info(
-            "Applied LoRA (rank=%d, alpha=%d)",
-            cfg.model.lora.rank, cfg.model.lora.alpha,
-        )
-    else:
-        pipeline.transformer.requires_grad_(True)
-        pipeline.transformer.to(device)
-
-    transformer = pipeline.transformer
+    bundle = build_sd3_5_runtime_bundle_from_cfg(cfg, device, weight_dtype)
+    sd3_5_model = bundle.policy
+    transformer = bundle.trainable_modules["transformer"]
 
     if trainer_config.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
 
-    if cfg.model.torch_compile.enable:
-        logger.info("Compiling transformer with mode=%s", cfg.model.torch_compile.mode)
-        pipeline.transformer = torch.compile(
-            pipeline.transformer, mode=cfg.model.torch_compile.mode, fullgraph=False,
-        )
-        transformer = pipeline.transformer
-
-    pipeline.scheduler.set_timesteps(cfg.sampling.num_steps, device=device)
-
-    # 3. Reward
+    # 2. Reward
     reward_weights = {
         name: float(w) for name, w in cfg.reward.components.items() if float(w) > 0
     }
@@ -111,7 +65,7 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
     )
     logger.info("Reward mix: %s", reward_weights)
 
-    # 4. Collector + algorithm
+    # 3. Collector + algorithm
     collector_config = SD3_5CollectorConfig(
         num_steps=cfg.sampling.num_steps,
         guidance_scale=cfg.sampling.guidance_scale,
@@ -124,13 +78,10 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
         sde_window_size=cfg.rollout.sde.window_size,
         sde_window_range=tuple(cfg.rollout.sde.window_range),
     )
-    from vrl.models.families.sd3_5.diffusers_t2i import DiffusersSD3_5T2IModel
-
-    sd3_5_model = DiffusersSD3_5T2IModel(pipeline=pipeline, device=device)
     collector = SD3_5Collector(sd3_5_model, reward_fn, collector_config)
 
     evaluator = FlowMatchingEvaluator(
-        pipeline.scheduler, noise_level=cfg.rollout.get("noise_level", 0.7), sde_type="sde",
+        bundle.scheduler, noise_level=cfg.rollout.get("noise_level", 0.7), sde_type="sde",
     )
     algorithm = GRPO(grpo_config)
 
@@ -151,7 +102,7 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
         stat_tracker=stat_tracker,
     )
 
-    # 5. Prompts + loop (identical to wan_train)
+    # 4. Prompts + loop
     manifest_path = Path(cfg.data.manifest)
     if not manifest_path.exists():
         raise FileNotFoundError(f"Manifest not found: {manifest_path}")

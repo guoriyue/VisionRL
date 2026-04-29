@@ -87,7 +87,7 @@ def _build_encoders(pipeline, num_frames: int, device, dtype):
     text_encoder = pipeline.text_encoder
     tokenizer = pipeline.tokenizer
 
-    # VAE normalization stats — same as DiffusersWanT2VModel.decode_vae
+    # VAE normalization stats — same as WanT2VDiffusersPolicy.decode_latents
     z_dim = vae.config.z_dim
     latents_mean = (
         torch.tensor(vae.config.latents_mean).view(1, z_dim, 1, 1, 1).to(device, dtype=torch.float32)
@@ -145,44 +145,35 @@ def train(config: WanDPOConfig) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     weight_dtype = torch.bfloat16 if config.mixed_precision == "bf16" else torch.float16
 
-    # 1. Load WanPipeline
-    logger.info("Loading WanPipeline from %s", config.model_path)
-    from diffusers import WanPipeline
+    # 1. Build runtime via the wan_2_1 family builder (no direct diffusers import).
+    from vrl.models.families.wan_2_1.builder import build_wan_2_1_runtime_bundle
+    from vrl.models.runtime import RuntimeBuildSpec
 
-    pipeline = WanPipeline.from_pretrained(config.model_path, torch_dtype=weight_dtype)
-    pipeline.vae.requires_grad_(False)
-    pipeline.text_encoder.requires_grad_(False)
-    pipeline.vae.to(device, dtype=torch.float32)
-    pipeline.text_encoder.to(device, dtype=weight_dtype)
-
-    # 2. LoRA on transformer (mirrors the GRPO script)
-    if config.use_lora:
-        pipeline.transformer.requires_grad_(False)
-        pipeline.transformer.to(device)
-
-        from peft import LoraConfig, PeftModel, get_peft_model
-
-        if config.lora_path:
-            pipeline.transformer = PeftModel.from_pretrained(
-                pipeline.transformer, config.lora_path, is_trainable=True,
-            )
-            pipeline.transformer.set_adapter("default")
-        else:
-            target_modules = [
+    lora_cfg = None
+    if config.use_lora and not config.lora_path:
+        lora_cfg = {
+            "rank": config.lora_rank,
+            "alpha": config.lora_alpha,
+            "target_modules": [
                 "add_k_proj", "add_q_proj", "add_v_proj", "to_add_out",
                 "to_k", "to_out.0", "to_q", "to_v",
-            ]
-            lora_config = LoraConfig(
-                r=config.lora_rank, lora_alpha=config.lora_alpha,
-                init_lora_weights="gaussian", target_modules=target_modules,
-            )
-            pipeline.transformer = get_peft_model(pipeline.transformer, lora_config)
-        logger.info("Applied LoRA (r=%d, α=%d)", config.lora_rank, config.lora_alpha)
-    else:
-        pipeline.transformer.requires_grad_(True)
-        pipeline.transformer.to(device)
+            ],
+        }
+    spec = RuntimeBuildSpec(
+        model_name_or_path=config.model_path,
+        device=device,
+        dtype=weight_dtype,
+        backend_preference=("diffusers",),
+        task_variant="t2v",
+        use_lora=bool(config.use_lora),
+        lora_path=config.lora_path or None,
+        lora_config=lora_cfg,
+        scheduler_config=None,  # DPO sets training timesteps directly below
+    )
+    bundle = build_wan_2_1_runtime_bundle(spec)
+    pipeline = bundle.backend_handle
+    transformer = bundle.trainable_modules["transformer"]
 
-    transformer = pipeline.transformer
     if config.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
 

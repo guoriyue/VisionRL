@@ -14,13 +14,14 @@ class TestOnlineTrainerCeaRegressions:
         from vrl.rollouts.evaluators.types import SignalBatch
         from vrl.rollouts.types import ExperienceBatch
         from vrl.trainers.online import OnlineTrainer
-        from vrl.trainers.types import TrainerConfig
+        from vrl.trainers.types import DebugConfig, EMAConfig, OptimConfig, TrainerConfig
 
         class _Algorithm:
             class _Config:
                 global_std = False
                 eps = 1e-8
                 adv_clip_max = 5.0
+                init_kl_coef = 0.0
 
             config = _Config()
 
@@ -94,9 +95,11 @@ class TestOnlineTrainerCeaRegressions:
             evaluator=_Evaluator(),
             model=model,
             config=TrainerConfig(
-                lr=0.01,
-                group_size=2,
-                mixed_precision="no",
+                optim=OptimConfig(lr=0.01),
+                ema=EMAConfig(),
+                debug=DebugConfig(),
+                n=2,
+                bf16=False,
             ),
             device="cpu",
         )
@@ -135,7 +138,7 @@ class TestOnlineTrainerCeaRegressions:
         from vrl.rollouts.types import ExperienceBatch
         from vrl.trainers.data import PromptExample
         from vrl.trainers.online import OnlineTrainer
-        from vrl.trainers.types import TrainerConfig
+        from vrl.trainers.types import DebugConfig, EMAConfig, OptimConfig, TrainerConfig
 
         captured_kwargs: list[dict] = []
 
@@ -144,6 +147,7 @@ class TestOnlineTrainerCeaRegressions:
                 global_std = False
                 eps = 1e-8
                 adv_clip_max = 5.0
+                init_kl_coef = 0.0
 
             config = _Config()
 
@@ -197,7 +201,13 @@ class TestOnlineTrainerCeaRegressions:
             collector=_CapturingCollector(),
             evaluator=_Evaluator(),
             model=model,
-            config=TrainerConfig(lr=0.01, group_size=2, mixed_precision="no"),
+            config=TrainerConfig(
+                optim=OptimConfig(lr=0.01),
+                ema=EMAConfig(),
+                debug=DebugConfig(),
+                n=2,
+                bf16=False,
+            ),
             device="cpu",
         )
 

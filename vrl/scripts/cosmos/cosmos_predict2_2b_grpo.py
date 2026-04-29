@@ -121,90 +121,47 @@ async def train(config: CosmosPred2Config) -> None:
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # 1. Load Cosmos2 Pipeline (bypass safety checker)
-    logger.info("Loading Cosmos2VideoToWorldPipeline from %s", config.model_path)
-
-    import diffusers.pipelines.cosmos.pipeline_cosmos2_video2world as _v2w_mod
-    from diffusers import Cosmos2VideoToWorldPipeline
-
-    # Bypass safety checker
-    _orig_safety = _v2w_mod.CosmosSafetyChecker
-
-    class _PassthroughSafetyChecker:
-        def to(self, device):
-            return self
-
-        def check_text_safety(self, prompt):
-            return True
-
-        def check_video_safety(self, video):
-            return video
-
-    _v2w_mod.CosmosSafetyChecker = _PassthroughSafetyChecker  # type: ignore[assignment]
-    try:
-        pipeline = Cosmos2VideoToWorldPipeline.from_pretrained(
-            config.model_path,
-            torch_dtype=torch.bfloat16 if config.mixed_precision == "bf16" else torch.float16,
-        )
-    finally:
-        _v2w_mod.CosmosSafetyChecker = _orig_safety
-
-    # diffusers from_pretrained disables grad globally — re-enable for training
-    torch.set_grad_enabled(True)
-
-    pipeline.set_progress_bar_config(disable=True)
-    pipeline.vae.requires_grad_(False)
-    pipeline.text_encoder.requires_grad_(False)
-    pipeline.vae.to(device, dtype=torch.float32)
-    pipeline.text_encoder.to(
-        device,
-        dtype=torch.bfloat16 if config.mixed_precision == "bf16" else torch.float16,
+    weight_dtype = (
+        torch.bfloat16 if config.mixed_precision == "bf16" else torch.float16
     )
 
-    # 2. Apply LoRA to the transformer
+    # 1. Build runtime via the family builder (pipeline load + LoRA
+    #    wrap + freeze + scheduler init all live there).
+    from vrl.models.families.cosmos.builder import (
+        build_cosmos_predict2_runtime_bundle,
+    )
+    from vrl.models.runtime import RuntimeBuildSpec
+
+    lora_cfg: dict | None = None
     if config.use_lora:
-        pipeline.transformer.requires_grad_(False)
-        pipeline.transformer.to(device)
-
-        from peft import LoraConfig, PeftModel, get_peft_model
-
-        if config.lora_path:
-            pipeline.transformer = PeftModel.from_pretrained(
-                pipeline.transformer, config.lora_path,
-                is_trainable=True,
-            )
-            pipeline.transformer.set_adapter("default")
-        else:
-            target_modules = [
+        lora_cfg = {
+            "rank": int(config.lora_rank),
+            "alpha": int(config.lora_alpha),
+            "target_modules": [
                 "to_k", "to_q", "to_v", "to_out.0",
                 "add_k_proj", "add_q_proj", "add_v_proj", "to_add_out",
-            ]
-            lora_config = LoraConfig(
-                r=config.lora_rank,
-                lora_alpha=config.lora_alpha,
-                init_lora_weights="gaussian",
-                target_modules=target_modules,
-            )
-            pipeline.transformer = get_peft_model(
-                pipeline.transformer, lora_config,
-            )
-        logger.info(
-            "Applied LoRA (rank=%d, alpha=%d) to transformer",
-            config.lora_rank, config.lora_alpha,
-        )
-    else:
-        pipeline.transformer.requires_grad_(True)
-        pipeline.transformer.to(device)
+            ],
+        }
 
-    transformer = pipeline.transformer
+    spec = RuntimeBuildSpec(
+        model_name_or_path=config.model_path,
+        device=device,
+        dtype=weight_dtype,
+        backend_preference=("diffusers",),
+        task_variant="video2world",
+        use_lora=bool(config.use_lora),
+        lora_path=config.lora_path or None,
+        lora_config=lora_cfg,
+        scheduler_config={"num_steps": int(config.num_steps)},
+    )
+    bundle = build_cosmos_predict2_runtime_bundle(spec)
+    cosmos_model = bundle.policy
+    transformer = bundle.trainable_modules["transformer"]
+    scheduler = bundle.scheduler
 
     # Gradient checkpointing for memory efficiency
     if config.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
-
-    # 3. Get the scheduler for the evaluator
-    pipeline.scheduler.set_timesteps(config.num_steps, device=device)
 
     # 4. Build reward function
     _register_builtins()
@@ -233,23 +190,13 @@ async def train(config: CosmosPred2Config) -> None:
         sde_window_range=config.sde_window_range,
         same_latent=config.same_latent,
     )
-    from vrl.models.families.cosmos.predict2 import DiffusersCosmosPredict2Executor
-    from vrl.models.families.cosmos.variants import CosmosVariant
-
-    cosmos_executor = DiffusersCosmosPredict2Executor(
-        variant=CosmosVariant.PREDICT2_VIDEO2WORLD,
-        model_size="2B",
-    )
-    cosmos_executor._pipeline = pipeline
-    cosmos_executor._load_modules()
-
     collector = CosmosPredict2Collector(
-        cosmos_executor, reward_fn, collector_config,
+        cosmos_model, reward_fn, collector_config,
         reference_image=reference_image,
     )
 
     evaluator = FlowMatchingEvaluator(
-        pipeline.scheduler,
+        scheduler,
         noise_level=1.0,
         sde_type="sde",  # Cosmos2 uses FlowMatchEulerDiscreteScheduler — same as Wan
     )

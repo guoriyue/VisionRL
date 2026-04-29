@@ -1,6 +1,6 @@
 """Janus-Pro rollout collector for token-level GRPO.
 
-Pairs ``vrl.models.families.janus_pro.JanusProT2I`` with the generic
+Pairs ``vrl.models.families.janus_pro.JanusProPolicy`` with the generic
 ``OnlineTrainer`` CEA pipeline:
 
     Collector  →  TokenLogProbEvaluator  →  TokenGRPO  →  OnlineTrainer
@@ -35,7 +35,7 @@ import torch.nn.functional as F
 from vrl.rollouts.types import ExperienceBatch
 
 if TYPE_CHECKING:  # pragma: no cover
-    from vrl.models.families.janus_pro.model import JanusProT2I
+    from vrl.models.families.janus_pro.policy import JanusProPolicy
     from vrl.rewards.base import RewardFunction
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,7 @@ class JanusProCollectorConfig:
 
 
 class JanusProCollector:
-    """Collect on-policy rollouts from a ``JanusProT2I`` wrapper.
+    """Collect on-policy rollouts from a ``JanusProPolicy`` wrapper.
 
     Implements the same ``Collector`` Protocol as ``Wan_2_1Collector``
     so ``OnlineTrainer`` can use it without code changes.
@@ -65,7 +65,7 @@ class JanusProCollector:
 
     def __init__(
         self,
-        model: "JanusProT2I",
+        model: "JanusProPolicy",
         reward_fn: "RewardFunction | None" = None,
         config: JanusProCollectorConfig | None = None,
     ) -> None:
@@ -180,34 +180,6 @@ class JanusProCollector:
         )
 
     # ------------------------------------------------------------------
-    # Public: training-time forward (Collector protocol)
-    # ------------------------------------------------------------------
-
-    def forward_step(
-        self,
-        model: "JanusProT2I",
-        batch: ExperienceBatch,
-        timestep_idx: int = 0,
-    ) -> dict[str, Any]:
-        """Single forward producing per-token logits over the image vocab.
-
-        AR has no notion of "denoising step" — ``timestep_idx`` is accepted
-        for protocol compatibility but ignored.
-        """
-        # observations may be [B, L_text] (direct-use) or [B, 1, L_text]
-        # (OnlineTrainer path). Squeeze the T=1 axis if present.
-        obs = batch.observations
-        prompt_ids = obs.squeeze(1) if obs.dim() == 3 else obs
-        prompt_mask = batch.extras["prompt_attention_mask"]
-        image_token_ids = batch.actions
-
-        prompt_embeds = self._embed_with(model, prompt_ids)
-        logits = model.forward_image_logits(
-            prompt_embeds, prompt_mask, image_token_ids,
-        )  # [B, L_img, V_img]
-        return {"logits": logits, "image_token_ids": image_token_ids}
-
-    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
@@ -295,7 +267,7 @@ class JanusProCollector:
         return self._embed_with(self.model, token_ids)
 
     @staticmethod
-    def _embed_with(model: "JanusProT2I", token_ids: torch.Tensor) -> torch.Tensor:
+    def _embed_with(model: "JanusProPolicy", token_ids: torch.Tensor) -> torch.Tensor:
         embed = model.language_model.get_input_embeddings()
         return embed(token_ids)
 

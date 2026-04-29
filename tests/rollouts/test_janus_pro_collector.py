@@ -16,10 +16,10 @@ import torch
 import torch.nn as nn
 
 from vrl.algorithms.grpo_token import TokenGRPO, TokenGRPOConfig
-from vrl.models.families.janus_pro.model import (
+from vrl.models.families.janus_pro.policy import (
     JANUS_IMAGE_VOCAB_SIZE,
     JanusProConfig,
-    JanusProT2I,
+    JanusProPolicy,
 )
 from vrl.rollouts.collectors.janus_pro import JanusProCollector, JanusProCollectorConfig
 from vrl.rollouts.evaluators.lm import TokenLogProbEvaluator
@@ -121,7 +121,7 @@ class _BatchReward:
 @pytest.fixture
 def stub_collector() -> JanusProCollector:
     cfg = JanusProConfig(use_lora=False)
-    model = JanusProT2I(config=cfg, mmgpt=_StubMMGPT(), processor=_StubProcessor())
+    model = JanusProPolicy(config=cfg, mmgpt=_StubMMGPT(), processor=_StubProcessor())
     return JanusProCollector(
         model=model,
         reward_fn=_ConstReward(),
@@ -196,7 +196,7 @@ class TestCollect:
 
 def _build_collector_with_reward(reward: object) -> JanusProCollector:
     cfg = JanusProConfig(use_lora=False)
-    model = JanusProT2I(config=cfg, mmgpt=_StubMMGPT(), processor=_StubProcessor())
+    model = JanusProPolicy(config=cfg, mmgpt=_StubMMGPT(), processor=_StubProcessor())
     return JanusProCollector(
         model=model, reward_fn=reward,
         config=JanusProCollectorConfig(
@@ -267,9 +267,9 @@ class TestEvaluate:
         self, stub_collector: JanusProCollector,
     ) -> None:
         """When the caller hands in a real ref_model, evaluate runs fine."""
-        # Build a second JanusProT2I as the frozen ref policy.
+        # Build a second JanusProPolicy as the frozen ref policy.
         cfg = JanusProConfig(use_lora=False)
-        ref = JanusProT2I(config=cfg, mmgpt=_StubMMGPT(), processor=_StubProcessor())
+        ref = JanusProPolicy(config=cfg, mmgpt=_StubMMGPT(), processor=_StubProcessor())
 
         batch = asyncio.run(stub_collector.collect(["x"]))
         evaluator = TokenLogProbEvaluator()
@@ -295,18 +295,18 @@ class TestEndToEnd:
         # Re-build with LoRA-free trainable head so we have grads.
         cfg = JanusProConfig(use_lora=False)
         mmgpt = _StubMMGPT()
-        # Make gen_head trainable (default JanusProT2I freezes everything)
+        # Make gen_head trainable (default JanusProPolicy freezes everything)
         for p in mmgpt.gen_head.parameters():
             p.requires_grad_(True)
         # Bypass the freeze: call ctor first then re-enable gen_head grad.
-        model = JanusProT2I(config=cfg, mmgpt=mmgpt, processor=_StubProcessor())
+        model = JanusProPolicy(config=cfg, mmgpt=mmgpt, processor=_StubProcessor())
         for p in model.mmgpt.gen_head.parameters():
             p.requires_grad_(True)
         stub_collector.model = model
 
         batch = asyncio.run(stub_collector.collect(["a"]))
         evaluator = TokenLogProbEvaluator()
-        algorithm = TokenGRPO(TokenGRPOConfig(kl_coeff=0.0, clip_eps=0.5))
+        algorithm = TokenGRPO(TokenGRPOConfig(init_kl_coef=0.0, eps_clip=0.5))
 
         advantages = algorithm.compute_advantages_from_tensors(
             batch.rewards, batch.group_ids,

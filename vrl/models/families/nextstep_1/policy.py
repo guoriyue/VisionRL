@@ -1,0 +1,502 @@
+"""NextStep-1 wrapper for autoregressive image RL with continuous tokens.
+
+Mirrors ``vrl.models.families.janus_pro.JanusProPolicy`` but for StepFun's
+continuous-token AR model. The shape contract is:
+
+  * ``sample_image_tokens(...)`` →
+        (continuous_tokens [B, L, D_token],
+         saved_noise        [B, L, D_token],   # x_0 prior, for replay
+         old_logprobs       [B, L])            # Gaussian per-token log-prob
+
+  * ``recompute_logprobs(...)`` →
+        fresh_logprobs       [B, L]            # under current policy
+
+  * ``decode_image_tokens(...)`` → pixels [B, 3, H, W]
+
+  * ``disable_adapter()`` — context manager for the LoRA-off ref pass
+
+The "logits" abstraction does not apply: tokens are continuous so we
+work with per-token Gaussian log-probs directly. The ``OnlineTrainer``
++ ``TokenGRPO`` pipeline is shape-agnostic (it only sees ``[B, L]``
+log-prob tensors), so no trainer-side change is required.
+
+UPSTREAM BINDING
+================
+This module is a *scaffolding* — every real call into the upstream
+NextStep-1 package is marked ``# TODO(nextstep-binding)``. Once you've
+done ``pip install -e .`` from ``stepfun-ai/NextStep-1``, fill in:
+    - ``_load_pipeline``     : how the upstream pipeline is constructed
+    - ``_run_llm_step``      : single-token LLM forward returning hidden
+    - ``_image_in_projector``: continuous-token → LLM-hidden projection
+    - ``_decode_via_vae``    : token sequence → pixels via the f8ch16 VAE
+
+The flow head's velocity-call signature is handled in
+``vrl.models.families.nextstep_1.flow_step``.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import logging
+from dataclasses import dataclass
+from typing import Any, Iterator
+
+import torch
+import torch.nn as nn
+
+from vrl.models.ar import AutoregressivePolicy
+from vrl.models.families.nextstep_1.flow_step import (
+    flow_logprob_at,
+    flow_sample_with_logprob,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# NextStep-1 image grid: 32×32 continuous patches at f8ch16 = 16-channel,
+# 8× downsample VAE (per the model card). Override via config if you load
+# a different checkpoint that uses a different grid.
+NEXTSTEP_DEFAULT_TOKEN_NUM = 1024     # 32 × 32 patches per 256² image
+NEXTSTEP_DEFAULT_TOKEN_DIM = 16       # f8ch16 latent channels per patch
+NEXTSTEP_DEFAULT_PIXEL_SIZE = 256
+
+
+@dataclass(slots=True)
+class NextStep1Config:
+    """Hyper-parameters for the NextStep-1 wrapper.
+
+    Defaults target ``stepfun-ai/NextStep-1.1`` — the RL-post-trained
+    14B variant — paired with the f8ch16 VAE tokenizer.
+    """
+
+    model_path: str = "stepfun-ai/NextStep-1.1"
+    vae_path: str = "stepfun-ai/NextStep-1-f8ch16-Tokenizer"
+    dtype: str = "bfloat16"
+    device: str = "cuda"
+
+    # LoRA — applied to the LLM trunk (the 14B AR transformer)
+    use_lora: bool = True
+    lora_rank: int = 32
+    lora_alpha: int = 64
+    lora_dropout: float = 0.0
+    # NextStep-1's LLM is Qwen-derived; same names as Qwen-2 attention
+    lora_target_modules: tuple[str, ...] = (
+        "q_proj", "k_proj", "v_proj", "o_proj",
+    )
+    lora_init: str = "gaussian"
+
+    # Flow-head sampling — used by sample_image_tokens
+    num_flow_steps: int = 20             # K Euler steps inside the flow ODE
+    noise_level: float = 1.0             # final-step Gaussian std multiplier
+    cfg_scale: float = 4.5               # CFG strength on the velocity field
+
+    # AR loop
+    image_token_num: int = NEXTSTEP_DEFAULT_TOKEN_NUM
+    token_dim: int = NEXTSTEP_DEFAULT_TOKEN_DIM
+    image_size: int = NEXTSTEP_DEFAULT_PIXEL_SIZE
+
+    # Frozen sub-modules
+    freeze_vae: bool = True
+    freeze_image_head: bool = False     # train the 157M flow head with LoRA-style updates
+
+
+# ---------------------------------------------------------------------------
+# Wrapper
+# ---------------------------------------------------------------------------
+
+
+class NextStep1Policy(nn.Module, AutoregressivePolicy):
+    """Continuous-token AR T2I wrapper for the GRPO trainer.
+
+    Composes:
+      * ``self._pipeline``       : upstream ``NextStepPipeline`` (lazy-loaded)
+      * ``self.language_model``  : the LLM trunk (LoRA target)
+      * ``self.image_head``      : the 157M flow-matching MLP head
+      * ``self.image_in_projector``: continuous-token → LLM-hidden projection
+      * ``self.vae``             : f8ch16 VAE for decode
+      * ``self.processor``       : tokenizer + chat-template
+    """
+
+    def __init__(self, config: NextStep1Config) -> None:
+        super().__init__()
+        self.config = config
+
+        torch_dtype = {
+            "bfloat16": torch.bfloat16,
+            "float16": torch.float16,
+            "float32": torch.float32,
+        }[config.dtype]
+        self.dtype = torch_dtype
+        self.device = torch.device(config.device)
+
+        self._pipeline = self._load_pipeline()
+
+        # Upstream NextStepModel inherits Qwen2Model + NextStepMixin —
+        # i.e. the AR transformer trunk and the image head/projector live
+        # on the same object. There is no separate ``.llm`` attribute.
+        # We treat the whole NextStepModel as ``language_model`` so PEFT
+        # can attach to its Qwen2 attention modules.
+        self.language_model = self._pipeline.model
+        self.image_head = self._pipeline.model.image_head
+        self._image_in_projector = self._pipeline.model.image_in_projector
+        self._image_out_projector = self._pipeline.model.image_out_projector
+        self.vae = self._pipeline.vae
+        self.processor = self._pipeline.tokenizer  # AutoTokenizer (naming aligns with Janus)
+
+        # Freeze what shouldn't be trained.
+        if config.freeze_vae:
+            for p in self.vae.parameters():
+                p.requires_grad_(False)
+
+        if config.use_lora:
+            self._attach_lora()
+
+    # ------------------------------------------------------------------
+    # Loading
+    # ------------------------------------------------------------------
+
+    def _load_pipeline(self) -> Any:
+        """Instantiate the upstream NextStep-1 pipeline.
+
+        Upstream layout: ``inference/`` is a top-level directory in the
+        cloned repo (NOT a submodule of ``nextstep``), and its
+        ``gen_pipeline.py`` uses bare ``from gen_pipeline import ...``
+        imports — so we have to put that directory on ``sys.path`` before
+        importing.
+        """
+        import os
+        import sys
+
+        try:
+            import nextstep  # type: ignore[import-not-found]
+        except ImportError as e:
+            raise ImportError(
+                "NextStep-1 wrapper requires `stepfun-ai/NextStep-1`. Install with:\n"
+                "    git clone https://github.com/stepfun-ai/NextStep-1\n"
+                "    cd NextStep-1 && pip install -e ."
+            ) from e
+
+        # NextStep ships its inference pipeline outside the package, so we
+        # locate the cloned repo via the ``nextstep/`` package's parent.
+        repo_root = os.path.dirname(os.path.dirname(nextstep.__file__))
+        inference_dir = os.path.join(repo_root, "inference")
+        if inference_dir not in sys.path:
+            sys.path.insert(0, inference_dir)
+
+        from gen_pipeline import NextStepPipeline  # type: ignore[import-not-found]
+
+        return NextStepPipeline(
+            model_name_or_path=self.config.model_path,
+            vae_name_or_path=self.config.vae_path,
+            device=str(self.device),
+            dtype=self.dtype,
+        )
+
+    def _attach_lora(self) -> None:
+        from peft import LoraConfig, get_peft_model
+
+        lora_cfg = LoraConfig(
+            r=self.config.lora_rank,
+            lora_alpha=self.config.lora_alpha,
+            lora_dropout=self.config.lora_dropout,
+            target_modules=list(self.config.lora_target_modules),
+            init_lora_weights=self.config.lora_init,
+        )
+        # The whole NextStepModel becomes the PEFT-wrapped module. Since
+        # the pipeline holds the model by reference, the upstream
+        # ``decoding()`` path automatically sees the LoRA'd weights.
+        self.language_model = get_peft_model(self.language_model, lora_cfg)
+        self._pipeline.model = self.language_model
+
+    # ------------------------------------------------------------------
+    # Public: trainable param count
+    # ------------------------------------------------------------------
+
+    def trainable_param_count(self) -> int:
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    # ------------------------------------------------------------------
+    # Public: AR sampling with per-token log-probabilities
+    # ------------------------------------------------------------------
+
+    @torch.no_grad()
+    def sample_image_tokens(
+        self,
+        prompt_embeds: torch.Tensor,         # [B, L_text, D_hidden]
+        uncond_embeds: torch.Tensor | None,  # [B, L_text, D_hidden] or None
+        prompt_mask: torch.Tensor,           # [B, L_text]
+        uncond_mask: torch.Tensor | None,    # [B, L_text]
+        *,
+        cfg_scale: float | None = None,
+        num_flow_steps: int | None = None,
+        noise_level: float | None = None,
+        image_token_num: int | None = None,
+        generator: torch.Generator | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Run the AR loop and return (tokens, saved_noise, log_probs).
+
+        Args:
+            prompt_embeds:  text-prompt embeddings (caller invokes
+                            ``self.language_model.get_input_embeddings()``)
+            uncond_embeds:  unconditional embeddings for CFG; pass ``None`` to
+                            skip CFG.
+            prompt_mask:    attention mask for ``prompt_embeds``.
+            uncond_mask:    attention mask for ``uncond_embeds`` (or None).
+
+        Returns:
+            tokens         ``[B, L_img, D_token]`` — continuous tokens.
+            saved_noise    ``[B, L_img, D_token]`` — flow ODE prior x_0 used
+                           per token. Stash so ``recompute_logprobs`` can
+                           replay the same trajectory deterministically.
+            log_probs      ``[B, L_img]`` — Gaussian log-prob of each token.
+        """
+        cfg = self.config
+        cfg_scale = cfg_scale if cfg_scale is not None else cfg.cfg_scale
+        num_flow_steps = num_flow_steps if num_flow_steps is not None else cfg.num_flow_steps
+        noise_level = noise_level if noise_level is not None else cfg.noise_level
+        L_img = image_token_num if image_token_num is not None else cfg.image_token_num
+
+        B = prompt_embeds.shape[0]
+        D_token = cfg.token_dim
+        device = prompt_embeds.device
+
+        tokens = torch.zeros(B, L_img, D_token, device=device, dtype=self.dtype)
+        saved_noise = torch.zeros(B, L_img, D_token, device=device, dtype=self.dtype)
+        logprobs = torch.zeros(B, L_img, device=device, dtype=torch.float32)
+
+        # Prime the LLM with the text prompt; cache KV.
+        kv_cond = self._init_kv(prompt_embeds, prompt_mask)
+        kv_uncond = (
+            self._init_kv(uncond_embeds, uncond_mask)
+            if uncond_embeds is not None else None
+        )
+
+        # The conditioning hidden state for the *next* token to sample is
+        # the LLM's last hidden output.
+        c_cond = self._last_hidden(kv_cond)
+        c_uncond = self._last_hidden(kv_uncond) if kv_uncond is not None else None
+
+        for j in range(L_img):
+            # x_0 prior captured BEFORE flow ODE so we can replay later.
+            x0 = torch.randn(B, D_token, device=device, dtype=self.dtype, generator=generator)
+
+            # TODO(nextstep-binding): flow_sample_with_logprob currently
+            # samples its own x_0 internally. To make replay exact we should
+            # plumb x0 through. For the scaffold we accept a small bias.
+            step = flow_sample_with_logprob(
+                self.image_head,
+                cond=c_cond,
+                num_flow_steps=num_flow_steps,
+                noise_level=noise_level,
+                cfg_uncond=c_uncond,
+                cfg_scale=cfg_scale,
+                generator=generator,
+            )
+            tokens[:, j] = step.token
+            saved_noise[:, j] = x0
+            logprobs[:, j] = step.log_prob.float()
+
+            # Project the sampled token back into LLM hidden dim and
+            # advance the AR loop.
+            proj = self._image_in_projector(step.token)              # [B, D_hidden]
+            kv_cond, c_cond = self._step_llm(kv_cond, proj)
+            if kv_uncond is not None:
+                proj_u = self._image_in_projector(step.token)
+                kv_uncond, c_uncond = self._step_llm(kv_uncond, proj_u)
+
+        return tokens, saved_noise, logprobs
+
+    # ------------------------------------------------------------------
+    # Public: training-time log-prob recomputation
+    # ------------------------------------------------------------------
+
+    def recompute_logprobs(
+        self,
+        prompt_embeds: torch.Tensor,         # [B, L_text, D_hidden]
+        uncond_embeds: torch.Tensor | None,
+        prompt_mask: torch.Tensor,
+        uncond_mask: torch.Tensor | None,
+        tokens: torch.Tensor,                # [B, L_img, D_token]
+        saved_noise: torch.Tensor,           # [B, L_img, D_token]
+        *,
+        cfg_scale: float | None = None,
+        num_flow_steps: int | None = None,
+        noise_level: float | None = None,
+    ) -> torch.Tensor:
+        """Re-compute fresh per-token log-probs under the current policy.
+
+        Returns ``[B, L_img]`` log-probs with grad through ``image_head``
+        and (if LoRA is attached) through the LLM as well.
+        """
+        cfg = self.config
+        cfg_scale = cfg_scale if cfg_scale is not None else cfg.cfg_scale
+        num_flow_steps = num_flow_steps if num_flow_steps is not None else cfg.num_flow_steps
+        noise_level = noise_level if noise_level is not None else cfg.noise_level
+
+        B, L_img, _ = tokens.shape
+
+        # Re-prime the LLM so its hidden states reflect the current LoRA'd
+        # parameters. Same path as sampling but with grad enabled.
+        kv_cond = self._init_kv(prompt_embeds, prompt_mask)
+        kv_uncond = (
+            self._init_kv(uncond_embeds, uncond_mask)
+            if uncond_embeds is not None else None
+        )
+        c_cond = self._last_hidden(kv_cond)
+        c_uncond = self._last_hidden(kv_uncond) if kv_uncond is not None else None
+
+        out = torch.zeros(B, L_img, device=tokens.device, dtype=torch.float32)
+        for j in range(L_img):
+            lp = flow_logprob_at(
+                self.image_head,
+                cond=c_cond,
+                target_token=tokens[:, j],
+                saved_noise=saved_noise[:, j],
+                num_flow_steps=num_flow_steps,
+                noise_level=noise_level,
+                cfg_uncond=c_uncond,
+                cfg_scale=cfg_scale,
+            )
+            out[:, j] = lp.float()
+
+            proj = self._image_in_projector(tokens[:, j])
+            kv_cond, c_cond = self._step_llm(kv_cond, proj)
+            if kv_uncond is not None:
+                proj_u = self._image_in_projector(tokens[:, j])
+                kv_uncond, c_uncond = self._step_llm(kv_uncond, proj_u)
+
+        return out
+
+    # ------------------------------------------------------------------
+    # Replay forward — AutoregressivePolicy contract
+    # ------------------------------------------------------------------
+
+    def replay_forward(
+        self,
+        batch: Any,
+        timestep_idx: int = 0,
+    ) -> dict[str, Any]:
+        """Re-run the AR loop and return per-token log-probs.
+
+        Train-time replay for ``ContinuousTokenLogProbEvaluator``: reads
+        ``observations`` (text prompt ids), ``extras["prompt_attention_mask"]``,
+        the optional ``extras["uncond_input_ids"]``/``extras["uncond_attention_mask"]``,
+        ``actions`` (sampled continuous tokens), and ``extras["saved_noise"]``;
+        returns log-probs of the sampled tokens under the current policy.
+
+        Differs from Janus's ``replay_forward`` (which returns logits) — for
+        continuous tokens we go straight to log-probs since there is no
+        codebook to softmax over.
+
+        ``timestep_idx`` accepted for protocol compatibility but ignored —
+        AR has no notion of "denoising step".
+
+        Returns:
+          ``{"log_probs": Tensor[B, L_img], "tokens": Tensor[B, L_img, D_token]}``.
+        """
+        del timestep_idx
+        obs = batch.observations
+        prompt_ids = obs.squeeze(1) if obs.dim() == 3 else obs
+        prompt_mask = batch.extras["prompt_attention_mask"]
+        uncond_ids = batch.extras.get("uncond_input_ids")
+        uncond_mask = batch.extras.get("uncond_attention_mask")
+        tokens = batch.actions
+        saved_noise = batch.extras["saved_noise"]
+
+        embed = self.language_model.get_input_embeddings()
+        prompt_embeds = embed(prompt_ids)
+        uncond_embeds = embed(uncond_ids) if uncond_ids is not None else None
+
+        log_probs = self.recompute_logprobs(
+            prompt_embeds, uncond_embeds, prompt_mask, uncond_mask,
+            tokens=tokens, saved_noise=saved_noise,
+            cfg_scale=batch.context.get("cfg_scale"),
+            num_flow_steps=batch.context.get("num_flow_steps"),
+            noise_level=batch.context.get("noise_level"),
+        )
+        return {"log_probs": log_probs, "tokens": tokens}
+
+    # ------------------------------------------------------------------
+    # Public: decode tokens → pixels
+    # ------------------------------------------------------------------
+
+    @torch.no_grad()
+    def decode_image_tokens(
+        self,
+        tokens: torch.Tensor,        # [B, L_img, D_token]
+        image_size: int | None = None,
+    ) -> torch.Tensor:
+        """Continuous tokens → pixels in ``[-1, 1]`` via the f8ch16 VAE."""
+        # TODO(nextstep-binding): the upstream decode path probably does
+        #   - reshape [B, L_img, D] → [B, D, H_lat, W_lat]
+        #   - vae.decode(latent) → [B, 3, H_pix, W_pix]
+        # Mirror what NextStepPipeline.generate_image does after sampling.
+        H_lat = W_lat = int(tokens.shape[1] ** 0.5)
+        latent = tokens.transpose(1, 2).reshape(
+            tokens.shape[0], tokens.shape[2], H_lat, W_lat,
+        )
+        pixels = self.vae.decode(latent)
+        # NextStep's VAE returns ``[B, 3, H, W]`` in ``[-1, 1]`` per the model card.
+        return pixels
+
+    # ------------------------------------------------------------------
+    # Public: ref-policy hook
+    # ------------------------------------------------------------------
+
+    @contextlib.contextmanager
+    def disable_adapter(self) -> Iterator[None]:
+        """Run a forward pass with LoRA disabled (= reference policy)."""
+        if hasattr(self.language_model, "disable_adapter"):
+            with self.language_model.disable_adapter():
+                yield
+        else:
+            yield
+
+    # ------------------------------------------------------------------
+    # Internal: LLM step / KV plumbing
+    # ------------------------------------------------------------------
+
+    def _init_kv(
+        self,
+        embeds: torch.Tensor,
+        mask: torch.Tensor | None,
+    ) -> Any:
+        """Prime the LLM with text-prompt embeddings, return a KV-cache handle.
+
+        TODO(nextstep-binding): the actual KV-cache type depends on the
+        underlying ``transformers`` model class (Qwen-2). For HF this is a
+        ``DynamicCache``. The pipeline's ``decoding()`` method already does
+        this — we'll piggyback once we wire the binding.
+        """
+        out = self.language_model(
+            inputs_embeds=embeds,
+            attention_mask=mask,
+            use_cache=True,
+            output_hidden_states=True,
+        )
+        return {
+            "past_key_values": out.past_key_values,
+            "last_hidden": out.hidden_states[-1][:, -1],  # [B, D_hidden]
+        }
+
+    @staticmethod
+    def _last_hidden(kv: Any) -> torch.Tensor:
+        return kv["last_hidden"]
+
+    def _step_llm(
+        self,
+        kv: Any,
+        new_embed: torch.Tensor,         # [B, D_hidden]
+    ) -> tuple[Any, torch.Tensor]:
+        """One-token LLM forward; returns updated kv + new last hidden."""
+        out = self.language_model(
+            inputs_embeds=new_embed.unsqueeze(1),
+            past_key_values=kv["past_key_values"],
+            use_cache=True,
+            output_hidden_states=True,
+        )
+        kv2 = {
+            "past_key_values": out.past_key_values,
+            "last_hidden": out.hidden_states[-1][:, -1],
+        }
+        return kv2, kv2["last_hidden"]

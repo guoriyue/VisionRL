@@ -1,6 +1,15 @@
 """Wan2.1 T2V collector for RL training (1.3B and 14B variants).
 
-Collector → FlowMatchingEvaluator → GRPO → OnlineTrainer
+Collector -> FlowMatchingEvaluator -> GRPO -> OnlineTrainer
+
+The collector drives the new ``DiffusionPolicy`` contract directly:
+
+    encode_prompt -> prepare_sampling -> forward_step xN (with SDE step) -> decode_latents
+
+It owns the SDE-step loop, the per-step log-prob bookkeeping, the reward
+scoring, and the ``ExperienceBatch`` assembly. The eval/training path
+re-uses the adapter's ``forward_step`` with a ``model=`` override so there
+is exactly one transformer-forward implementation per family.
 """
 
 from __future__ import annotations
@@ -60,15 +69,15 @@ class Wan_2_1CollectorConfig:
 class Wan_2_1Collector:
     """Collect rollouts from Wan 1.3B with per-step log-probabilities.
 
-    Delegates model-specific forward passes to the model family's
-    ``denoise_init`` / ``predict_noise`` / ``decode_vae`` methods.
-    The collector only owns the SDE-step loop, reward scoring,
-    and ``ExperienceBatch`` assembly.
+    Delegates the per-step transformer forward to the model family's
+    ``DiffusionPolicy`` (``encode_prompt``, ``prepare_sampling``,
+    ``forward_step``, ``decode_latents``). The collector only owns the
+    SDE-step loop, reward scoring, and ``ExperienceBatch`` assembly.
     """
 
     def __init__(
         self,
-        model: Any,  # DiffusersWanT2VModel
+        model: Any,  # WanT2VDiffusersPolicy
         reward_fn: Any,  # RewardFunction instance
         config: Wan_2_1CollectorConfig | None = None,
     ) -> None:
@@ -94,11 +103,11 @@ class Wan_2_1Collector:
         """Collect Wan Diffusers rollouts with per-step log-probabilities.
 
         Steps:
-        1. Encode text via model family (once, even for group sampling)
+        1. Encode prompt via adapter (once, even for group sampling)
         2. Expand embeds to ``group_size`` when > 1 (group-batched sampling)
-        3. denoise_init via model family (prepares latents + scheduler)
-        4. Custom SDE loop: model.predict_noise per step + sde_step_with_logprob
-        5. Decode VAE via model family
+        3. prepare_sampling via adapter (latents + scheduler + per-family state)
+        4. Custom SDE loop: adapter.forward_step per step + sde_step_with_logprob
+        5. Decode via adapter.decode_latents
         6. Reward scoring
         7. Stack into ExperienceBatch
 
@@ -109,7 +118,7 @@ class Wan_2_1Collector:
         import torch
 
         from vrl.algorithms.types import Rollout, Trajectory
-        from vrl.models.base import VideoGenerationRequest
+        from vrl.models.diffusion import VideoGenerationRequest
         from vrl.rollouts.evaluators.diffusion.flow_matching import sde_step_with_logprob
 
         cfg = self.config
@@ -147,35 +156,37 @@ class Wan_2_1Collector:
         _phases: dict[str, float] = {}
         _t = _sync_time() if _prof else 0.0
 
-        # 1. Encode text via model family (once per prompt)
-        state: dict[str, Any] = {}
-        encode_result = await self.model.encode_text(request, state)
-        state.update(encode_result.state_updates)
+        # 1. Encode prompt via adapter (once per prompt)
+        encoded = self.model.encode_prompt(
+            request.prompt,
+            request.negative_prompt or None,
+            max_sequence_length=cfg.max_sequence_length,
+            guidance_scale=cfg.guidance_scale,
+        )
         if _prof:
             _now = _sync_time()
-            _phases["collect.encode_text"] = _now - _t
+            _phases["collect.encode_prompt"] = _now - _t
             _t = _now
 
         # 2. Expand embeds to group_size for parallel group sampling
         if group_size > 1:
-            pe = state["prompt_embeds"]
+            pe = encoded["prompt_embeds"]
             repeat_shape = (group_size,) + (1,) * (pe.ndim - 1)
-            state["prompt_embeds"] = pe.repeat(*repeat_shape)
-            neg = state.get("negative_prompt_embeds")
+            encoded["prompt_embeds"] = pe.repeat(*repeat_shape)
+            neg = encoded.get("negative_prompt_embeds")
             if neg is not None:
-                state["negative_prompt_embeds"] = neg.repeat(*repeat_shape)
+                encoded["negative_prompt_embeds"] = neg.repeat(*repeat_shape)
 
-        # 3. denoise_init via model family (batch_size derived from prompt_embeds)
-        denoise_loop = await self.model.denoise_init(request, state)
-        ms = denoise_loop.model_state
-        # Use actual batch size from model state (reflects group expansion)
-        batch_size = ms.latents.shape[0]
+        # 3. prepare_sampling via adapter (batch_size derived from prompt_embeds)
+        sampling_state = self.model.prepare_sampling(request, encoded)
+        # Use actual batch size from sampling state (reflects group expansion)
+        batch_size = sampling_state.latents.shape[0]
 
         # SDE window
         sde_window = self._get_sde_window()
 
         # SDE noise generator — deterministic when seed is provided or same_latent
-        device = ms.latents.device
+        device = sampling_state.latents.device
         if seed is not None:
             sde_generator = torch.Generator(device=device)
             sde_generator.manual_seed(seed)
@@ -185,24 +196,27 @@ class Wan_2_1Collector:
         else:
             sde_generator = None
 
-        # 3. Custom denoise loop with log-prob tracking
+        # 4. Custom denoise loop with log-prob tracking
         all_observations = []
         all_actions = []
         all_log_probs = []
         all_kls = []
         all_timestep_values = []
 
-        do_cfg = cfg.cfg and cfg.guidance_scale > 1.0
-        transformer_dtype = ms.prompt_embeds.dtype
+        # Autocast dtype: pull from the wrapped pipeline's transformer so
+        # the collector never introspects WanT2VSamplingState's private
+        # embed tensors.
+        transformer_dtype = self.model.pipeline.transformer.dtype
+        total_steps = len(sampling_state.timesteps)
 
         with torch.amp.autocast("cuda", dtype=transformer_dtype):
             with torch.no_grad():
-                for step_idx in range(denoise_loop.total_steps):
-                    latents_ori = ms.latents.clone()
-                    t = ms.timesteps[step_idx]
+                for step_idx in range(total_steps):
+                    latents_ori = sampling_state.latents.clone()
+                    t = sampling_state.timesteps[step_idx]
 
-                    # Forward pass via model family
-                    fwd = await self.model.predict_noise(denoise_loop, step_idx)
+                    # Forward pass via adapter
+                    fwd = self.model.forward_step(sampling_state, step_idx)
                     noise_pred = fwd["noise_pred"]
 
                     # Check SDE window
@@ -210,18 +224,18 @@ class Wan_2_1Collector:
                         sde_window[0] <= step_idx < sde_window[1]
                     )
 
-                    # SDE step with log-prob
+                    # SDE step with log-prob (caller owns scheduler step)
                     sde_result = sde_step_with_logprob(
-                        ms.scheduler,
+                        sampling_state.scheduler,
                         noise_pred.float(),
                         t.unsqueeze(0),
-                        ms.latents.float(),
+                        sampling_state.latents.float(),
                         generator=sde_generator if in_sde_window else None,
                         deterministic=not in_sde_window,
                         return_dt=cfg.kl_reward > 0,
                     )
                     prev_latents = sde_result.prev_sample
-                    ms.latents = prev_latents
+                    sampling_state.latents = prev_latents
 
                     all_observations.append(latents_ori.detach())
                     all_actions.append(prev_latents.detach())
@@ -235,8 +249,6 @@ class Wan_2_1Collector:
                         all_kls.append(
                             torch.zeros(batch_size, device=device)
                         )
-
-                    denoise_loop.current_step = step_idx + 1
 
         if _prof:
             _now = _sync_time()
@@ -252,16 +264,14 @@ class Wan_2_1Collector:
         )
         kl_tensor = torch.stack(all_kls, dim=1)
 
-        # 4. Decode VAE via model family
-        decode_state: dict[str, Any] = {"latents": ms.latents}
-        decode_result = await self.model.decode_vae(request, decode_state)
-        video = decode_result.state_updates["video"]
+        # 5. Decode via adapter
+        video = self.model.decode_latents(sampling_state.latents)
         if _prof:
             _now = _sync_time()
             _phases["collect.vae_decode"] = _now - _t
             _t = _now
 
-        # 5. Score with reward function
+        # 6. Score with reward function
         # Build rollout metadata from structured kwargs so reward functions
         # (e.g. OCRReward) can access target_text, references, etc.
         rollout_metadata: dict[str, Any] = dict(sample_metadata)
@@ -297,7 +307,7 @@ class Wan_2_1Collector:
             _phases["collect.reward_score"] = _now - _t
             _t = _now
 
-        # 6. Subtract kl_reward * kl from rewards
+        # 7. Subtract kl_reward * kl from rewards
         rewards_raw = torch.tensor(rewards_list, dtype=torch.float32, device=device)
         if cfg.kl_reward > 0:
             kl_total = kl_tensor.sum(dim=1)
@@ -305,7 +315,7 @@ class Wan_2_1Collector:
         else:
             rewards_adjusted = rewards_raw
 
-        # 7. Build ExperienceBatch
+        # 8. Build ExperienceBatch
         dones = torch.ones(batch_size, dtype=torch.bool, device=device)
         group_ids = torch.zeros(batch_size, dtype=torch.long, device=device)
 
@@ -313,71 +323,29 @@ class Wan_2_1Collector:
             _LAST_COLLECT_PHASES.clear()
             _LAST_COLLECT_PHASES.update(_phases)
 
+        # Project private SamplingState through the adapter boundary helpers.
+        training_extras = self.model.export_training_extras(sampling_state)
+        rollout_context = self.model.export_batch_context(sampling_state)
+
+        extras: dict[str, Any] = {
+            "log_probs": log_probs,
+            "timesteps": timesteps_tensor,
+            "kl": kl_tensor,
+            "reward_before_kl": rewards_raw,
+        }
+        extras.update(training_extras)
+
+        context: dict[str, Any] = dict(rollout_context)
+
         return ExperienceBatch(
             observations=observations,
             actions=actions,
             rewards=rewards_adjusted,
             dones=dones,
             group_ids=group_ids,
-            extras={
-                "log_probs": log_probs,
-                "timesteps": timesteps_tensor,
-                "kl": kl_tensor,
-                "reward_before_kl": rewards_raw,
-                "prompt_embeds": ms.prompt_embeds,
-                "negative_prompt_embeds": ms.negative_prompt_embeds,
-            },
-            context={
-                "guidance_scale": ms.guidance_scale,
-                "cfg": do_cfg,
-                "model_family": "wan-diffusers-t2v",
-            },
+            extras=extras,
+            context=context,
             videos=video,
             prompts=effective_prompts,
         )
 
-    # ------------------------------------------------------------------
-    # forward_step — used by Evaluator during training
-    # ------------------------------------------------------------------
-
-    def forward_step(
-        self,
-        model: Any,
-        batch: ExperienceBatch,
-        timestep_idx: int,
-    ) -> dict[str, Any]:
-        """Wan Diffusers forward: single transformer + optional CFG.
-
-        Used by the evaluator to compute fresh log-probs under the
-        current policy during training.  Delegates to the model family's
-        ``_predict_noise_with_model``.
-        """
-        from vrl.engine.model_executor.execution_state import DenoiseLoopState
-        from vrl.models.families.diffusers_state import DiffusersDenoiseState
-
-        # Read per-sample tensors from extras
-        timesteps = batch.extras["timesteps"]
-        prompt_embeds = batch.extras["prompt_embeds"]
-        negative_prompt_embeds = batch.extras["negative_prompt_embeds"]
-        latents = batch.observations[:, timestep_idx]
-
-        # Read shared metadata from context
-        ctx = batch.context
-        guidance_scale = ctx["guidance_scale"]
-        do_cfg = ctx["cfg"]
-
-        t = timesteps[:, timestep_idx] if timesteps.ndim > 1 else timesteps
-
-        # Reconstruct DiffusersDenoiseState for the model family
-        ms = DiffusersDenoiseState(
-            latents=latents,
-            timesteps=t,
-            prompt_embeds=prompt_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
-            guidance_scale=guidance_scale,
-            do_cfg=do_cfg and guidance_scale > 1.0,
-            model_family="wan-diffusers-t2v",
-        )
-
-        ds = DenoiseLoopState(current_step=0, total_steps=1, model_state=ms)
-        return self.model._predict_noise_with_model(model, ds, step_idx=0)

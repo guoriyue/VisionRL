@@ -1,8 +1,8 @@
 """Token-level log-probability evaluator for AR policies.
 
-Wraps the collector's ``forward_step`` (which returns full logits) and
-gathers the log-probabilities of the *sampled* tokens — both under the
-current policy and, when needed, under the LoRA-off reference policy.
+Wraps ``model.replay_forward`` (which returns full logits) and gathers the
+log-probabilities of the *sampled* tokens — both under the current policy
+and, when needed, under the LoRA-off reference policy.
 
 The returned ``SignalBatch`` is fed to ``TokenGRPO.compute_signal_loss``.
 
@@ -26,8 +26,8 @@ def _has_active_adapter(model: Any) -> bool:
     """Detect whether ``model`` carries a real PEFT adapter we can disable.
 
     PEFT injects ``disable_adapter`` onto the wrapped sub-module
-    (``model.language_model`` for ``JanusProT2I``) — the *outer*
-    JanusProT2I always exposes a ``disable_adapter`` method, but its
+    (``model.language_model`` for ``JanusProPolicy``) — the *outer*
+    JanusProPolicy always exposes a ``disable_adapter`` method, but its
     no-op fallback fires silently when no LoRA was attached. We probe the
     sub-module directly to avoid that false positive.
     """
@@ -60,23 +60,26 @@ class TokenLogProbEvaluator:
 
     def evaluate(
         self,
-        collector: Collector,
+        collector: Collector,  # TODO: remove unused collector arg
         model: Any,
         batch: ExperienceBatch,
         timestep_idx: int = 0,
         ref_model: Any | None = None,
         signal_request: SignalRequest | None = None,
     ) -> SignalBatch:
+        # ``collector`` retained for Trainer-interface compatibility — replay
+        # ownership now lives on the model (``model.replay_forward``).
+        del collector
         request = signal_request or SignalRequest()
         action_ids: torch.Tensor = batch.actions  # [B, L_img]
 
-        new_lp = self._compute_logprobs(collector, model, batch, action_ids)
+        new_lp = self._compute_logprobs(model, batch, action_ids)
 
         ref_lp = None
         if request.need_ref:
             if ref_model is not None:
                 ref_lp = self._compute_logprobs(
-                    collector, ref_model, batch, action_ids,
+                    ref_model, batch, action_ids,
                 )
             else:
                 if not _has_active_adapter(model):
@@ -93,7 +96,7 @@ class TokenLogProbEvaluator:
                 # adapter is real (verified above).
                 with torch.no_grad(), model.disable_adapter():
                     ref_lp = self._compute_logprobs(
-                        collector, model, batch, action_ids,
+                        model, batch, action_ids,
                     )
 
         aux: dict[str, Any] = {}
@@ -114,13 +117,12 @@ class TokenLogProbEvaluator:
 
     @staticmethod
     def _compute_logprobs(
-        collector: Collector,
         model: Any,
         batch: ExperienceBatch,
         action_ids: torch.Tensor,
     ) -> torch.Tensor:
         """Forward + gather. Always returns ``[B, L]`` float32 log-probs."""
-        out = collector.forward_step(model, batch, timestep_idx=0)
+        out = model.replay_forward(batch, timestep_idx=0)
         logits: torch.Tensor = out["logits"]   # [B, L, V_img]
         log_probs = F.log_softmax(logits.float(), dim=-1)
         gathered = log_probs.gather(-1, action_ids.unsqueeze(-1)).squeeze(-1)

@@ -65,7 +65,7 @@ class TestPerTokenLoss:
         old_lp = torch.zeros(2, 4)
         new_lp = old_lp.clone()
         adv = torch.zeros(2)
-        algo = TokenGRPO(TokenGRPOConfig(kl_coeff=0.0))
+        algo = TokenGRPO(TokenGRPOConfig(init_kl_coef=0.0))
         loss, _ = algo.compute_signal_loss(_signals(new_lp), adv, old_lp)
         assert loss.abs().item() < 1e-6
 
@@ -73,7 +73,7 @@ class TestPerTokenLoss:
         old_lp = torch.zeros(2, 4)
         new_lp = old_lp + 0.1     # log-prob went up
         adv = torch.ones(2)        # positive advantage
-        algo = TokenGRPO(TokenGRPOConfig(kl_coeff=0.0, clip_eps=1.0))  # disable clip
+        algo = TokenGRPO(TokenGRPOConfig(init_kl_coef=0.0, eps_clip=1.0))  # disable clip
         loss, _ = algo.compute_signal_loss(_signals(new_lp), adv, old_lp)
         # ratio = exp(0.1) > 1; -adv * ratio < -1
         assert loss.item() < -1.0
@@ -82,7 +82,7 @@ class TestPerTokenLoss:
         old_lp = torch.zeros(1, 4)
         new_lp = old_lp + 5.0     # huge ratio
         adv = torch.ones(1)
-        algo = TokenGRPO(TokenGRPOConfig(kl_coeff=0.0, clip_eps=0.2))
+        algo = TokenGRPO(TokenGRPOConfig(init_kl_coef=0.0, eps_clip=0.2))
         loss, metrics = algo.compute_signal_loss(_signals(new_lp), adv, old_lp)
         assert metrics.clip_fraction == 1.0   # all 4 tokens clipped
 
@@ -98,7 +98,7 @@ class TestMask:
         new_lp = old_lp + 1.0
         adv = torch.ones(2)
         mask = torch.zeros_like(new_lp)        # mask everything out
-        algo = TokenGRPO(TokenGRPOConfig(kl_coeff=0.0))
+        algo = TokenGRPO(TokenGRPOConfig(init_kl_coef=0.0))
         loss, _ = algo.compute_signal_loss(_signals(new_lp, mask=mask), adv, old_lp)
         # mask sum is clamped to 1.0 to avoid NaN, but per_token_loss * 0 = 0
         assert loss.abs().item() < 1e-6
@@ -109,7 +109,7 @@ class TestMask:
         adv = torch.ones(1)
         mask_full = torch.ones_like(new_lp)
         mask_half = torch.tensor([[0.0, 1.0, 1.0, 0.0]])
-        algo = TokenGRPO(TokenGRPOConfig(kl_coeff=0.0, clip_eps=10.0))
+        algo = TokenGRPO(TokenGRPOConfig(init_kl_coef=0.0, eps_clip=10.0))
         l_full, _ = algo.compute_signal_loss(_signals(new_lp, mask=mask_full), adv, old_lp)
         l_half, _ = algo.compute_signal_loss(_signals(new_lp, mask=mask_half), adv, old_lp)
         # half mask only counts the +0.5 tokens → mean is more negative
@@ -127,7 +127,7 @@ class TestKL:
         ref_lp = torch.zeros(1, 4)
         old_lp = torch.zeros(1, 4)
         adv = torch.zeros(1)
-        algo = TokenGRPO(TokenGRPOConfig(kl_coeff=1.0, kl_estimator="k1"))
+        algo = TokenGRPO(TokenGRPOConfig(init_kl_coef=1.0, kl_estimator="k1"))
         _, m = algo.compute_signal_loss(
             _signals(new_lp, ref_lp=ref_lp), adv, old_lp,
         )
@@ -140,7 +140,7 @@ class TestKL:
         ref_lp = torch.randn(2, 4)
         old_lp = new_lp.clone()
         adv = torch.zeros(2)
-        algo = TokenGRPO(TokenGRPOConfig(kl_coeff=1.0, kl_estimator="k3"))
+        algo = TokenGRPO(TokenGRPOConfig(init_kl_coef=1.0, kl_estimator="k3"))
         _, m = algo.compute_signal_loss(
             _signals(new_lp, ref_lp=ref_lp), adv, old_lp,
         )
@@ -149,7 +149,7 @@ class TestKL:
     def test_unknown_estimator_raises(self) -> None:
         new_lp = torch.zeros(1, 2)
         ref_lp = torch.zeros(1, 2)
-        algo = TokenGRPO(TokenGRPOConfig(kl_coeff=1.0, kl_estimator="bogus"))
+        algo = TokenGRPO(TokenGRPOConfig(init_kl_coef=1.0, kl_estimator="bogus"))
         with pytest.raises(ValueError, match="kl_estimator"):
             algo.compute_signal_loss(
                 _signals(new_lp, ref_lp=ref_lp), torch.zeros(1), new_lp,
@@ -166,6 +166,6 @@ class TestShapeValidation:
         new_lp = torch.zeros(2, 4)
         old_lp = torch.zeros(2, 5)
         adv = torch.zeros(2)
-        algo = TokenGRPO(TokenGRPOConfig(kl_coeff=0.0))
+        algo = TokenGRPO(TokenGRPOConfig(init_kl_coef=0.0))
         with pytest.raises(ValueError, match="log_prob shape"):
             algo.compute_signal_loss(_signals(new_lp), adv, old_lp)

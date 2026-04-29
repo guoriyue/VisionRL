@@ -44,58 +44,17 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     weight_dtype = torch.bfloat16 if trainer_config.bf16 else torch.float16
 
-    # 1. Pipeline
-    from diffusers import WanPipeline
+    # 1. Build runtime (backend construction lives in family builder)
+    from vrl.models.families.wan_2_1.builder import build_wan_2_1_runtime_bundle_from_cfg
 
-    logger.info("Loading WanPipeline from %s", cfg.model.path)
-    pipeline = WanPipeline.from_pretrained(cfg.model.path, torch_dtype=weight_dtype)
-    pipeline.vae.requires_grad_(False)
-    pipeline.text_encoder.requires_grad_(False)
-    pipeline.vae.to(device, dtype=torch.float32)
-    pipeline.text_encoder.to(device, dtype=weight_dtype)
-
-    # 2. LoRA
-    if cfg.model.use_lora:
-        pipeline.transformer.requires_grad_(False)
-        pipeline.transformer.to(device)
-        from peft import LoraConfig, PeftModel, get_peft_model
-
-        lora_path = cfg.model.lora.path
-        if lora_path:
-            pipeline.transformer = PeftModel.from_pretrained(
-                pipeline.transformer, lora_path, is_trainable=True,
-            )
-            pipeline.transformer.set_adapter("default")
-        else:
-            lora_config = LoraConfig(
-                r=cfg.model.lora.rank,
-                lora_alpha=cfg.model.lora.alpha,
-                init_lora_weights="gaussian",
-                target_modules=list(cfg.model.lora.target_modules),
-            )
-            pipeline.transformer = get_peft_model(pipeline.transformer, lora_config)
-        logger.info(
-            "Applied LoRA (rank=%d, alpha=%d)",
-            cfg.model.lora.rank, cfg.model.lora.alpha,
-        )
-    else:
-        pipeline.transformer.requires_grad_(True)
-        pipeline.transformer.to(device)
-
-    transformer = pipeline.transformer
+    bundle = build_wan_2_1_runtime_bundle_from_cfg(cfg, device, weight_dtype)
+    wan_model = bundle.policy
+    transformer = bundle.trainable_modules["transformer"]
 
     if trainer_config.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
 
-    if cfg.model.torch_compile.enable:
-        logger.info("Compiling transformer with mode=%s", cfg.model.torch_compile.mode)
-        pipeline.transformer = torch.compile(
-            pipeline.transformer, mode=cfg.model.torch_compile.mode, fullgraph=False,
-        )
-        transformer = pipeline.transformer
-
-    # 3. Scheduler + reward
-    pipeline.scheduler.set_timesteps(cfg.sampling.num_steps, device=device)
+    # 2. Reward
 
     reward_weights = {
         name: float(w) for name, w in cfg.reward.components.items() if float(w) > 0
@@ -110,7 +69,7 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
     )
     logger.info("Reward mix: %s", reward_weights)
 
-    # 4. Collector + evaluator + algorithm
+    # 3. Collector + evaluator + algorithm
     collector_config = Wan_2_1CollectorConfig(
         num_steps=cfg.sampling.num_steps,
         guidance_scale=cfg.sampling.guidance_scale,
@@ -123,13 +82,10 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
         sde_window_range=tuple(cfg.rollout.sde.window_range),
         same_latent=cfg.rollout.same_latent,
     )
-    from vrl.models.families.wan_2_1.diffusers_t2v import DiffusersWanT2VModel
-
-    wan_model = DiffusersWanT2VModel(pipeline=pipeline, device=device)
     collector = Wan_2_1Collector(wan_model, reward_fn, collector_config)
 
     evaluator = FlowMatchingEvaluator(
-        pipeline.scheduler, noise_level=1.0, sde_type="sde",
+        bundle.scheduler, noise_level=1.0, sde_type="sde",
     )
     algorithm = GRPO(grpo_config)
 
@@ -150,7 +106,7 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
         stat_tracker=stat_tracker,
     )
 
-    # 5. Prompts
+    # 4. Prompts
     manifest_path = Path(cfg.data.manifest)
     if not manifest_path.exists():
         raise FileNotFoundError(f"Manifest not found: {manifest_path}")
@@ -175,7 +131,7 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
 
     rng = torch.Generator().manual_seed(trainer_config.seed)
 
-    # 6. Training loop
+    # 5. Training loop
     for epoch in range(trainer_config.total_epochs):
         idx = torch.randperm(len(examples), generator=rng)[
             : trainer_config.rollout_batch_size
