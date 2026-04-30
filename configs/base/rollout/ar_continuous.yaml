@@ -1,0 +1,9 @@
+# AR continuous-token rollout — NextStep-1 flow-matching token sampling.
+# Sampling shape (image_token_num / image_size / num_flow_steps / cfg_scale) lives in
+# configs/sampling/* so it travels with the resolution preset.
+rollout:
+  n_samples_per_prompt: 4
+  rollout_batch_size: 4
+  noise_level: 1.0              # final-step Gaussian std multiplier (SDE-from-ODE)
+  rescale_to_unit: true         # [-1, 1] → [0, 1] for reward layer
+  max_text_length: 256

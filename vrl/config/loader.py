@@ -126,16 +126,57 @@ def load_config(
     return cfg
 
 
-def build_configs(cfg: DictConfig) -> dict[str, Any]:
-    """Map the merged YAML into the typed dataclasses the runtime expects.
+_GRPO_FIELDS = {"eps_clip", "init_kl_coef", "eps", "adv_clip_max", "global_std"}
+_TOKEN_GRPO_EXTRA_FIELDS = {"mask_key", "kl_estimator"}
+_DPO_FIELDS = {"beta", "sft_weight"}
 
-    Returns a dict with keys:
-      ``trainer``      -> ``TrainerConfig``
-      ``algorithm``    -> ``GRPOConfig``
-      ``raw``          -> the original ``DictConfig`` for script-side reads
-                          (model/generation/reward/data sections)
+_KIND_LEGACY_ALIASES = {
+    "grpo": "grpo",
+    "token_grpo": "token_grpo",
+    "diffusion_dpo": "diffusion_dpo",
+    "dpo": "diffusion_dpo",  # legacy adv_estimator
+}
+
+
+def _resolve_algorithm_kind(algo: DictConfig) -> str:
+    """Resolve ``algorithm.kind`` with legacy ``adv_estimator`` alias.
+
+    Conflict detection: if both fields are set and disagree (after legacy
+    alias normalisation) — fail fast. Per SPRINT_config_yaml_unification_patch
+    Phase 1.
     """
-    from vrl.algorithms.grpo import GRPOConfig
+    kind = algo.get("kind", None)
+    legacy = algo.get("adv_estimator", None)
+    if kind is None and legacy is None:
+        raise ValueError(
+            "algorithm config missing both `kind` and legacy `adv_estimator`",
+        )
+    if kind is None:
+        normalised = _KIND_LEGACY_ALIASES.get(str(legacy))
+        if normalised is None:
+            raise ValueError(
+                f"unknown legacy algorithm.adv_estimator={legacy!r}; "
+                f"expected one of {sorted(_KIND_LEGACY_ALIASES)}",
+            )
+        return normalised
+    kind = str(kind)
+    if kind not in {"grpo", "token_grpo", "diffusion_dpo"}:
+        raise ValueError(
+            f"unknown algorithm.kind={kind!r}; "
+            f"expected grpo / token_grpo / diffusion_dpo",
+        )
+    if legacy is not None:
+        normalised = _KIND_LEGACY_ALIASES.get(str(legacy))
+        if normalised != kind:
+            raise ValueError(
+                f"algorithm.kind={kind!r} conflicts with "
+                f"legacy adv_estimator={legacy!r}",
+            )
+    return kind
+
+
+def build_trainer_config(cfg: DictConfig):
+    """Slice merged YAML into ``TrainerConfig``."""
     from vrl.trainers.types import (
         DebugConfig,
         EMAConfig,
@@ -149,9 +190,8 @@ def build_configs(cfg: DictConfig) -> dict[str, Any]:
     rollout = cfg.get("rollout", {})
     trainer_section = cfg.get("trainer", {})
     debug_cfg = trainer_section.get("debug", {})
-    algo = cfg.get("algorithm", {})
 
-    trainer_cfg = TrainerConfig(
+    return TrainerConfig(
         optim=OptimConfig(**OmegaConf.to_container(optim_cfg, resolve=True)),
         ema=EMAConfig(**OmegaConf.to_container(ema_cfg, resolve=True)),
         debug=DebugConfig(**OmegaConf.to_container(debug_cfg, resolve=True)),
@@ -170,17 +210,93 @@ def build_configs(cfg: DictConfig) -> dict[str, Any]:
         profile=trainer_section.get("profile", False),
     )
 
-    algo_dict = OmegaConf.to_container(algo, resolve=True) if algo else {}
-    # Drop fields that are not GRPOConfig-recognized (e.g. ``adv_estimator``,
-    # ``per_prompt_stat_tracking``) so we don't error on **kwargs unpack.
-    algo_kwargs = {
-        k: v for k, v in algo_dict.items()
-        if k in {"eps_clip", "init_kl_coef", "eps", "adv_clip_max", "global_std"}
-    }
-    algorithm_cfg = GRPOConfig(**algo_kwargs)
 
-    return {
-        "trainer": trainer_cfg,
-        "algorithm": algorithm_cfg,
+def build_algorithm_config(cfg: DictConfig):
+    """Dispatch on ``algorithm.kind`` and return the typed algorithm config.
+
+    Returns ``GRPOConfig`` / ``TokenGRPOConfig`` / ``DiffusionDPOConfig``.
+    Unknown kind, missing section, or kind/adv_estimator conflict → fail fast.
+    """
+    if "algorithm" not in cfg:
+        raise ValueError("config missing `algorithm` section")
+    algo = cfg.algorithm
+    kind = _resolve_algorithm_kind(algo)
+    raw = OmegaConf.to_container(algo, resolve=True) or {}
+
+    if kind == "grpo":
+        from vrl.algorithms.grpo import GRPOConfig
+
+        return GRPOConfig(**{k: v for k, v in raw.items() if k in _GRPO_FIELDS})
+
+    if kind == "token_grpo":
+        from vrl.algorithms.grpo_token import TokenGRPOConfig
+
+        allowed = _GRPO_FIELDS | _TOKEN_GRPO_EXTRA_FIELDS
+        return TokenGRPOConfig(**{k: v for k, v in raw.items() if k in allowed})
+
+    if kind == "diffusion_dpo":
+        from vrl.algorithms.dpo import DiffusionDPOConfig
+
+        return DiffusionDPOConfig(**{k: v for k, v in raw.items() if k in _DPO_FIELDS})
+
+    raise AssertionError(f"unreachable: kind={kind}")  # pragma: no cover
+
+
+def build_reward_config(cfg: DictConfig) -> tuple[dict[str, float], dict[str, dict]]:
+    """Slice ``cfg.reward`` into ``(weights, kwargs)``.
+
+    - ``weights``: ``{name: float}`` for components with weight > 0.
+    - ``kwargs``: ``{name: {kwarg: value}}`` forwarded to reward constructors.
+
+    Back-compat: ``reward.ocr_debug_dir`` is auto-injected into
+    ``kwargs["ocr"]["debug_dir"]`` IFF ``kwargs.ocr.debug_dir`` is not already
+    set. If both are set with different values → fail fast.
+    """
+    if "reward" not in cfg:
+        raise ValueError("config missing `reward` section")
+    reward = cfg.reward
+    if "components" not in reward:
+        raise ValueError("config missing `reward.components`")
+
+    components = OmegaConf.to_container(reward.components, resolve=True) or {}
+    weights = {name: float(w) for name, w in components.items() if float(w) > 0}
+
+    raw_kwargs = reward.get("kwargs", None)
+    kwargs: dict[str, dict] = (
+        OmegaConf.to_container(raw_kwargs, resolve=True) or {} if raw_kwargs else {}
+    )
+
+    # Legacy: reward.ocr_debug_dir
+    legacy_ocr_dir = reward.get("ocr_debug_dir", "") if "ocr_debug_dir" in reward else ""
+    if legacy_ocr_dir:
+        ocr_kwargs = kwargs.setdefault("ocr", {})
+        existing = ocr_kwargs.get("debug_dir")
+        if existing and existing != legacy_ocr_dir:
+            raise ValueError(
+                f"reward.ocr_debug_dir={legacy_ocr_dir!r} conflicts with "
+                f"reward.kwargs.ocr.debug_dir={existing!r}",
+            )
+        if not existing:
+            ocr_kwargs["debug_dir"] = legacy_ocr_dir
+
+    return weights, kwargs
+
+
+def build_configs(cfg: DictConfig) -> dict[str, Any]:
+    """Thin wrapper bundling typed configs for downstream training scripts.
+
+    Keys:
+      ``trainer``    -> ``TrainerConfig``
+      ``algorithm``  -> ``GRPOConfig | TokenGRPOConfig | DiffusionDPOConfig``
+      ``reward``     -> ``(weights: dict[str, float], kwargs: dict[str, dict])``
+      ``raw``        -> the original ``DictConfig``
+    """
+    out: dict[str, Any] = {
+        "trainer": build_trainer_config(cfg),
+        "algorithm": build_algorithm_config(cfg),
         "raw": cfg,
     }
+    # DPO has no online reward; skip reward slicing for cfgs without `reward`.
+    if "reward" in cfg:
+        out["reward"] = build_reward_config(cfg)
+    return out

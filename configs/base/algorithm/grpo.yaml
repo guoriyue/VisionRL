@@ -1,6 +1,7 @@
 # GRPO algorithm hyper-parameters
 algorithm:
-  adv_estimator: grpo
+  kind: grpo
+  adv_estimator: grpo           # legacy alias; loader prefers `kind`
   eps_clip: 1.0e-4
   init_kl_coef: 0.0
   eps: 1.0e-8                   # numerical stability for advantage division

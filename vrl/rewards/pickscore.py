@@ -19,9 +19,17 @@ class PickScoreReward(RewardFunction):
     Requires ``transformers``.  Loaded lazily on first call.
     """
 
-    def __init__(self, device: str = "cuda", dtype: str = "float32") -> None:
+    def __init__(
+        self,
+        device: str = "cuda",
+        dtype: str = "float32",
+        processor_name: str = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
+        model_name: str = "yuvalkirstain/PickScore_v1",
+    ) -> None:
         self._device = device
         self._dtype_str = dtype
+        self._processor_name = processor_name
+        self._model_name = model_name
         self._scorer: Any = None
 
     def _ensure_loaded(self) -> None:
@@ -32,12 +40,15 @@ class PickScoreReward(RewardFunction):
 
         dtype = getattr(torch, self._dtype_str, torch.float32)
 
+        processor_name = self._processor_name
+        model_name = self._model_name
+
         class _PickScoreScorer(torch.nn.Module):
             def __init__(self, device: str, dtype: torch.dtype) -> None:
                 super().__init__()
                 self.device = device
-                self.processor = CLIPProcessor.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
-                self.model = CLIPModel.from_pretrained("yuvalkirstain/PickScore_v1").eval().to(device, dtype=dtype)
+                self.processor = CLIPProcessor.from_pretrained(processor_name)
+                self.model = CLIPModel.from_pretrained(model_name).eval().to(device, dtype=dtype)
 
             @torch.no_grad()
             def __call__(self, prompts: list[str], images: list[Any]) -> torch.Tensor:

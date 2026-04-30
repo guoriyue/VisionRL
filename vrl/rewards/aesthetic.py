@@ -19,9 +19,15 @@ class AestheticReward(RewardFunction):
     The scorer is loaded lazily on first call.
     """
 
-    def __init__(self, device: str = "cuda", dtype: str = "float32") -> None:
+    def __init__(
+        self,
+        device: str = "cuda",
+        dtype: str = "float32",
+        model_name: str = "openai/clip-vit-large-patch14",
+    ) -> None:
         self._device = device
         self._dtype_str = dtype
+        self._model_name = model_name
         self._scorer: Any = None
 
     def _ensure_loaded(self) -> None:
@@ -51,11 +57,13 @@ class AestheticReward(RewardFunction):
             def forward(self, embed: torch.Tensor) -> torch.Tensor:
                 return self.layers(embed)
 
+        model_name = self._model_name
+
         class _AestheticScorer(nn.Module):
             def __init__(self, device: str, dtype: torch.dtype) -> None:
                 super().__init__()
-                self.clip = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
-                self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+                self.clip = CLIPModel.from_pretrained(model_name)
+                self.processor = CLIPProcessor.from_pretrained(model_name)
                 self.mlp = _MLP()
                 # Load pretrained aesthetic predictor weights
                 from importlib import resources

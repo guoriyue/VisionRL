@@ -1,0 +1,28 @@
+# Cosmos Predict2 2B Video2World — checkpoint + LoRA + compile only.
+# Sampling defaults live separately in configs/sampling/cosmos_v2w_704p_93f.yaml.
+model:
+  family: cosmos
+  path: nvidia/Cosmos-Predict2-2B-Video2World
+
+  use_lora: true
+  lora:
+    rank: 64
+    alpha: 32
+    path: ""
+    target_modules:
+      - to_k
+      - to_q
+      - to_v
+      - to_out.0
+      - add_k_proj
+      - add_q_proj
+      - add_v_proj
+      - to_add_out
+
+  torch_compile:
+    enable: false
+    mode: default
+
+  # Reference image for Video2World conditioning. Empty string means
+  # zero-conditioning (degenerate — provide a real image for valid training).
+  reference_image: ""

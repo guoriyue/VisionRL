@@ -1,0 +1,25 @@
+# Janus-Pro-1B — autoregressive image-token generator (DeepSeek).
+# Sampling defaults (image_token_num / image_size / cfg_weight / temperature)
+# live in configs/sampling/janus_*.yaml.
+model:
+  family: janus_pro
+  path: deepseek-community/Janus-Pro-1B
+  dtype: bfloat16
+
+  use_lora: true
+  lora:
+    rank: 128
+    alpha: 256
+    dropout: 0.0
+    init: gaussian
+    # Janus' language-model uses LLaMA-style attention projection names.
+    target_modules:
+      - q_proj
+      - k_proj
+      - v_proj
+      - o_proj
+
+  # Frozen sub-modules — never trained for T2I RL.
+  freeze_vq: true
+  freeze_vision_encoder: true
+  freeze_aligner: true

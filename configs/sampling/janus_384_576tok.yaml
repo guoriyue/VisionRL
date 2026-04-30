@@ -1,0 +1,7 @@
+# Janus-Pro AR sampling preset: 384 px output from a 24x24 image-token grid (576 tokens).
+# CFG weight follows the upstream generation_inference.py default.
+sampling:
+  image_token_num: 576
+  image_size: 384
+  cfg_weight: 5.0
+  temperature: 1.0

@@ -1,0 +1,11 @@
+# Pick-a-Pic v2 preference-pair dataset (HuggingFace).
+# Used by Diffusion-DPO recipes.
+data:
+  dataset_name: yuvalkirstain/pickapic_v2
+  cache_dir: ""
+  split: train
+  max_train_samples: null
+  dataloader_num_workers: 4
+  random_crop: false
+  no_hflip: false
+  resolution: 0                  # 0 → derive from sampling.height

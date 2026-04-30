@@ -1,0 +1,19 @@
+# NextStep-1.1 + OCR GRPO — continuous-token AR image RL with OCR reward.
+defaults:
+  - /base/algorithm/token_grpo
+  - /base/actor
+  - /base/rollout/ar_continuous
+  - /base/trainer
+  - /model/nextstep_1/1_1
+  - /sampling/nextstep_256_1024tok
+
+reward:
+  components:
+    ocr: 1.0
+  ocr_debug_dir: ""
+
+data:
+  manifest: datasets/ocr/train.txt
+
+trainer:
+  output_dir: outputs/nextstep_1_ocr_grpo

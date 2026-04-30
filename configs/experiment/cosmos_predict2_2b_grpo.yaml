@@ -1,0 +1,48 @@
+# Cosmos Predict2 2B Video2World + GRPO (single-GPU, diffusers backend)
+defaults:
+  - /base/algorithm/grpo
+  - /base/actor
+  - /base/rollout/diffusion
+  - /base/trainer
+  - /model/cosmos/predict2_2b
+  - /sampling/cosmos_v2w_704p_93f
+
+# Cosmos source defaults: lr=1e-5, beta=0.004, eps_clip=1e-3, n=4, ppo_epochs=1.
+actor:
+  optim:
+    lr: 1.0e-5
+  ppo_epochs: 1
+
+algorithm:
+  eps_clip: 1.0e-3
+  init_kl_coef: 0.004
+
+rollout:
+  n: 4
+  rollout_batch_size: 1            # prompts_per_step in legacy script
+  same_latent: false
+
+reward:
+  components:
+    aesthetic: 1.0
+
+data:
+  manifest: datasets/cosmos/prompts.txt
+
+trainer:
+  output_dir: outputs/cosmos_pred2_2b_grpo
+  save_freq: 100
+  log_freq: 1
+
+# Cosmos-specific eval / sanity-gate / paired-LoRA-vs-base config.
+# eval.eval_only=true switches the driver into base-vs-LoRA comparison
+# mode (no training); requires model.lora.path to point at a trained
+# checkpoint.
+eval:
+  eval_only: false
+  prompts_file: ""                 # held-out prompts (one per line); empty -> use first 4 train prompts
+  seeds: 1                         # seeds per eval prompt
+  sanity_gates:
+    enable: true
+    clip_fraction_threshold: 0.5
+    approx_kl_threshold: 0.1

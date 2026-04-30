@@ -1,0 +1,9 @@
+# AR discrete-token rollout — Janus-Pro categorical image-token sampling.
+# Sampling shape (image_token_num / image_size / cfg_weight) lives in
+# configs/sampling/* so it travels with the resolution preset.
+rollout:
+  n_samples_per_prompt: 8
+  rollout_batch_size: 8
+  temperature: 1.0
+  rescale_to_unit: true         # [-1, 1] → [0, 1] for reward layer
+  max_text_length: 256

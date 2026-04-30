@@ -1,0 +1,9 @@
+# NextStep-1 sampling preset: 256² pixels, 1024 continuous tokens (32×32),
+# 20 Euler flow steps, CFG 4.5, terminal-noise SDE multiplier 1.0.
+# Paper recipe for OCR / general T2I (NextStep-1 model card).
+sampling:
+  image_size: 256
+  image_token_num: 1024
+  num_flow_steps: 20
+  noise_level: 1.0
+  cfg_scale: 4.5

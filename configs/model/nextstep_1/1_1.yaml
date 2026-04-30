@@ -1,0 +1,26 @@
+# NextStep-1.1 — 14B continuous-token AR transformer + 157M flow-matching head.
+# Paired with the f8ch16 VAE tokenizer (32×32 patches @ 16 channels).
+# Sampling defaults (image_token_num / image_size / num_flow_steps / cfg_scale)
+# live in configs/sampling/nextstep_*.yaml.
+model:
+  family: nextstep_1
+  path: stepfun-ai/NextStep-1.1
+  vae_path: stepfun-ai/NextStep-1-f8ch16-Tokenizer
+  dtype: bfloat16
+
+  use_lora: true
+  lora:
+    rank: 32
+    alpha: 64
+    dropout: 0.0
+    init: gaussian
+    # NextStep-1's LLM trunk is Qwen-2 derived — same attention module names.
+    target_modules:
+      - q_proj
+      - k_proj
+      - v_proj
+      - o_proj
+
+  # Frozen sub-modules
+  freeze_vae: true
+  freeze_image_head: false       # train the 157M flow head with LoRA-style updates

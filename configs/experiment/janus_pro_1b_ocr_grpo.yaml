@@ -1,0 +1,24 @@
+# Janus-Pro-1B OCR GRPO — AR image RL scored by rapidocr edit-distance.
+defaults:
+  - /base/algorithm/token_grpo
+  - /base/actor
+  - /base/rollout/ar_discrete
+  - /base/trainer
+  - /model/janus_pro/1b
+  - /sampling/janus_384_576tok
+
+algorithm:
+  init_kl_coef: 0.0
+
+reward:
+  components:
+    ocr: 1.0
+  ocr_debug_dir: ""
+
+data:
+  manifest: datasets/ocr/train.txt
+
+trainer:
+  output_dir: outputs/janus_pro_1b_ocr_grpo
+  debug:
+    first_step: true

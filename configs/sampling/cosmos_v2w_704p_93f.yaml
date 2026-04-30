@@ -1,0 +1,11 @@
+# Cosmos Predict2 Video2World sampling preset:
+# 1280x704, 93 frames (81 generated + 12 conditioning), 35 denoise steps,
+# CFG 7.0, 16 fps. Matches Cosmos Predict2 2B defaults.
+sampling:
+  width: 1280
+  height: 704
+  num_frames: 93
+  num_steps: 35
+  guidance_scale: 7.0
+  fps: 16
+  cfg: true

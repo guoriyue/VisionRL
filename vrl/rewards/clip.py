@@ -19,8 +19,13 @@ class CLIPScoreReward(RewardFunction):
     Loaded lazily on first call.
     """
 
-    def __init__(self, device: str = "cuda") -> None:
+    def __init__(
+        self,
+        device: str = "cuda",
+        model_name: str = "openai/clip-vit-large-patch14",
+    ) -> None:
         self._device = device
+        self._model_name = model_name
         self._scorer: Any = None
 
     def _ensure_loaded(self) -> None:
@@ -47,12 +52,14 @@ class CLIPScoreReward(RewardFunction):
             normalise = T.Normalize(mean=processor.image_mean, std=processor.image_std) if cfg.get("do_normalize") else nn.Identity()
             return T.Compose([resize, crop, normalise])
 
+        model_name = self._model_name
+
         class _ClipScorer(nn.Module):
             def __init__(self, device: str) -> None:
                 super().__init__()
                 self.device = device
-                self.model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14").to(device)
-                self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+                self.model = CLIPModel.from_pretrained(model_name).to(device)
+                self.processor = CLIPProcessor.from_pretrained(model_name)
                 self.tform = _get_transform(self.processor.image_processor)
                 self.eval()
 

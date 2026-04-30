@@ -1,0 +1,37 @@
+# Wan 2.1 1.3B + Diffusion-DPO (offline, Pick-a-Pic v2)
+defaults:
+  - /base/algorithm/dpo
+  - /base/actor
+  - /base/trainer
+  - /model/wan/wan_2_1_1_3b
+  - /sampling/video_240p_33f
+  - /dataset/pickapic_v2
+
+# DPO is offline preference learning over images replicated to T frames.
+# Default to single-frame "image-style" DPO; bump num_frames for true video pairs.
+sampling:
+  num_frames: 1
+
+# DPO-specific trainer overrides — paper-default schedule for SDXL scaled to Wan.
+trainer:
+  output_dir: outputs/wan_1_3b_dpo
+  max_train_steps: 2000
+  checkpointing_steps: 500
+  log_interval: 10
+
+# Optimizer / batch — DPO uses tiny lr (paper §4) and synchronous mini-batches.
+actor:
+  optim:
+    lr: 1.0e-8
+  scale_lr: true
+  gradient_accumulation_steps: 1
+  train_batch_size: 1
+  use_adafactor: false
+  mixed_precision: bf16
+  prediction_type: flow_matching   # Wan uses flow-matching velocity target
+
+# Disable torch.compile on the transformer — DPO's twin policy/ref forwards
+# under no_grad collide with reduce-overhead CUDA graphs.
+model:
+  torch_compile:
+    enable: false

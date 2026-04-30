@@ -1,0 +1,22 @@
+# Janus-Pro-1B GRPO — autoregressive image RL with PickScore + Aesthetic mix.
+defaults:
+  - /base/algorithm/token_grpo
+  - /base/actor
+  - /base/rollout/ar_discrete
+  - /base/trainer
+  - /model/janus_pro/1b
+  - /sampling/janus_384_576tok
+
+algorithm:
+  init_kl_coef: 0.04
+
+reward:
+  components:
+    pickscore: 1.0
+    aesthetic: 0.1
+
+data:
+  manifest: datasets/janus/prompts.txt
+
+trainer:
+  output_dir: outputs/janus_pro_1b_grpo

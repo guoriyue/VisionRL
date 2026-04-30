@@ -31,9 +31,16 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
     from vrl.trainers.data import PromptExample, load_prompt_manifest
     from vrl.trainers.online import OnlineTrainer
 
+    from vrl.algorithms.grpo import GRPOConfig as _GRPOConfig
+    from vrl.algorithms.grpo_token import TokenGRPOConfig as _TokenGRPOConfig
+
     built = build_configs(cfg)
     trainer_config = built["trainer"]
     grpo_config = built["algorithm"]
+    if not isinstance(grpo_config, _GRPOConfig) or isinstance(grpo_config, _TokenGRPOConfig):
+        raise TypeError(
+            f"SD3.5 expects algorithm.kind=grpo, got {type(grpo_config).__name__}",
+        )
 
     if trainer_config.profile:
         os.environ["VRL_PROFILE_COLLECT"] = "1"
@@ -52,14 +59,9 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
         transformer.enable_gradient_checkpointing()
 
     # 2. Reward
-    reward_weights = {
-        name: float(w) for name, w in cfg.reward.components.items() if float(w) > 0
-    }
+    reward_weights, reward_kwargs = built["reward"]
     if not reward_weights:
         raise ValueError("At least one reward component must have weight > 0.")
-    reward_kwargs: dict[str, dict] = {}
-    if "ocr" in reward_weights and cfg.reward.get("ocr_debug_dir", ""):
-        reward_kwargs["ocr"] = {"debug_dir": cfg.reward.ocr_debug_dir}
     reward_fn = MultiReward.from_dict(
         reward_weights, device=str(device), reward_kwargs=reward_kwargs,
     )
