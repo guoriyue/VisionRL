@@ -34,13 +34,13 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
     from vrl.trainers.data import PromptExample, load_prompt_manifest
     from vrl.trainers.online import OnlineTrainer
 
-    from vrl.algorithms.grpo import GRPOConfig as _GRPOConfig
-    from vrl.algorithms.grpo_token import TokenGRPOConfig as _TokenGRPOConfig
+    from vrl.algorithms.grpo import GRPOConfig
+    from vrl.algorithms.grpo_token import TokenGRPOConfig
 
     built = build_configs(cfg)
     trainer_config = built["trainer"]
     grpo_config = built["algorithm"]
-    if not isinstance(grpo_config, _GRPOConfig) or isinstance(grpo_config, _TokenGRPOConfig):
+    if not isinstance(grpo_config, GRPOConfig) or isinstance(grpo_config, TokenGRPOConfig):
         raise TypeError(
             f"Wan-GRPO expects algorithm.kind=grpo, got {type(grpo_config).__name__}",
         )

@@ -21,7 +21,7 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
 
     from vrl.algorithms.grpo import GRPO
     from vrl.algorithms.stat_tracking import PerPromptStatTracker
-    from vrl.config.loader import build_configs
+    from vrl.config.loader import build_configs, require
     from vrl.rewards.multi import MultiReward
     from vrl.rollouts.collectors.sd3_5 import (
         SD3_5Collector,
@@ -31,13 +31,13 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
     from vrl.trainers.data import PromptExample, load_prompt_manifest
     from vrl.trainers.online import OnlineTrainer
 
-    from vrl.algorithms.grpo import GRPOConfig as _GRPOConfig
-    from vrl.algorithms.grpo_token import TokenGRPOConfig as _TokenGRPOConfig
+    from vrl.algorithms.grpo import GRPOConfig
+    from vrl.algorithms.grpo_token import TokenGRPOConfig
 
     built = build_configs(cfg)
     trainer_config = built["trainer"]
     grpo_config = built["algorithm"]
-    if not isinstance(grpo_config, _GRPOConfig) or isinstance(grpo_config, _TokenGRPOConfig):
+    if not isinstance(grpo_config, GRPOConfig) or isinstance(grpo_config, TokenGRPOConfig):
         raise TypeError(
             f"SD3.5 expects algorithm.kind=grpo, got {type(grpo_config).__name__}",
         )
@@ -68,14 +68,15 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
     logger.info("Reward mix: %s", reward_weights)
 
     # 3. Collector + algorithm
+    noise_level = float(require(cfg, "rollout.noise_level"))
     collector_config = SD3_5CollectorConfig(
         num_steps=cfg.sampling.num_steps,
         guidance_scale=cfg.sampling.guidance_scale,
         height=cfg.sampling.height,
         width=cfg.sampling.width,
-        noise_level=cfg.rollout.get("noise_level", 0.7),
+        noise_level=noise_level,
         cfg=cfg.sampling.cfg,
-        sample_batch_size=cfg.rollout.get("sample_batch_size", 8),
+        sample_batch_size=int(require(cfg, "rollout.sample_batch_size")),
         kl_reward=cfg.algorithm.kl_reward,
         sde_window_size=cfg.rollout.sde.window_size,
         sde_window_range=tuple(cfg.rollout.sde.window_range),
@@ -83,7 +84,7 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
     collector = SD3_5Collector(sd3_5_model, reward_fn, collector_config)
 
     evaluator = FlowMatchingEvaluator(
-        bundle.scheduler, noise_level=cfg.rollout.get("noise_level", 0.7), sde_type="sde",
+        bundle.scheduler, noise_level=noise_level, sde_type="sde",
     )
     algorithm = GRPO(grpo_config)
 

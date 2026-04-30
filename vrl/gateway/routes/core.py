@@ -33,9 +33,9 @@ def register_routes(app: FastAPI) -> None:
 
     @router.get("/v1/models")
     async def list_models():
-        from vrl.models.registry import list_models as _list_models
+        from vrl.models.registry import list_models
 
-        return {"models": _list_models()}
+        return {"models": list_models()}
 
     @router.post("/v1/rollout", status_code=202)
     async def submit_rollout(request: Request, body: RolloutSubmitRequest):

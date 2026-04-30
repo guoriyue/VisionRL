@@ -14,6 +14,12 @@ reward:
   components:
     pickscore: 1.0
     aesthetic: 0.1
+  kwargs:
+    pickscore:
+      processor_name: laion/CLIP-ViT-H-14-laion2B-s32B-b79K
+      model_name: yuvalkirstain/PickScore_v1
+    aesthetic:
+      model_name: openai/clip-vit-large-patch14
 
 data:
   manifest: datasets/janus/prompts.txt

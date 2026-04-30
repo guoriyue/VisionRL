@@ -52,7 +52,7 @@ async def _train_janus_pro(cfg: DictConfig, *, ocr_mode: bool) -> None:
 
     from vrl.algorithms.grpo_token import TokenGRPO, TokenGRPOConfig
     from vrl.algorithms.stat_tracking import PerPromptStatTracker
-    from vrl.config.loader import build_configs
+    from vrl.config.loader import build_configs, require
     from vrl.models.families.janus_pro import JanusProConfig, JanusProPolicy
     from vrl.rollouts.collectors.janus_pro import (
         JanusProCollector,
@@ -76,19 +76,17 @@ async def _train_janus_pro(cfg: DictConfig, *, ocr_mode: bool) -> None:
 
     # 1. Model -----------------------------------------------------------
     model_cfg = cfg.model
-    lora_cfg = model_cfg.get("lora", {})
+    use_lora = bool(require(cfg, "model.use_lora"))
     logger.info("Loading Janus-Pro from %s ...", model_cfg.path)
     policy = JanusProPolicy(JanusProConfig(
         model_path=str(model_cfg.path),
-        dtype=str(model_cfg.get("dtype", "bfloat16")),
-        use_lora=bool(model_cfg.get("use_lora", True)),
-        lora_rank=int(lora_cfg.get("rank", 32)),
-        lora_alpha=int(lora_cfg.get("alpha", 64)),
-        lora_dropout=float(lora_cfg.get("dropout", 0.0)),
-        lora_target_modules=tuple(lora_cfg.get(
-            "target_modules", ("q_proj", "k_proj", "v_proj", "o_proj"),
-        )),
-        lora_init=str(lora_cfg.get("init", "gaussian")),
+        dtype=str(require(cfg, "model.dtype")),
+        use_lora=use_lora,
+        lora_rank=int(require(cfg, "model.lora.rank")),
+        lora_alpha=int(require(cfg, "model.lora.alpha")),
+        lora_dropout=float(require(cfg, "model.lora.dropout")),
+        lora_target_modules=tuple(require(cfg, "model.lora.target_modules")),
+        lora_init=str(require(cfg, "model.lora.init")),
         cfg_weight=float(cfg.sampling.cfg_weight),
         temperature=float(cfg.sampling.temperature),
         image_token_num=int(cfg.sampling.image_token_num),
@@ -115,8 +113,8 @@ async def _train_janus_pro(cfg: DictConfig, *, ocr_mode: bool) -> None:
             temperature=float(cfg.sampling.temperature),
             image_token_num=int(cfg.sampling.image_token_num),
             image_size=int(cfg.sampling.image_size),
-            rescale_to_unit=bool(cfg.rollout.get("rescale_to_unit", True)),
-            max_text_length=int(cfg.rollout.get("max_text_length", 256)),
+            rescale_to_unit=bool(require(cfg, "rollout.rescale_to_unit")),
+            max_text_length=int(require(cfg, "rollout.max_text_length")),
         ),
     )
     evaluator = TokenLogProbEvaluator()
@@ -211,7 +209,7 @@ async def _train_janus_pro(cfg: DictConfig, *, ocr_mode: bool) -> None:
             if trainer_config.save_freq > 0 and (epoch + 1) % trainer_config.save_freq == 0:
                 ckpt_path = output_dir / f"checkpoint-{epoch+1}"
                 ckpt_path.mkdir(parents=True, exist_ok=True)
-                if bool(model_cfg.get("use_lora", True)):
+                if use_lora:
                     policy.language_model.save_pretrained(ckpt_path / "lora_weights")
                 torch.save(trainer.state_dict(), ckpt_path / "trainer_state.pt")
                 logger.info("Saved checkpoint to %s", ckpt_path)
@@ -219,6 +217,6 @@ async def _train_janus_pro(cfg: DictConfig, *, ocr_mode: bool) -> None:
     final_path = output_dir / "checkpoint-final"
     final_path.mkdir(parents=True, exist_ok=True)
     torch.save(trainer.state_dict(), final_path / "trainer_state.pt")
-    if bool(model_cfg.get("use_lora", True)):
+    if use_lora:
         policy.language_model.save_pretrained(final_path / "lora_weights")
     logger.info("Training complete. Final checkpoint: %s", final_path)

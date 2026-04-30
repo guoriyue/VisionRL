@@ -25,7 +25,7 @@ async def train_cosmos_predict2_grpo(cfg: DictConfig) -> None:
 
     from vrl.algorithms.grpo import GRPO
     from vrl.algorithms.stat_tracking import PerPromptStatTracker
-    from vrl.config.loader import build_configs
+    from vrl.config.loader import build_configs, require
     from vrl.rewards.multi import MultiReward
     from vrl.rollouts.collectors.cosmos_predict2 import (
         CosmosPredict2Collector,
@@ -34,13 +34,13 @@ async def train_cosmos_predict2_grpo(cfg: DictConfig) -> None:
     from vrl.rollouts.evaluators.diffusion.flow_matching import FlowMatchingEvaluator
     from vrl.trainers.online import OnlineTrainer
 
-    from vrl.algorithms.grpo import GRPOConfig as _GRPOConfig
-    from vrl.algorithms.grpo_token import TokenGRPOConfig as _TokenGRPOConfig
+    from vrl.algorithms.grpo import GRPOConfig
+    from vrl.algorithms.grpo_token import TokenGRPOConfig
 
     built = build_configs(cfg)
     trainer_config = built["trainer"]
     grpo_config = built["algorithm"]
-    if not isinstance(grpo_config, _GRPOConfig) or isinstance(grpo_config, _TokenGRPOConfig):
+    if not isinstance(grpo_config, GRPOConfig) or isinstance(grpo_config, TokenGRPOConfig):
         raise TypeError(
             f"Cosmos expects algorithm.kind=grpo, got {type(grpo_config).__name__}",
         )
@@ -76,7 +76,7 @@ async def train_cosmos_predict2_grpo(cfg: DictConfig) -> None:
 
     # 3. Reference image (for Video2World conditioning)
     reference_image = None
-    ref_image_path = str(cfg.model.get("reference_image", "") or "")
+    ref_image_path = str(require(cfg, "model.reference_image") or "")
     if ref_image_path:
         from PIL import Image
 
@@ -143,9 +143,8 @@ async def train_cosmos_predict2_grpo(cfg: DictConfig) -> None:
         raise ValueError(f"Manifest contains no prompts: {manifest_path}")
 
     # Eval prompts: held-out file or first 4 training prompts
-    eval_cfg = cfg.get("eval", OmegaConf.create({}))
     eval_prompts: list[str] = []
-    eval_prompts_file = str(eval_cfg.get("prompts_file", "") or "")
+    eval_prompts_file = str(require(cfg, "eval.prompts_file") or "")
     if eval_prompts_file and Path(eval_prompts_file).exists():
         eval_prompts = [
             line.strip()
@@ -160,14 +159,14 @@ async def train_cosmos_predict2_grpo(cfg: DictConfig) -> None:
     OmegaConf.save(cfg, output_dir / "resolved_config.yaml")
 
     # --- eval-only mode: paired base-vs-LoRA comparison, no training ---
-    if bool(eval_cfg.get("eval_only", False)):
-        if not str(cfg.model.lora.get("path", "") or ""):
+    if bool(require(cfg, "eval.eval_only")):
+        if not str(require(cfg, "model.lora.path") or ""):
             raise ValueError(
                 "eval.eval_only=true requires model.lora.path pointing to a "
                 "trained LoRA checkpoint. Without it, 'LoRA' scores would "
                 "come from a random adapter."
             )
-        eval_seeds = int(eval_cfg.get("seeds", 1))
+        eval_seeds = int(require(cfg, "eval.seeds"))
         await _run_eval_only(
             transformer=transformer,
             collector=collector,
@@ -203,10 +202,9 @@ async def train_cosmos_predict2_grpo(cfg: DictConfig) -> None:
         )
 
     ref_image_flag = "1" if reference_image is not None else "0"
-    sanity_cfg = eval_cfg.get("sanity_gates", OmegaConf.create({}))
-    gate_enable = bool(sanity_cfg.get("enable", True))
-    clip_thresh = float(sanity_cfg.get("clip_fraction_threshold", 0.5))
-    kl_thresh = float(sanity_cfg.get("approx_kl_threshold", 0.1))
+    gate_enable = bool(require(cfg, "eval.sanity_gates.enable"))
+    clip_thresh = float(require(cfg, "eval.sanity_gates.clip_fraction_threshold"))
+    kl_thresh = float(require(cfg, "eval.sanity_gates.approx_kl_threshold"))
 
     rng = torch.Generator().manual_seed(trainer_config.seed)
     for epoch in range(trainer_config.total_epochs):

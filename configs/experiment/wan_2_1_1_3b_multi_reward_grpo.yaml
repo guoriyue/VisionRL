@@ -12,6 +12,11 @@ reward:
     aesthetic: 0.5
     clipscore: 0.5
     ocr: 0.0
+  kwargs:
+    aesthetic:
+      model_name: openai/clip-vit-large-patch14
+    clipscore:
+      model_name: openai/clip-vit-large-patch14
 
 data:
   manifest: datasets/wan/prompts.txt

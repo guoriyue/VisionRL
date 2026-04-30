@@ -31,7 +31,7 @@ async def train_nextstep_1_ocr_grpo(cfg: DictConfig) -> None:
     import torch
 
     from vrl.algorithms.grpo_token import TokenGRPO, TokenGRPOConfig
-    from vrl.config.loader import build_configs
+    from vrl.config.loader import build_configs, require
     from vrl.models.families.nextstep_1 import NextStep1Config, NextStep1Policy
     from vrl.rewards.ocr import OCRReward
     from vrl.rollouts.collectors.nextstep_1 import (
@@ -50,9 +50,8 @@ async def train_nextstep_1_ocr_grpo(cfg: DictConfig) -> None:
     # ------------------------------------------------------------------
     model_cfg = cfg.model
     sampling = cfg.sampling
-    lora_cfg = model_cfg.get("lora", {})
-    lora_targets = lora_cfg.get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"])
-    lora_targets_tuple = tuple(OmegaConf.to_container(lora_targets, resolve=True))
+    use_lora = bool(require(cfg, "model.use_lora"))
+    lora_targets_tuple = tuple(require(cfg, "model.lora.target_modules"))
 
     torch.manual_seed(trainer_config.seed)
 
@@ -60,20 +59,20 @@ async def train_nextstep_1_ocr_grpo(cfg: DictConfig) -> None:
     model = NextStep1Policy(NextStep1Config(
         model_path=model_cfg.path,
         vae_path=model_cfg.vae_path,
-        dtype=model_cfg.get("dtype", "bfloat16"),
-        use_lora=model_cfg.get("use_lora", True),
-        lora_rank=int(lora_cfg.get("rank", 32)),
-        lora_alpha=int(lora_cfg.get("alpha", 64)),
-        lora_dropout=float(lora_cfg.get("dropout", 0.0)),
+        dtype=str(require(cfg, "model.dtype")),
+        use_lora=use_lora,
+        lora_rank=int(require(cfg, "model.lora.rank")),
+        lora_alpha=int(require(cfg, "model.lora.alpha")),
+        lora_dropout=float(require(cfg, "model.lora.dropout")),
         lora_target_modules=lora_targets_tuple,
-        lora_init=lora_cfg.get("init", "gaussian"),
+        lora_init=str(require(cfg, "model.lora.init")),
         cfg_scale=float(sampling.cfg_scale),
         num_flow_steps=int(sampling.num_flow_steps),
         noise_level=float(sampling.noise_level),
         image_token_num=int(sampling.image_token_num),
         image_size=int(sampling.image_size),
-        freeze_vae=model_cfg.get("freeze_vae", True),
-        freeze_image_head=model_cfg.get("freeze_image_head", False),
+        freeze_vae=bool(require(cfg, "model.freeze_vae")),
+        freeze_image_head=bool(require(cfg, "model.freeze_image_head")),
     ))
     logger.info("Trainable params: %.2f M", model.trainable_param_count() / 1e6)
 
@@ -94,16 +93,15 @@ async def train_nextstep_1_ocr_grpo(cfg: DictConfig) -> None:
     # ------------------------------------------------------------------
     # 3. Collector + evaluator + algorithm.
     # ------------------------------------------------------------------
-    rollout = cfg.rollout
     collector_config = NextStep1CollectorConfig(
-        n_samples_per_prompt=int(rollout.get("n_samples_per_prompt", trainer_config.n)),
+        n_samples_per_prompt=int(require(cfg, "rollout.n_samples_per_prompt")),
         cfg_scale=float(sampling.cfg_scale),
         num_flow_steps=int(sampling.num_flow_steps),
-        noise_level=float(rollout.get("noise_level", sampling.noise_level)),
+        noise_level=float(require(cfg, "rollout.noise_level")),
         image_token_num=int(sampling.image_token_num),
         image_size=int(sampling.image_size),
-        rescale_to_unit=bool(rollout.get("rescale_to_unit", True)),
-        max_text_length=int(rollout.get("max_text_length", 256)),
+        rescale_to_unit=bool(require(cfg, "rollout.rescale_to_unit")),
+        max_text_length=int(require(cfg, "rollout.max_text_length")),
     )
     collector = NextStep1Collector(model=model, reward_fn=reward, config=collector_config)
 
@@ -145,7 +143,7 @@ async def train_nextstep_1_ocr_grpo(cfg: DictConfig) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     OmegaConf.save(cfg, output_dir / "resolved_config.yaml")
 
-    rollout_batch_size = int(rollout.get("rollout_batch_size", trainer_config.rollout_batch_size))
+    rollout_batch_size = int(require(cfg, "rollout.rollout_batch_size"))
     rng = torch.Generator().manual_seed(trainer_config.seed)
 
     csv_path = output_dir / "metrics.csv"
@@ -184,7 +182,7 @@ async def train_nextstep_1_ocr_grpo(cfg: DictConfig) -> None:
             ):
                 ckpt = output_dir / f"checkpoint-{step}"
                 ckpt.mkdir(parents=True, exist_ok=True)
-                if model_cfg.get("use_lora", True):
+                if use_lora:
                     model.language_model.save_pretrained(ckpt / "lora_weights")
                 logger.info("Saved checkpoint at step %d -> %s", step, ckpt)
 

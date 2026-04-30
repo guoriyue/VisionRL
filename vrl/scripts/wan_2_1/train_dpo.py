@@ -82,7 +82,16 @@ def train_wan_2_1_dpo(cfg: DictConfig) -> None:
     from vrl.trainers.pickapic import collate_preference, load_pickapic
 
     from vrl.algorithms.dpo import DiffusionDPOConfig
-    from vrl.config.loader import build_algorithm_config
+    from vrl.config.loader import (
+        build_algorithm_config,
+        optional_none,
+        require,
+        validate_training_config,
+    )
+
+    # DPO doesn't go through `build_configs()`, so validate explicitly here
+    # to keep the YAML-as-source-of-truth contract (SPRINT patch 3 Phase 6).
+    validate_training_config(cfg)
 
     actor = cfg.actor
     trainer_cfg_yaml = cfg.trainer
@@ -96,7 +105,7 @@ def train_wan_2_1_dpo(cfg: DictConfig) -> None:
             f"{type(dpo_config).__name__}",
         )
 
-    mixed_precision = str(actor.get("mixed_precision", "bf16"))
+    mixed_precision = str(require(cfg, "actor.mixed_precision"))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     weight_dtype = torch.bfloat16 if mixed_precision == "bf16" else torch.float16
 
@@ -105,7 +114,7 @@ def train_wan_2_1_dpo(cfg: DictConfig) -> None:
     pipeline = bundle.backend_handle
     transformer = bundle.trainable_modules["transformer"]
 
-    if bool(actor.get("gradient_checkpointing", True)):
+    if bool(require(cfg, "actor.gradient_checkpointing")):
         transformer.enable_gradient_checkpointing()
 
     # 2. Encoders bound to the loaded pipeline
@@ -115,7 +124,9 @@ def train_wan_2_1_dpo(cfg: DictConfig) -> None:
     )
 
     # 3. Data — Pick-a-Pic v2 preference pairs
-    resolution = int(data_cfg.get("resolution", 0)) or int(sampling.height)
+    # `data.resolution: 0` is YAML's signal "fall back to sampling.height";
+    # `require` ensures the key is declared, the `or` keeps that semantic.
+    resolution = int(require(cfg, "data.resolution")) or int(sampling.height)
     logger.info(
         "Loading Pick-a-Pic from %s split=%s",
         data_cfg.dataset_name, data_cfg.split,
@@ -123,19 +134,19 @@ def train_wan_2_1_dpo(cfg: DictConfig) -> None:
     ds = load_pickapic(
         split=str(data_cfg.split),
         cache_dir=str(data_cfg.cache_dir) or None,
-        max_samples=data_cfg.get("max_train_samples", None),
+        max_samples=optional_none(cfg, "data.max_train_samples"),
         resolution=resolution,
-        random_crop=bool(data_cfg.get("random_crop", False)),
-        no_hflip=bool(data_cfg.get("no_hflip", False)),
+        random_crop=bool(require(cfg, "data.random_crop")),
+        no_hflip=bool(require(cfg, "data.no_hflip")),
         dataset_name=str(data_cfg.dataset_name),
     )
-    train_batch_size = int(actor.get("train_batch_size", 1))
-    grad_accum = int(actor.get("gradient_accumulation_steps", 1))
+    train_batch_size = int(require(cfg, "actor.train_batch_size"))
+    grad_accum = int(require(cfg, "actor.gradient_accumulation_steps"))
     dataloader = DataLoader(
         ds,
         batch_size=train_batch_size,
         shuffle=True,
-        num_workers=int(data_cfg.get("dataloader_num_workers", 4)),
+        num_workers=int(require(cfg, "data.dataloader_num_workers")),
         collate_fn=collate_preference,
         drop_last=True,
     )
@@ -143,7 +154,7 @@ def train_wan_2_1_dpo(cfg: DictConfig) -> None:
 
     # 4. Trainer config — bridge YAML slices to OfflineDPOTrainerConfig
     base_lr = float(actor.optim.lr)
-    scale_lr = bool(actor.get("scale_lr", True))
+    scale_lr = bool(require(cfg, "actor.scale_lr"))
     effective_bs = train_batch_size * grad_accum
     lr = base_lr * effective_bs if scale_lr else base_lr
 
@@ -152,13 +163,13 @@ def train_wan_2_1_dpo(cfg: DictConfig) -> None:
         sft_weight=float(dpo_config.sft_weight),
         lr=lr,
         scale_lr=False,                       # already scaled above
-        max_grad_norm=float(actor.get("max_norm", 1.0)),
+        max_grad_norm=float(require(cfg, "actor.max_norm")),
         gradient_accumulation_steps=grad_accum,
-        prediction_type=str(actor.get("prediction_type", "flow_matching")),
+        prediction_type=str(require(cfg, "actor.prediction_type")),
         num_train_timesteps=pipeline.scheduler.config.num_train_timesteps,
         num_frames=num_frames,
         mixed_precision=mixed_precision,
-        use_adafactor=bool(actor.get("use_adafactor", False)),
+        use_adafactor=bool(require(cfg, "actor.use_adafactor")),
     )
     pipeline.scheduler.set_timesteps(
         pipeline.scheduler.config.num_train_timesteps, device=device,
@@ -187,9 +198,9 @@ def train_wan_2_1_dpo(cfg: DictConfig) -> None:
         )
 
     # 6. Training loop
-    max_train_steps = int(trainer_cfg_yaml.get("max_train_steps", 2000))
-    checkpointing_steps = int(trainer_cfg_yaml.get("checkpointing_steps", 500))
-    log_interval = int(trainer_cfg_yaml.get("log_interval", 10))
+    max_train_steps = int(require(cfg, "trainer.max_train_steps"))
+    checkpointing_steps = int(require(cfg, "trainer.checkpointing_steps"))
+    log_interval = int(require(cfg, "trainer.log_interval"))
 
     logger.info(
         "Starting Wan-1.3B DPO — %d steps, beta=%g, lr=%g, num_frames=%d",

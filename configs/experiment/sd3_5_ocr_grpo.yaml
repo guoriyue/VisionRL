@@ -12,7 +12,9 @@ reward:
     ocr: 1.0
     aesthetic: 0.0
     clipscore: 0.0
-  ocr_debug_dir: ""
+  kwargs:
+    ocr:
+      debug_dir: ""
 
 data:
   manifest: datasets/ocr/train.txt

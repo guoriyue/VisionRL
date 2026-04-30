@@ -25,6 +25,9 @@ rollout:
 reward:
   components:
     aesthetic: 1.0
+  kwargs:
+    aesthetic:
+      model_name: openai/clip-vit-large-patch14
 
 data:
   manifest: datasets/cosmos/prompts.txt

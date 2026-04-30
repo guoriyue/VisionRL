@@ -428,14 +428,14 @@ class OnlineTrainer(Trainer):
             )
 
         if cfg.debug.grad_split:
-            import sys as _sys
+            import sys
             _msg = (
                 f"\n[GRAD-SPLIT TRACER] about to enter inner loop: "
                 f"step={self.state.step} ppo_epochs={cfg.ppo_epochs} "
                 f"num_filtered_batches={len(filtered_batches)} "
                 f"num_train_indices={len(train_indices)}\n"
             )
-            print(_msg, file=_sys.stderr, flush=True)
+            print(_msg, file=sys.stderr, flush=True)
             print(_msg, flush=True)
             logger.info(_msg.strip())
             try:
@@ -479,9 +479,9 @@ class OnlineTrainer(Trainer):
                     )
                     if cfg.debug.grad_split and not _grad_split_fired:
                         OnlineTrainer._grad_split_already_fired = True  # type: ignore[attr-defined]
-                        import sys as _sys
+                        import sys
                         _enter = f"\n[GRAD-SPLIT] entering diagnostic block (step={self.state.step}, j={j})\n"
-                        print(_enter, file=_sys.stderr, flush=True)
+                        print(_enter, file=sys.stderr, flush=True)
                         print(_enter, flush=True)
                         logger.info(_enter.strip())
                         try:
@@ -490,21 +490,20 @@ class OnlineTrainer(Trainer):
                         except Exception:
                             pass
                         try:
-                            import torch as _t
                             p_t = getattr(self.algorithm, "_last_policy_loss_tensor", None)
                             k_t = getattr(self.algorithm, "_last_kl_term_tensor", None)
                             params = [p for p in self.model.parameters() if p.requires_grad]
                             p_norm = float("nan")
                             k_norm = float("nan")
                             if p_t is not None and p_t.requires_grad:
-                                p_grads = _t.autograd.grad(
+                                p_grads = torch.autograd.grad(
                                     p_t, params, retain_graph=True, allow_unused=True
                                 )
                                 p_norm = (
                                     sum((g.detach() ** 2).sum().item() for g in p_grads if g is not None)
                                 ) ** 0.5
                             if k_t is not None and k_t.requires_grad:
-                                k_grads = _t.autograd.grad(
+                                k_grads = torch.autograd.grad(
                                     k_t, params, retain_graph=True, allow_unused=True
                                 )
                                 k_norm = (
@@ -519,8 +518,8 @@ class OnlineTrainer(Trainer):
                                 f"policy_loss={p_t.item() if p_t is not None else float('nan'):.4e} "
                                 f"kl_term={k_t.item() if k_t is not None else float('nan'):.4e}\n"
                             )
-                            import sys as _sys
-                            print(_result, file=_sys.stderr, flush=True)
+                            import sys
+                            print(_result, file=sys.stderr, flush=True)
                             print(_result, flush=True)
                             logger.info(_result.strip())
                             try:
@@ -564,8 +563,8 @@ class OnlineTrainer(Trainer):
         phase_times = dict(timer.times)
         if cfg.profile:
             try:
-                from vrl.rollouts.collectors import wan_2_1 as _wdc
-                phase_times.update(_wdc._LAST_COLLECT_PHASES)
+                from vrl.rollouts.collectors import wan_2_1
+                phase_times.update(wan_2_1._LAST_COLLECT_PHASES)
             except Exception:
                 pass
         if cfg.profile and phase_times:
@@ -578,12 +577,13 @@ class OnlineTrainer(Trainer):
             logger.info("phase_times[step=%d] total=%.3fs | %s",
                         self.state.step, total, parts)
             try:
-                import json as _json, os as _os
-                _evt_path = _os.path.join(cfg.output_dir, "phase_events.jsonl")
-                _os.makedirs(cfg.output_dir, exist_ok=True)
+                import json
+                import os
+                _evt_path = os.path.join(cfg.output_dir, "phase_events.jsonl")
+                os.makedirs(cfg.output_dir, exist_ok=True)
                 with open(_evt_path, "a") as _f:
                     for _n, _s, _e in timer.events:
-                        _f.write(_json.dumps({
+                        _f.write(json.dumps({
                             "step": self.state.step,
                             "phase": _n,
                             "start": _s,

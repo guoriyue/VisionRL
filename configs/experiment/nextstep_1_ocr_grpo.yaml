@@ -10,7 +10,9 @@ defaults:
 reward:
   components:
     ocr: 1.0
-  ocr_debug_dir: ""
+  kwargs:
+    ocr:
+      debug_dir: ""
 
 data:
   manifest: datasets/ocr/train.txt

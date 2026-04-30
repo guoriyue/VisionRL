@@ -130,6 +130,284 @@ _GRPO_FIELDS = {"eps_clip", "init_kl_coef", "eps", "adv_clip_max", "global_std"}
 _TOKEN_GRPO_EXTRA_FIELDS = {"mask_key", "kl_estimator"}
 _DPO_FIELDS = {"beta", "sft_weight"}
 
+
+# ---------------------------------------------------------------------------
+# Phase 3: Required-access helpers
+#
+# These replace `.get(path, default)` for active experiment values. The intent
+# is that YAML is the single source of truth: if a path is missing, fail fast
+# with the exact dotted path in the error message so the operator immediately
+# knows which YAML key is expected.
+# ---------------------------------------------------------------------------
+
+
+def require(cfg: DictConfig, path: str) -> Any:
+    """Fetch a dotted ``path`` from ``cfg`` or raise with the exact path.
+
+    Raises:
+        ValueError: if the path is missing or the resolved value is ``None``.
+            The error message always contains the dotted path so callers can
+            grep their YAML directly.
+    """
+    keys = path.split(".")
+    node: Any = cfg
+    for k in keys:
+        if not isinstance(node, DictConfig) or k not in node:
+            raise ValueError(f"config missing required field: {path}")
+        node = node[k]
+    if node is None:
+        raise ValueError(f"config missing required field: {path} (got None)")
+    if isinstance(node, (DictConfig, ListConfig)):
+        return OmegaConf.to_container(node, resolve=True)
+    return node
+
+
+def optional_none(cfg: DictConfig, path: str) -> Any | None:
+    """Fetch a dotted ``path`` that YAML may legitimately set to ``null``.
+
+    The path being completely absent is still an error — the contract is that
+    the YAML *explicitly* opts in to ``null``. Returns ``None`` only if the
+    YAML value is ``null``.
+    """
+    keys = path.split(".")
+    node: Any = cfg
+    for k in keys:
+        if not isinstance(node, DictConfig) or k not in node:
+            raise ValueError(f"config missing required field: {path}")
+        node = node[k]
+    if node is None:
+        return None
+    if isinstance(node, (DictConfig, ListConfig)):
+        return OmegaConf.to_container(node, resolve=True)
+    return node
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Reward validation
+# ---------------------------------------------------------------------------
+
+# Reward components that are model-backed and therefore must declare their
+# backbone explicitly under `reward.kwargs.<name>`. Each entry maps a reward
+# name to the list of `kwargs.<name>.<subkey>` paths that are required when
+# the component's weight is > 0.
+_REWARD_REQUIRED_KWARGS: dict[str, tuple[str, ...]] = {
+    "aesthetic": ("model_name",),
+    "clipscore": ("model_name",),
+    "pickscore": ("processor_name", "model_name"),
+    # OCR's `debug_dir` is allowed to be the empty string but the key must be
+    # explicitly present in YAML — we validate presence, not non-emptiness.
+    "ocr": ("debug_dir",),
+}
+
+
+def validate_reward_config(cfg: DictConfig) -> None:
+    """Validate ``cfg.reward`` shape per SPRINT patch 3 Phase 2.
+
+    Rules:
+      - ``reward.components`` must exist.
+      - For every component with ``weight > 0`` that is model-backed, the
+        corresponding ``reward.kwargs.<name>.<field>`` must be present.
+      - ``reward.kwargs.<name>`` must be a mapping if present.
+      - The legacy ``reward.ocr_debug_dir`` key is tolerated for external
+        callers (the experiment-YAML audit forbids it separately).
+    """
+    if "reward" not in cfg:
+        raise ValueError("config missing required field: reward")
+    reward = cfg.reward
+    if "components" not in reward:
+        raise ValueError("config missing required field: reward.components")
+
+    components_raw = OmegaConf.to_container(reward.components, resolve=True) or {}
+    if not isinstance(components_raw, dict):
+        raise ValueError("reward.components must be a mapping of name -> weight")
+
+    raw_kwargs_node = reward.get("kwargs", None) if "kwargs" in reward else None
+    kwargs_dict: dict[str, Any] = (
+        OmegaConf.to_container(raw_kwargs_node, resolve=True) or {}
+        if raw_kwargs_node is not None
+        else {}
+    )
+
+    # `reward.kwargs.<name>` must be a dict if present.
+    for name, sub in kwargs_dict.items():
+        if sub is None:
+            # Treat explicit null as "no kwargs"; downstream check handles the
+            # required-keys case below.
+            continue
+        if not isinstance(sub, dict):
+            raise ValueError(
+                f"reward.kwargs.{name} must be a mapping, got {type(sub).__name__}",
+            )
+
+    # For each model-backed component with weight > 0, its required kwargs
+    # subkeys must be present.
+    for name, required_subkeys in _REWARD_REQUIRED_KWARGS.items():
+        if name not in components_raw:
+            continue
+        try:
+            weight = float(components_raw[name])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"reward.components.{name} must be numeric, got "
+                f"{components_raw[name]!r}",
+            ) from exc
+        if weight <= 0:
+            continue
+        sub = kwargs_dict.get(name)
+        if not isinstance(sub, dict):
+            raise ValueError(
+                f"config missing required field: reward.kwargs.{name} "
+                f"(component {name!r} has weight {weight} > 0)",
+            )
+        for subkey in required_subkeys:
+            if subkey not in sub:
+                raise ValueError(
+                    f"config missing required field: reward.kwargs.{name}.{subkey}",
+                )
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Experiment-level validation
+# ---------------------------------------------------------------------------
+
+# Common required fields for every active training experiment (Phase 4
+# lines 209-232). Filesystem-existence checks are explicitly out of scope.
+_COMMON_REQUIRED_FIELDS: tuple[str, ...] = (
+    "actor.optim.lr",
+    "actor.optim.adam_beta1",
+    "actor.optim.adam_beta2",
+    "actor.optim.weight_decay",
+    "actor.optim.eps",
+    "actor.optim.use_8bit_adam",
+    "actor.optim.allow_tf32",
+    "actor.max_norm",
+    "actor.ppo_epochs",
+    "actor.bf16",
+    "actor.gradient_checkpointing",
+    "actor.timestep_fraction",
+    "actor.ema.enable",
+    "actor.ema.decay",
+    "actor.ema.update_interval",
+    "trainer.total_epochs",
+    "trainer.save_freq",
+    "trainer.log_freq",
+    "trainer.output_dir",
+    "trainer.seed",
+    "trainer.profile",
+    "trainer.debug.first_step",
+    "trainer.debug.grad_split",
+)
+
+# GRPO (diffusion) extra rollout fields (Phase 4 lines 234-242).
+_GRPO_DIFFUSION_REQUIRED: tuple[str, ...] = (
+    "rollout.n",
+    "rollout.rollout_batch_size",
+    "rollout.sde.window_size",
+    "rollout.sde.window_range",
+    "rollout.same_latent",
+)
+
+# Token-GRPO (autoregressive) extra rollout fields (Phase 4 lines 244-251).
+_TOKEN_GRPO_REQUIRED: tuple[str, ...] = (
+    "rollout.n_samples_per_prompt",
+    "rollout.rollout_batch_size",
+    "rollout.rescale_to_unit",
+    "rollout.max_text_length",
+)
+
+# Diffusion-DPO extra fields per the patch §"Wan-DPO" (lines 322-344).
+# `data.max_train_samples` is intentionally excluded here — DPO YAML opts in
+# to ``null``, so callers must use ``optional_none`` instead of ``require``.
+_DPO_REQUIRED: tuple[str, ...] = (
+    "actor.mixed_precision",
+    "actor.gradient_checkpointing",
+    "actor.train_batch_size",
+    "actor.gradient_accumulation_steps",
+    "actor.scale_lr",
+    "actor.use_adafactor",
+    "actor.prediction_type",
+    "data.random_crop",
+    "data.no_hflip",
+    "data.dataloader_num_workers",
+    "data.resolution",
+    "trainer.max_train_steps",
+    "trainer.checkpointing_steps",
+    "trainer.log_interval",
+)
+
+
+def _require_path_present(cfg: DictConfig, path: str) -> None:
+    """Like ``require`` but only checks presence — returns nothing.
+
+    This is the validator-side counterpart that gives the same error message
+    shape ``require`` does; we don't care about the value, only that YAML
+    declares it.
+    """
+    require(cfg, path)
+
+
+def _path_exists(cfg: DictConfig, path: str) -> bool:
+    """Return True iff a dotted path resolves to a present (non-missing) node.
+
+    Unlike :func:`require`, presence with value ``None`` counts as present;
+    this is used for *gating* family-specific dispatch decisions.
+    """
+    keys = path.split(".")
+    node: Any = cfg
+    for k in keys:
+        if not isinstance(node, DictConfig) or k not in node:
+            return False
+        node = node[k]
+    return True
+
+
+def validate_training_config(cfg: DictConfig) -> None:
+    """Top-level fail-fast validator for active training experiments.
+
+    Per SPRINT patch 3 Phase 6:
+      1. Common actor/trainer/debug fields must be present and non-None.
+      2. ``reward`` is validated only if it's declared (DPO has no online reward).
+      3. Algorithm-specific dispatch on ``algorithm.kind``:
+            - ``grpo``         -> diffusion rollout fields
+            - ``token_grpo``   -> AR rollout fields (+ NextStep noise_level)
+            - ``diffusion_dpo``-> DPO actor/data/trainer fields
+      4. No filesystem-existence checks happen here (per patch line 390).
+    """
+    # 1. Common required fields.
+    for path in _COMMON_REQUIRED_FIELDS:
+        _require_path_present(cfg, path)
+
+    # 2. Optional reward block.
+    if "reward" in cfg:
+        validate_reward_config(cfg)
+
+    # 3. Algorithm-kind dispatch.
+    if "algorithm" not in cfg:
+        raise ValueError("config missing required field: algorithm")
+    kind = _resolve_algorithm_kind(cfg.algorithm)
+
+    if kind == "grpo":
+        for path in _GRPO_DIFFUSION_REQUIRED:
+            _require_path_present(cfg, path)
+    elif kind == "token_grpo":
+        for path in _TOKEN_GRPO_REQUIRED:
+            _require_path_present(cfg, path)
+        # NextStep-1 (continuous-token AR) additionally needs `rollout.noise_level`.
+        # Janus (discrete-token AR) does not — gate on `model.family`.
+        family = None
+        if _path_exists(cfg, "model.family"):
+            family = cfg.model.family
+        if family == "nextstep_1":
+            _require_path_present(cfg, "rollout.noise_level")
+    elif kind == "diffusion_dpo":
+        for path in _DPO_REQUIRED:
+            _require_path_present(cfg, path)
+        # `data.max_train_samples` may legitimately be null but the key must
+        # be declared — touch it via `optional_none` so missing-key fails.
+        optional_none(cfg, "data.max_train_samples")
+    else:  # pragma: no cover — _resolve_algorithm_kind already raises.
+        raise AssertionError(f"unreachable: kind={kind}")
+
 _KIND_LEGACY_ALIASES = {
     "grpo": "grpo",
     "token_grpo": "token_grpo",
@@ -176,7 +454,15 @@ def _resolve_algorithm_kind(algo: DictConfig) -> str:
 
 
 def build_trainer_config(cfg: DictConfig):
-    """Slice merged YAML into ``TrainerConfig``."""
+    """Slice merged YAML into ``TrainerConfig`` via fail-fast required access.
+
+    Per SPRINT patch 3 Phase 4: every actor/trainer/debug field must come
+    from YAML — no Python-side experiment-default fallbacks allowed. The
+    only soft fallback is for the rollout group field that names ``n`` /
+    ``rollout_batch_size``: AR rollouts call it ``n_samples_per_prompt`` and
+    diffusion rollouts call it ``n``, so we check whichever the YAML
+    declares.
+    """
     from vrl.trainers.types import (
         DebugConfig,
         EMAConfig,
@@ -184,30 +470,45 @@ def build_trainer_config(cfg: DictConfig):
         TrainerConfig,
     )
 
-    actor = cfg.get("actor", {})
-    optim_cfg = actor.get("optim", {})
-    ema_cfg = actor.get("ema", {})
-    rollout = cfg.get("rollout", {})
-    trainer_section = cfg.get("trainer", {})
-    debug_cfg = trainer_section.get("debug", {})
+    # Build nested dataclasses from YAML — `require` already errors with
+    # exact paths, so the unpack below is guaranteed to receive complete
+    # dicts when validation runs first.
+    optim_dict = require(cfg, "actor.optim")
+    ema_dict = require(cfg, "actor.ema")
+    debug_dict = require(cfg, "trainer.debug")
+
+    # Rollout n / batch. AR uses `n_samples_per_prompt`, diffusion uses `n`.
+    # DPO is offline (no rollout section); fall back to the dataclass defaults
+    # so its build call still succeeds — these knobs don't drive DPO training.
+    if _path_exists(cfg, "rollout.n_samples_per_prompt"):
+        n_value = require(cfg, "rollout.n_samples_per_prompt")
+        rollout_batch_size = require(cfg, "rollout.rollout_batch_size")
+    elif _path_exists(cfg, "rollout.n"):
+        n_value = require(cfg, "rollout.n")
+        rollout_batch_size = require(cfg, "rollout.rollout_batch_size")
+    else:
+        # No rollout block at all (DPO). Algorithm-specific validation has
+        # already enforced the DPO-required fields elsewhere.
+        n_value = 4
+        rollout_batch_size = 4
 
     return TrainerConfig(
-        optim=OptimConfig(**OmegaConf.to_container(optim_cfg, resolve=True)),
-        ema=EMAConfig(**OmegaConf.to_container(ema_cfg, resolve=True)),
-        debug=DebugConfig(**OmegaConf.to_container(debug_cfg, resolve=True)),
-        max_norm=actor.get("max_norm", 1.0),
-        ppo_epochs=actor.get("ppo_epochs", 1),
-        bf16=actor.get("bf16", True),
-        gradient_checkpointing=actor.get("gradient_checkpointing", True),
-        n=rollout.get("n", 4),
-        rollout_batch_size=rollout.get("rollout_batch_size", 4),
-        timestep_fraction=actor.get("timestep_fraction", 1.0),
-        total_epochs=trainer_section.get("total_epochs", 10000),
-        save_freq=trainer_section.get("save_freq", 50),
-        log_freq=trainer_section.get("log_freq", 1),
-        output_dir=trainer_section.get("output_dir", "outputs/"),
-        seed=trainer_section.get("seed", 0),
-        profile=trainer_section.get("profile", False),
+        optim=OptimConfig(**optim_dict),
+        ema=EMAConfig(**ema_dict),
+        debug=DebugConfig(**debug_dict),
+        max_norm=require(cfg, "actor.max_norm"),
+        ppo_epochs=require(cfg, "actor.ppo_epochs"),
+        bf16=require(cfg, "actor.bf16"),
+        gradient_checkpointing=require(cfg, "actor.gradient_checkpointing"),
+        n=n_value,
+        rollout_batch_size=rollout_batch_size,
+        timestep_fraction=require(cfg, "actor.timestep_fraction"),
+        total_epochs=require(cfg, "trainer.total_epochs"),
+        save_freq=require(cfg, "trainer.save_freq"),
+        log_freq=require(cfg, "trainer.log_freq"),
+        output_dir=require(cfg, "trainer.output_dir"),
+        seed=require(cfg, "trainer.seed"),
+        profile=require(cfg, "trainer.profile"),
     )
 
 
@@ -252,11 +553,11 @@ def build_reward_config(cfg: DictConfig) -> tuple[dict[str, float], dict[str, di
     ``kwargs["ocr"]["debug_dir"]`` IFF ``kwargs.ocr.debug_dir`` is not already
     set. If both are set with different values → fail fast.
     """
-    if "reward" not in cfg:
-        raise ValueError("config missing `reward` section")
+    # Fail-fast on shape before slicing; this keeps the contract that the
+    # active experiment YAML is the single source of truth for reward
+    # backbones (no silent constructor fallback).
+    validate_reward_config(cfg)
     reward = cfg.reward
-    if "components" not in reward:
-        raise ValueError("config missing `reward.components`")
 
     components = OmegaConf.to_container(reward.components, resolve=True) or {}
     weights = {name: float(w) for name, w in components.items() if float(w) > 0}
@@ -291,6 +592,7 @@ def build_configs(cfg: DictConfig) -> dict[str, Any]:
       ``reward``     -> ``(weights: dict[str, float], kwargs: dict[str, dict])``
       ``raw``        -> the original ``DictConfig``
     """
+    validate_training_config(cfg)
     out: dict[str, Any] = {
         "trainer": build_trainer_config(cfg),
         "algorithm": build_algorithm_config(cfg),
