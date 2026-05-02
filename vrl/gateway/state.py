@@ -12,7 +12,7 @@ from vrl.config import EngineConfig
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-    from vrl.engine.ipc.client import EngineIPCClient
+    from vrl.ipc.client import EngineIPCClient
 
 
 @dataclass(slots=True)

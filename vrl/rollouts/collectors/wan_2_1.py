@@ -1,30 +1,36 @@
 """Wan2.1 T2V collector for RL training (1.3B and 14B variants).
 
-Collector -> FlowMatchingEvaluator -> GRPO -> OnlineTrainer
+Collector → GenerationRuntime (engine) → Wan_2_1PipelineExecutor → OutputBatch
+            → reward / KL adjustment / ExperienceBatch
 
-The collector drives the new ``DiffusionPolicy`` contract directly:
+Post-Phase-3: the diffusion denoise loop, micro-batching, and decode all
+live in :class:`vrl.models.families.wan_2_1.executor.Wan_2_1PipelineExecutor`.
+The collector is the RL-semantics layer:
 
-    encode_prompt -> prepare_sampling -> forward_step xN (with SDE step) -> decode_latents
+- builds a ``GenerationRequest`` from prompts + config + per-call kwargs;
+- submits it through ``GenerationRuntime``;
+- scores rewards on the decoded videos;
+- subtracts ``kl_reward * kl`` from rewards;
+- packs the result as a trainer-shaped :class:`ExperienceBatch`.
 
-It owns the SDE-step loop, the per-step log-prob bookkeeping, the reward
-scoring, and the ``ExperienceBatch`` assembly. The eval/training path
-re-uses the adapter's ``forward_step`` with a ``model=`` override so there
-is exactly one transformer-forward implementation per family.
+The construction of the runtime (engine loop + scheduler + executor
+registry) happens lazily inside ``__init__`` so the public collector
+signature is unchanged for callers (e.g. ``vrl/scripts/wan_2_1/train.py``).
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import random
 import time
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from vrl.rollouts.types import ExperienceBatch
 
 if TYPE_CHECKING:
-    from vrl.rewards.base import RewardFunction
+    from vrl.engine.generation import GenerationRuntime, OutputBatch
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +61,10 @@ class Wan_2_1CollectorConfig:
     # CFG during sampling
     cfg: bool = True
 
+    # Rollout-side micro-batching: when group_size > sample_batch_size,
+    # split group into sequential micro-rollouts. Trades wall-time for VRAM.
+    sample_batch_size: int = 1
+
     # KL reward — subtract kl_reward * kl from rewards before advantages.
     kl_reward: float = 0.0
 
@@ -65,229 +75,265 @@ class Wan_2_1CollectorConfig:
     # Same latent — reuse the same noise for samples sharing a prompt.
     same_latent: bool = False
 
+    # Engine-side same-shape request batching. Default 1 preserves the
+    # current trainer behavior; raise this for concurrent collect callers.
+    max_batch_requests: int = 1
+
 
 class Wan_2_1Collector:
-    """Collect rollouts from Wan 1.3B with per-step log-probabilities.
+    """Collect rollouts from Wan 2.1 with per-step log-probabilities.
 
-    Delegates the per-step transformer forward to the model family's
-    ``DiffusionPolicy`` (``encode_prompt``, ``prepare_sampling``,
-    ``forward_step``, ``decode_latents``). The collector only owns the
-    SDE-step loop, reward scoring, and ``ExperienceBatch`` assembly.
+    Collector is the RL-semantics layer. The denoise loop, decode, and
+    micro-batching are owned by the
+    :class:`vrl.models.families.wan_2_1.executor.Wan_2_1PipelineExecutor`
+    behind the engine ``GenerationRuntime``.
     """
 
     def __init__(
         self,
-        model: Any,  # WanT2VDiffusersPolicy
+        model: Any | None,  # WanT2VDiffusersPolicy or WanT2VOfficialPolicy
         reward_fn: Any,  # RewardFunction instance
         config: Wan_2_1CollectorConfig | None = None,
+        *,
+        runtime: GenerationRuntime | None = None,
     ) -> None:
         self.model = model
         self.reward_fn = reward_fn
         self.config = config or Wan_2_1CollectorConfig()
+        self._runtime: GenerationRuntime | None = runtime
 
-    def _get_sde_window(self) -> tuple[int, int] | None:
-        """Compute random SDE window for this collection."""
-        cfg = self.config
-        if cfg.sde_window_size <= 0:
-            return None
-        lo, hi = cfg.sde_window_range
-        start = random.randint(lo, max(lo, hi - cfg.sde_window_size))
-        end = start + cfg.sde_window_size
-        return (start, end)
+    # ------------------------------------------------------------------
+    # Runtime construction
+    # ------------------------------------------------------------------
+
+    def _build_runtime(self) -> GenerationRuntime:
+        """Lazily wire engine-loop ⇒ generation runtime around ``self.model``.
+
+        Mirrors §3.1.1 of the SGLang-style sprint: P0 reuses the existing
+        ``EngineLoop`` + ``Scheduler`` with ``GenerationBatchPlanner``.
+        Default config keeps one generation request per tick; increasing
+        ``max_batch_requests`` enables
+        same-shape request fusion. We register a single ``Wan_2_1PipelineExecutor`` keyed on
+        ``(family="wan_2_1", task="t2v")``.
+        """
+        if self.model is None:
+            raise RuntimeError(
+                "Wan_2_1Collector cannot build a local runtime without a model; "
+                "inject a GenerationRuntime for distributed rollout.",
+            )
+        from vrl.engine import (
+            EngineLoop,
+            Scheduler,
+        )
+        from vrl.engine.generation import (
+            FamilyPipelineRegistry,
+            GenerationBatchPlanner,
+            GenerationModelRunner,
+            GenerationRuntime,
+            GenerationWorker,
+        )
+        from vrl.models.families.wan_2_1.executor import Wan_2_1PipelineExecutor
+
+        registry = FamilyPipelineRegistry()
+        registry.register(
+            Wan_2_1PipelineExecutor(
+                self.model,
+                sample_batch_size=self.config.sample_batch_size,
+            ),
+        )
+        worker = GenerationWorker(registry)
+        runner = GenerationModelRunner(worker, execute_in_thread=False)
+        engine_loop = EngineLoop(
+            scheduler=Scheduler(
+                batch_planner=GenerationBatchPlanner(
+                    max_batch_size=self.config.max_batch_requests,
+                ),
+            ),
+            model_runner=runner,
+        )
+        return GenerationRuntime(engine_loop)
+
+    @property
+    def runtime(self) -> GenerationRuntime:
+        if self._runtime is None:
+            self._runtime = self._build_runtime()
+        return self._runtime
+
+    async def shutdown(self) -> None:
+        if self._runtime is not None:
+            await self._runtime.shutdown()
+            self._runtime = None
+
+    # ------------------------------------------------------------------
+    # collect
+    # ------------------------------------------------------------------
 
     async def collect(
         self,
         prompts: list[str],
         **kwargs: Any,
     ) -> ExperienceBatch:
-        """Collect Wan Diffusers rollouts with per-step log-probabilities.
+        """Collect Wan rollouts via the engine generation runtime.
 
         Steps:
-        1. Encode prompt via adapter (once, even for group sampling)
-        2. Expand embeds to ``group_size`` when > 1 (group-batched sampling)
-        3. prepare_sampling via adapter (latents + scheduler + per-family state)
-        4. Custom SDE loop: adapter.forward_step per step + sde_step_with_logprob
-        5. Decode via adapter.decode_latents
-        6. Reward scoring
-        7. Stack into ExperienceBatch
-
-        group_size: when > 1, expands a single prompt into ``group_size``
-        parallel rollouts within one denoise loop. GRPO's per-group
-        advantage normalization uses these samples as a group.
+        1. Build a ``GenerationRequest`` from config + kwargs.
+        2. ``GenerationRuntime.generate(request)`` → ``OutputBatch`` (engine
+           runs the denoise loop / decode in
+           ``Wan_2_1PipelineExecutor.forward``).
+        3. Score rewards on the decoded videos.
+        4. Subtract ``kl_reward * kl_total`` from rewards.
+        5. Pack into ``ExperienceBatch`` (parity with the pre-migration
+           shape — same observations/actions/log_probs/timesteps/kl).
         """
-        import torch
-
-        from vrl.algorithms.types import Rollout, Trajectory
-        from vrl.models.diffusion import VideoGenerationRequest
-        from vrl.rollouts.evaluators.diffusion.flow_matching import sde_step_with_logprob
+        from vrl.engine.generation import GenerationRequest
 
         cfg = self.config
 
-        # Extract structured kwargs (from PromptExample via OnlineTrainer)
         target_text = kwargs.get("target_text", "")
         references = kwargs.get("references", [])
         task_type = kwargs.get("task_type", "text_to_video")
         request_overrides = kwargs.get("request_overrides", {})
         sample_metadata = kwargs.get("sample_metadata", {})
-        seed = kwargs.get("seed", None)
+        seed = kwargs.get("seed")
+        policy_version = kwargs.get("policy_version")
         group_size = int(kwargs.get("group_size", 1))
-
-        if group_size > 1 and len(prompts) != 1:
-            raise ValueError(
-                f"group_size={group_size} requires exactly one prompt; got {len(prompts)}"
-            )
-
-        # Build request — apply overrides from PromptExample
-        req_kwargs: dict[str, Any] = {
-            "prompt": prompts[0],
-            "num_steps": cfg.num_steps,
-            "guidance_scale": cfg.guidance_scale,
-            "height": cfg.height,
-            "width": cfg.width,
-            "frame_count": cfg.num_frames,
-            "extra": {"max_sequence_length": cfg.max_sequence_length},
-        }
-        if seed is not None:
-            req_kwargs["seed"] = seed
-        req_kwargs.update(request_overrides)
-        request = VideoGenerationRequest(**req_kwargs)
 
         _prof = os.environ.get("VRL_PROFILE_COLLECT") == "1"
         _phases: dict[str, float] = {}
         _t = _sync_time() if _prof else 0.0
 
-        # 1. Encode prompt via adapter (once per prompt)
-        encoded = self.model.encode_prompt(
-            request.prompt,
-            request.negative_prompt or None,
-            max_sequence_length=cfg.max_sequence_length,
-            guidance_scale=cfg.guidance_scale,
-        )
-        if _prof:
-            _now = _sync_time()
-            _phases["collect.encode_prompt"] = _now - _t
-            _t = _now
-
-        # 2. Expand embeds to group_size for parallel group sampling
-        if group_size > 1:
-            pe = encoded["prompt_embeds"]
-            repeat_shape = (group_size,) + (1,) * (pe.ndim - 1)
-            encoded["prompt_embeds"] = pe.repeat(*repeat_shape)
-            neg = encoded.get("negative_prompt_embeds")
-            if neg is not None:
-                encoded["negative_prompt_embeds"] = neg.repeat(*repeat_shape)
-
-        # 3. prepare_sampling via adapter (batch_size derived from prompt_embeds)
-        sampling_state = self.model.prepare_sampling(request, encoded)
-        # Use actual batch size from sampling state (reflects group expansion)
-        batch_size = sampling_state.latents.shape[0]
-
-        # SDE window
-        sde_window = self._get_sde_window()
-
-        # SDE noise generator — deterministic when seed is provided or same_latent
-        device = sampling_state.latents.device
+        sampling: dict[str, Any] = {
+            "num_steps": cfg.num_steps,
+            "guidance_scale": cfg.guidance_scale,
+            "height": cfg.height,
+            "width": cfg.width,
+            "num_frames": cfg.num_frames,
+            "noise_level": 1.0,
+            "cfg": cfg.cfg,
+            "sample_batch_size": cfg.sample_batch_size,
+            "sde_window_size": cfg.sde_window_size,
+            "sde_window_range": list(cfg.sde_window_range),
+            "same_latent": cfg.same_latent,
+            "max_sequence_length": cfg.max_sequence_length,
+            "return_kl": cfg.kl_reward > 0,
+        }
         if seed is not None:
-            sde_generator = torch.Generator(device=device)
-            sde_generator.manual_seed(seed)
-        elif cfg.same_latent:
-            sde_generator = torch.Generator(device=device)
-            sde_generator.manual_seed(hash(prompts[0]) % (2**32))
-        else:
-            sde_generator = None
+            sampling["seed"] = seed
+        # request_overrides applied last so callers can pin per-prompt num_steps,
+        # guidance_scale, etc. (PromptExample.request_overrides).
+        sampling.update(request_overrides)
 
-        # 4. Custom denoise loop with log-prob tracking
-        all_observations = []
-        all_actions = []
-        all_log_probs = []
-        all_kls = []
-        all_timestep_values = []
-
-        # Autocast dtype: pull from the wrapped pipeline's transformer so
-        # the collector never introspects WanT2VSamplingState's private
-        # embed tensors.
-        transformer_dtype = self.model.pipeline.transformer.dtype
-        total_steps = len(sampling_state.timesteps)
-
-        with torch.amp.autocast("cuda", dtype=transformer_dtype):
-            with torch.no_grad():
-                for step_idx in range(total_steps):
-                    latents_ori = sampling_state.latents.clone()
-                    t = sampling_state.timesteps[step_idx]
-
-                    # Forward pass via adapter
-                    fwd = self.model.forward_step(sampling_state, step_idx)
-                    noise_pred = fwd["noise_pred"]
-
-                    # Check SDE window
-                    in_sde_window = sde_window is None or (
-                        sde_window[0] <= step_idx < sde_window[1]
-                    )
-
-                    # SDE step with log-prob (caller owns scheduler step)
-                    sde_result = sde_step_with_logprob(
-                        sampling_state.scheduler,
-                        noise_pred.float(),
-                        t.unsqueeze(0),
-                        sampling_state.latents.float(),
-                        generator=sde_generator if in_sde_window else None,
-                        deterministic=not in_sde_window,
-                        return_dt=cfg.kl_reward > 0,
-                    )
-                    prev_latents = sde_result.prev_sample
-                    sampling_state.latents = prev_latents
-
-                    all_observations.append(latents_ori.detach())
-                    all_actions.append(prev_latents.detach())
-                    all_log_probs.append(sde_result.log_prob.detach())
-                    all_timestep_values.append(t.detach())
-
-                    # Per-step KL tracking for kl_reward
-                    if cfg.kl_reward > 0:
-                        all_kls.append(sde_result.log_prob.detach().abs())
-                    else:
-                        all_kls.append(
-                            torch.zeros(batch_size, device=device)
-                        )
-
-        if _prof:
-            _now = _sync_time()
-            _phases["collect.denoise_loop"] = _now - _t
-            _t = _now
-
-        # Stack: [T, B, ...] -> [B, T, ...]
-        observations = torch.stack(all_observations, dim=1)
-        actions = torch.stack(all_actions, dim=1)
-        log_probs = torch.stack(all_log_probs, dim=1)
-        timesteps_tensor = torch.stack(
-            [tv.expand(batch_size) for tv in all_timestep_values], dim=1
-        )
-        kl_tensor = torch.stack(all_kls, dim=1)
-
-        # 5. Decode via adapter
-        video = self.model.decode_latents(sampling_state.latents)
-        if _prof:
-            _now = _sync_time()
-            _phases["collect.vae_decode"] = _now - _t
-            _t = _now
-
-        # 6. Score with reward function
-        # Build rollout metadata from structured kwargs so reward functions
-        # (e.g. OCRReward) can access target_text, references, etc.
-        rollout_metadata: dict[str, Any] = dict(sample_metadata)
+        metadata: dict[str, Any] = dict(sample_metadata)
         if target_text:
-            rollout_metadata["target_text"] = target_text
+            metadata["target_text"] = target_text
         if references:
-            rollout_metadata["references"] = references
-        rollout_metadata["task_type"] = task_type
+            metadata["references"] = references
+        metadata["task_type"] = task_type
 
-        # With group sampling, prompts has length 1 but batch_size == group_size.
-        # Each sample shares the source prompt string for reward metadata.
-        effective_prompts = (
-            prompts * batch_size if len(prompts) == 1 else prompts
+        request = GenerationRequest(
+            request_id=f"wan_2_1-{uuid.uuid4()}",
+            family="wan_2_1",
+            task="t2v",
+            prompts=prompts,
+            samples_per_prompt=group_size,
+            sampling=sampling,
+            return_artifacts={
+                "output",
+                "rollout_trajectory_data",
+                "trajectory_timesteps",
+                "trajectory_latents",
+                "denoising_env",
+            },
+            metadata=metadata,
+            policy_version=policy_version,
         )
 
-        rewards_list = []
+        output = await self.runtime.generate(request)
+        if output.error:
+            raise RuntimeError(
+                f"Wan 2.1 generation failed (request_id={request.request_id}): "
+                f"{output.error}",
+            )
+
+        if _prof:
+            _now = _sync_time()
+            _phases["collect.engine_generate"] = _now - _t
+            _t = _now
+
+        batch = await self._output_batch_to_experience_batch(
+            output,
+            prompts=prompts,
+            metadata=metadata,
+            phases=_phases if _prof else None,
+            phase_t=_t if _prof else None,
+        )
+
+        if _prof:
+            _LAST_COLLECT_PHASES.clear()
+            _LAST_COLLECT_PHASES.update(_phases)
+
+        return batch
+
+    # ------------------------------------------------------------------
+    # OutputBatch → ExperienceBatch
+    # ------------------------------------------------------------------
+
+    async def _output_batch_to_experience_batch(
+        self,
+        output: OutputBatch,
+        *,
+        prompts: list[str],
+        metadata: dict[str, Any],
+        phases: dict[str, float] | None,
+        phase_t: float | None,
+    ) -> ExperienceBatch:
+        """Translate an engine ``OutputBatch`` into a trainer ``ExperienceBatch``.
+
+        Inverse of the old inline construction: pull rollout trajectory
+        tensors out of ``output.rollout_trajectory_data`` and the replay
+        embeds out of ``denoising_env.extra``, then run reward + KL
+        adjustment.
+        """
+        import torch
+
+        from vrl.algorithms.types import Rollout, Trajectory
+
+        cfg = self.config
+
+        rt = output.rollout_trajectory_data
+        if rt is None or rt.dit_trajectory is None:
+            raise RuntimeError(
+                "Wan 2.1 OutputBatch is missing rollout_trajectory_data / dit_trajectory",
+            )
+        observations = rt.dit_trajectory.latents
+        timesteps_tensor = rt.dit_trajectory.timesteps
+        log_probs = rt.rollout_log_probs
+        if rt.denoising_env is None:
+            raise RuntimeError("Wan 2.1 OutputBatch is missing denoising_env")
+        env_extra = rt.denoising_env.extra
+        actions = env_extra["actions"]
+        kl_tensor = env_extra["kl"]
+        training_extras: dict[str, Any] = env_extra["training_extras"]
+        rollout_context: dict[str, Any] = env_extra["context"]
+        video = env_extra["videos"]
+
+        if observations is None or actions is None or log_probs is None:
+            raise RuntimeError(
+                "Wan 2.1 OutputBatch is missing trajectory tensors "
+                "(observations/actions/log_probs)",
+            )
+
+        batch_size = observations.shape[0]
+        device = observations.device
+
+        if len(output.sample_specs) != batch_size:
+            raise RuntimeError(
+                "Wan 2.1 OutputBatch sample_specs length does not match batch size",
+            )
+        effective_prompts = [spec.prompt for spec in output.sample_specs]
+
+        # Score with reward function — one rollout per sample.
+        rewards_list: list[float] = []
         for i in range(batch_size):
             dummy_trajectory = Trajectory(
                 prompt=effective_prompts[i],
@@ -298,34 +344,29 @@ class Wan_2_1Collector:
             dummy_rollout = Rollout(
                 request=None,
                 trajectory=dummy_trajectory,
-                metadata=rollout_metadata,
+                metadata=metadata,
             )
-            r = await self.reward_fn.score(dummy_rollout)
-            rewards_list.append(r)
-        if _prof:
-            _now = _sync_time()
-            _phases["collect.reward_score"] = _now - _t
-            _t = _now
+            rewards_list.append(await self.reward_fn.score(dummy_rollout))
 
-        # 7. Subtract kl_reward * kl from rewards
-        rewards_raw = torch.tensor(rewards_list, dtype=torch.float32, device=device)
+        if phases is not None and phase_t is not None:
+            _now = _sync_time()
+            phases["collect.reward_score"] = _now - phase_t
+
+        rewards_raw = torch.tensor(
+            rewards_list, dtype=torch.float32, device=device,
+        )
         if cfg.kl_reward > 0:
             kl_total = kl_tensor.sum(dim=1)
             rewards_adjusted = rewards_raw - cfg.kl_reward * kl_total
         else:
             rewards_adjusted = rewards_raw
 
-        # 8. Build ExperienceBatch
         dones = torch.ones(batch_size, dtype=torch.bool, device=device)
-        group_ids = torch.zeros(batch_size, dtype=torch.long, device=device)
-
-        if _prof:
-            _LAST_COLLECT_PHASES.clear()
-            _LAST_COLLECT_PHASES.update(_phases)
-
-        # Project private SamplingState through the adapter boundary helpers.
-        training_extras = self.model.export_training_extras(sampling_state)
-        rollout_context = self.model.export_batch_context(sampling_state)
+        group_ids = torch.tensor(
+            [spec.prompt_index for spec in output.sample_specs],
+            dtype=torch.long,
+            device=device,
+        )
 
         extras: dict[str, Any] = {
             "log_probs": log_probs,
@@ -335,8 +376,6 @@ class Wan_2_1Collector:
         }
         extras.update(training_extras)
 
-        context: dict[str, Any] = dict(rollout_context)
-
         return ExperienceBatch(
             observations=observations,
             actions=actions,
@@ -344,8 +383,7 @@ class Wan_2_1Collector:
             dones=dones,
             group_ids=group_ids,
             extras=extras,
-            context=context,
+            context=rollout_context,
             videos=video,
             prompts=effective_prompts,
         )
-

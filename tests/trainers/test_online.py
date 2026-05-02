@@ -226,3 +226,109 @@ class TestOnlineTrainerCeaRegressions:
         assert kw["target_text"] == "HELLO"
         assert kw["task_type"] == "text_to_video"
         assert kw["sample_metadata"]["difficulty"] == "easy"
+
+    def test_cea_batches_plain_prompts_for_rollout_but_splits_training(self) -> None:
+        """Plain prompts should collect together, then train as group-local batches."""
+        import asyncio
+
+        import torch
+        import torch.nn as nn
+
+        from vrl.algorithms.types import TrainStepMetrics
+        from vrl.rollouts.evaluators.types import SignalBatch
+        from vrl.rollouts.types import ExperienceBatch
+        from vrl.trainers.online import OnlineTrainer
+        from vrl.trainers.types import DebugConfig, EMAConfig, OptimConfig, TrainerConfig
+
+        collect_calls: list[list[str]] = []
+        evaluate_batch_sizes: list[int] = []
+        evaluate_group_ids: list[list[int]] = []
+
+        class _Algorithm:
+            class _Config:
+                global_std = False
+                eps = 1e-8
+                adv_clip_max = 5.0
+                init_kl_coef = 0.0
+
+            config = _Config()
+
+            def compute_advantages_from_tensors(self, rewards, group_ids):
+                advantages = torch.zeros_like(rewards)
+                for gid in torch.unique(group_ids):
+                    mask = group_ids == gid
+                    gr = rewards[mask]
+                    advantages[mask] = gr - gr.mean()
+                return advantages
+
+            def compute_signal_loss(self, signals, advantages, old_log_probs):
+                loss = signals.log_prob.mean() + advantages.mean() * 0.0
+                return loss, TrainStepMetrics(
+                    loss=loss.item(),
+                    policy_loss=loss.item(),
+                    approx_kl=float(old_log_probs.mean().item()),
+                )
+
+        class _Collector:
+            async def collect(self, prompts, **kwargs):
+                prompts = list(prompts)
+                collect_calls.append(prompts)
+                group_size = int(kwargs.get("group_size", 1))
+                batch_size = len(prompts) * group_size
+                group_ids = torch.tensor(
+                    [
+                        prompt_idx
+                        for prompt_idx in range(len(prompts))
+                        for _ in range(group_size)
+                    ],
+                    dtype=torch.long,
+                )
+                rewards = torch.tensor(
+                    [float(i % group_size) for i in range(batch_size)],
+                    dtype=torch.float32,
+                )
+                return ExperienceBatch(
+                    observations=torch.zeros(batch_size, 2, 1),
+                    actions=torch.zeros(batch_size, 2, 1),
+                    rewards=rewards,
+                    dones=torch.ones(batch_size, dtype=torch.bool),
+                    group_ids=group_ids,
+                    extras={"log_probs": torch.zeros(batch_size, 2)},
+                    prompts=[p for p in prompts for _ in range(group_size)],
+                )
+
+        class _Evaluator:
+            def evaluate(self, collector, model, batch, timestep_idx, **kw):
+                del collector, timestep_idx, kw
+                evaluate_batch_sizes.append(int(batch.rewards.shape[0]))
+                evaluate_group_ids.append(
+                    [int(x) for x in batch.group_ids.detach().cpu().tolist()]
+                )
+                return SignalBatch(
+                    log_prob=model.weight.view(1).expand(batch.rewards.shape[0])
+                )
+
+        model = nn.Linear(1, 1, bias=False)
+        with torch.no_grad():
+            model.weight.fill_(1.0)
+
+        trainer = OnlineTrainer(
+            algorithm=_Algorithm(),
+            collector=_Collector(),
+            evaluator=_Evaluator(),
+            model=model,
+            config=TrainerConfig(
+                optim=OptimConfig(lr=0.01),
+                ema=EMAConfig(),
+                debug=DebugConfig(),
+                n=2,
+                bf16=False,
+            ),
+            device="cpu",
+        )
+
+        asyncio.run(trainer.step(["prompt-a", "prompt-b"]))
+
+        assert collect_calls == [["prompt-a", "prompt-b"]]
+        assert evaluate_batch_sizes == [2, 2, 2, 2]
+        assert evaluate_group_ids == [[0, 0], [0, 0], [1, 1], [1, 1]]

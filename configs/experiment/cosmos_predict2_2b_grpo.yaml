@@ -30,7 +30,7 @@ reward:
       model_name: openai/clip-vit-large-patch14
 
 data:
-  manifest: datasets/cosmos/prompts.txt
+  manifest: datasets/drawbench/train_192.txt
 
 trainer:
   output_dir: outputs/cosmos_pred2_2b_grpo
@@ -43,7 +43,7 @@ trainer:
 # checkpoint.
 eval:
   eval_only: false
-  prompts_file: ""                 # held-out prompts (one per line); empty -> use first 4 train prompts
+  prompts_file: datasets/drawbench/eval_64.txt
   seeds: 1                         # seeds per eval prompt
   sanity_gates:
     enable: true

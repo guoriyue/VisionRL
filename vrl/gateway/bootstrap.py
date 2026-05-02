@@ -15,7 +15,7 @@ def create_gateway_runtime(config: EngineConfig) -> GatewayRuntime:
     """Assemble Gateway dependencies."""
     client = None
     if config.ipc.enabled:
-        from vrl.engine.ipc.client import EngineIPCClient
+        from vrl.ipc.client import EngineIPCClient
 
         client = EngineIPCClient(ipc_path=config.ipc.socket_path)
     return GatewayRuntime(config=config, engine_client=client)

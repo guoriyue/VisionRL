@@ -1,6 +1,6 @@
-"""Backward-compatibility shim — canonical location is evaluators.diffusion.flow_matching."""
+"""Backward-compatibility shim for diffusion SDE math."""
 
-from vrl.rollouts.evaluators.diffusion.flow_matching import (  # noqa: F401
+from vrl.algorithms.diffusion.sde import (  # noqa: F401
     SDEStepResult,
     compute_kl_divergence,
     sde_step_with_logprob,

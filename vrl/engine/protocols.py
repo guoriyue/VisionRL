@@ -1,4 +1,4 @@
-"""Engine protocols: BatchPlanner, ResourceManager, CacheManager."""
+"""Engine protocols: BatchPlanner and CacheManager."""
 
 from __future__ import annotations
 
@@ -12,15 +12,6 @@ from vrl.engine.types import RequestOutput, SchedulerRequest
 
 
 @runtime_checkable
-class ResourceManager(Protocol):
-    """Gate new-request admission based on available resources."""
-
-    def can_allocate(self, request: SchedulerRequest) -> bool: ...
-    def allocate(self, request: SchedulerRequest) -> None: ...
-    def free(self, request: SchedulerRequest) -> None: ...
-
-
-@runtime_checkable
 class BatchPlanner(Protocol):
     """Select requests and build batch payload."""
 
@@ -28,7 +19,6 @@ class BatchPlanner(Protocol):
         self,
         waiting: list[SchedulerRequest],
         running: list[SchedulerRequest],
-        resource_manager: ResourceManager,
     ) -> list[SchedulerRequest]: ...
 
     def build_batch(self, requests: list[SchedulerRequest]) -> Any: ...
@@ -41,5 +31,4 @@ class CacheManager(Protocol):
     def get(self, request: SchedulerRequest) -> RequestOutput | None: ...
     def put(self, request: SchedulerRequest, output: RequestOutput) -> None: ...
     def clear(self) -> None: ...
-
 

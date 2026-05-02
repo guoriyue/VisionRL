@@ -58,8 +58,11 @@ htmlcov/
 .ipynb_checkpoints/
 
 outputs/
-datasets/
+datasets/*
+!datasets/drawbench/
+datasets/drawbench/*
+!datasets/drawbench/eval_64.txt
+!datasets/drawbench/train_192.txt
 
 # Claude Code
 .claude/
-

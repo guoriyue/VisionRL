@@ -97,13 +97,13 @@ Throughput work is scoped to workloads where it can produce a real
 number, not painted across the whole codebase:
 
 - AR continuous batching (Janus-Pro token generation) — engine
-  skeleton at `vrl/engine/managers/batch_planner.py`
+  skeleton at `vrl/engine/batch_planner.py`
   (`ContinuousBatchPlanner`, currently a FIFO baseline, not a moat).
 - Multi-GPU rollout / train physical separation — IPC plumbing at
-  `vrl/engine/ipc/` (`server.py`, `client.py`, `artifacts.py`,
+  `vrl/ipc/` (`server.py`, `client.py`, `artifacts.py`,
   `protocol.py`).
-- Request-level scheduling and FastAPI serving — `vrl/engine/managers/`
-  (`engine_loop.py`, `scheduler.py`, `resource_manager.py`),
+- Request-level scheduling and FastAPI serving — `vrl/engine/`
+  (`loop.py`, `scheduler.py`, `batch_planner.py`),
   `vrl/gateway/` (FastAPI app, routes), console script `vrl-serve`.
 
 Until these are backed by a measured benchmark, the engine is a
@@ -123,9 +123,7 @@ vrl/
 │   └── evaluators/    lm/{token_logprob, continuous_token_logprob},
 │                      diffusion/flow_matching
 ├── models/families/   janus_pro, nextstep_1, sd3_5, wan_2_1, cosmos
-├── engine/            protocols, managers (engine_loop, scheduler,
-│                      batch_planner, resource_manager), model_executor,
-│                      ipc (server, client, artifacts, protocol)
+├── engine/            loop, scheduler, batch planner, generation runtime
 ├── gateway/           FastAPI app, bootstrap, routes (vrl-serve)
 └── scripts/           per-family training entry points
 configs/               base, model, sampling, experiment
@@ -218,10 +216,10 @@ ls tests/e2e/test_serving_cosmos.py
 
 # Bet C — Engine skeleton (benchmark-gated)
 ls vrl/engine/protocols.py
-ls vrl/engine/managers/engine_loop.py
-ls vrl/engine/managers/batch_planner.py
-ls vrl/engine/ipc/server.py
-grep -nE "^class ContinuousBatchPlanner" vrl/engine/managers/batch_planner.py
+ls vrl/engine/loop.py
+ls vrl/engine/batch_planner.py
+ls vrl/ipc/server.py
+grep -nE "^class ContinuousBatchPlanner" vrl/engine/batch_planner.py
 
 # Diffusion baseline coverage
 ls vrl/models/families/sd3_5 vrl/models/families/wan_2_1

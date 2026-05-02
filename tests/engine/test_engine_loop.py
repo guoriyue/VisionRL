@@ -1,24 +1,17 @@
-"""Tests for EngineLoop with SimpleResourceManager."""
+"""Tests for EngineLoop request scheduling."""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 import pytest
 
-from vrl.engine import (
-    ContinuousBatchPlanner,
-    EngineLoop,
-    Scheduler,
-    SimpleResourceManager,
-)
+from vrl.engine import ContinuousBatchPlanner, EngineLoop, Scheduler
 from vrl.engine.types import (
     ModelRunnerOutput,
     RequestOutput,
     SchedulerOutput,
 )
-from vrl.models.diffusion import VideoGenerationRequest
 
 
 class _EchoRunner:
@@ -43,11 +36,10 @@ class _EchoRunner:
         )
 
 
-def _build_engine(max_count: int = 32, max_batch_size: int = 32) -> EngineLoop:
+def _build_engine(max_batch_size: int = 32) -> EngineLoop:
     return EngineLoop(
         scheduler=Scheduler(
             batch_planner=ContinuousBatchPlanner(max_batch_size=max_batch_size),
-            resource_manager=SimpleResourceManager(max_count=max_count),
         ),
         model_runner=_EchoRunner(),
     )
@@ -67,23 +59,14 @@ async def test_engine_loop_basic():
 
 
 @pytest.mark.asyncio
-async def test_resource_manager_limits_admission():
-    """SimpleResourceManager with max_count=1 only admits one request at a time."""
-    resource_manager = SimpleResourceManager(max_count=1)
-    engine = EngineLoop(
-        scheduler=Scheduler(
-            batch_planner=ContinuousBatchPlanner(max_batch_size=10),
-            resource_manager=resource_manager,
-        ),
-        model_runner=_EchoRunner(),
-    )
+async def test_batch_planner_limits_one_tick_batch_size():
+    """Batch size, not a resource counter, limits one scheduler tick."""
+    engine = _build_engine(max_batch_size=1)
     await engine.start()
     try:
-        # Submit two requests
         await engine.add_request("req-1", "data-1")
         await engine.add_request("req-2", "data-2")
 
-        # Both should eventually complete since the echo runner finishes immediately
         r1 = await asyncio.wait_for(engine.get_result("req-1"), timeout=2.0)
         r2 = await asyncio.wait_for(engine.get_result("req-2"), timeout=2.0)
 

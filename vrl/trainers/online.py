@@ -16,7 +16,7 @@ import torch.nn as nn
 
 from vrl.algorithms.base import Algorithm
 from vrl.algorithms.types import TrainStepMetrics
-from vrl.rollouts.types import ExperienceBatch, stack_batches
+from vrl.rollouts.types import ExperienceBatch
 from vrl.trainers.base import Trainer
 from vrl.trainers.ema import EMAModuleWrapper
 from vrl.trainers.types import TrainerConfig, TrainState
@@ -38,10 +38,10 @@ def _create_optimizer(
     if optim.use_8bit_adam:
         try:
             import bitsandbytes as bnb
-        except ImportError:
+        except ImportError as err:
             raise ImportError(
                 "Install bitsandbytes for 8-bit Adam: pip install bitsandbytes"
-            )
+            ) from err
         optimizer_cls = bnb.optim.AdamW8bit
     else:
         optimizer_cls = torch.optim.AdamW
@@ -121,7 +121,7 @@ def _apply_sample_mask(batch: ExperienceBatch, mask: torch.Tensor) -> Experience
     videos = batch.videos[mask] if batch.videos is not None else None
     if batch.prompts is not None:
         mask_list = mask.detach().cpu().tolist()
-        prompts = [p for p, m in zip(batch.prompts, mask_list) if m]
+        prompts = [p for p, m in zip(batch.prompts, mask_list, strict=True) if m]
     else:
         prompts = None
     return ExperienceBatch(
@@ -135,6 +135,36 @@ def _apply_sample_mask(batch: ExperienceBatch, mask: torch.Tensor) -> Experience
         videos=videos,
         prompts=prompts,
     )
+
+
+def _split_batch_by_group(batch: ExperienceBatch) -> list[ExperienceBatch]:
+    """Split a rollout batch into group-local batches for bounded training memory."""
+
+    group_ids = batch.group_ids
+    ordered_ids: list[int] = []
+    seen: set[int] = set()
+    for group_id in group_ids.detach().cpu().tolist():
+        gid = int(group_id)
+        if gid not in seen:
+            seen.add(gid)
+            ordered_ids.append(gid)
+    if len(ordered_ids) <= 1:
+        return [batch]
+    return [
+        _apply_sample_mask(batch, group_ids == group_id)
+        for group_id in ordered_ids
+    ]
+
+
+def _remap_group_ids_(batch: ExperienceBatch, global_prompt_indices: list[int]) -> None:
+    """Map collector-local prompt groups back to trainer-global prompt indices."""
+
+    if not global_prompt_indices:
+        return
+    remapped = batch.group_ids.clone()
+    for local_idx, global_idx in enumerate(global_prompt_indices):
+        remapped[batch.group_ids == local_idx] = global_idx
+    batch.group_ids = remapped
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +269,7 @@ class OnlineTrainer(Trainer):
                 grad_norm = sq_sum ** 0.5
         optimizer.step()
         optimizer.zero_grad()
-        return float(grad_norm) if hasattr(grad_norm, "__float__") else float(grad_norm)
+        return float(grad_norm)
 
     # ------------------------------------------------------------------
     # Training step — CEA pipeline
@@ -259,11 +289,31 @@ class OnlineTrainer(Trainer):
 
         timer = PhaseTimer(enabled=cfg.profile)
 
-        # 1. Collect group_size samples per prompt
+        # 1. Collect group_size samples per prompt.
+        # Plain string prompts are batched into one rollout request so the
+        # executor can plan prompt x group_size micro-batches directly. Rich
+        # PromptExample items stay single-prompt because reward metadata and
+        # request_overrides are per prompt.
         all_batches: list[ExperienceBatch] = []
         with timer.time("collect"):
+            pending_prompts: list[str] = []
+            pending_indices: list[int] = []
+
+            async def flush_pending_prompts() -> None:
+                if not pending_prompts:
+                    return
+                b = await self.collector.collect(
+                    list(pending_prompts),
+                    group_size=cfg.n,
+                )
+                _remap_group_ids_(b, pending_indices)
+                all_batches.extend(_split_batch_by_group(b))
+                pending_prompts.clear()
+                pending_indices.clear()
+
             for prompt_idx, item in enumerate(self.prompts):
                 if isinstance(item, PromptExample):
+                    await flush_pending_prompts()
                     prompt_str = item.prompt
                     collect_kwargs: dict[str, Any] = {
                         "target_text": item.target_text,
@@ -272,25 +322,24 @@ class OnlineTrainer(Trainer):
                         "request_overrides": item.request_overrides,
                         "sample_metadata": item.metadata,
                     }
+                    # Group-batched collect: one call produces cfg.n samples.
+                    b = await self.collector.collect(
+                        [prompt_str],
+                        group_size=cfg.n,
+                        **collect_kwargs,
+                    )
+                    b.group_ids[:] = prompt_idx
+                    all_batches.extend(_split_batch_by_group(b))
                 else:
-                    prompt_str = str(item)
-                    collect_kwargs = {}
+                    pending_prompts.append(str(item))
+                    pending_indices.append(prompt_idx)
 
-                # Group-batched collect: one call produces cfg.n samples.
-                b = await self.collector.collect(
-                    [prompt_str],
-                    group_size=cfg.n,
-                    **collect_kwargs,
-                )
-                b.group_ids[:] = prompt_idx
-                all_batches.append(b)
+            await flush_pending_prompts()
 
-            # Gradient accumulation: keep per-prompt batches separate so each
-            # forward/backward sees only `group_size` samples. Stacking 4+
-            # prompts into one tensor blows past 31GB even at group_size=4;
-            # by accumulating gradients across small batches we keep memory
-            # at per-prompt collector scale but still get the effective
-            # batch = prompts_per_step × group_size for optimizer update.
+            # Gradient accumulation: collect can run prompt x group_size as one
+            # large rollout request, then this trainer splits by group so each
+            # forward/backward still sees only one prompt group. That keeps
+            # training memory bounded while rollout gets a larger execution plan.
 
         # 2. Compute advantages (per-prompt normalization).
         # Rewards + prompts are concatenated across all collected batches so
@@ -351,7 +400,7 @@ class OnlineTrainer(Trainer):
         filtered_batches: list[ExperienceBatch] = []
         filtered_advs: list[torch.Tensor] = []
         if self.stat_tracker is not None:
-            for b, adv_b in zip(all_batches, adv_split):
+            for b, adv_b in zip(all_batches, adv_split, strict=True):
                 mask = adv_b.detach().abs() != 0
                 if not bool(mask.any()):
                     adv_b = adv_b + 1e-6
@@ -445,30 +494,29 @@ class OnlineTrainer(Trainer):
                 pass
         for _inner_epoch in range(cfg.ppo_epochs):
             # Accumulate gradients across all per-prompt batches, then step once.
-            for b, adv_b in zip(filtered_batches, filtered_advs):
+            for b, adv_b in zip(filtered_batches, filtered_advs, strict=True):
                 old_lp = b.extras["log_probs"]
                 for j in train_indices:
-                    with timer.time("evaluate"):
-                        with autocast_ctx:
-                            signals = self.evaluator.evaluate(
-                                self.collector,
-                                self.model,
-                                b,
-                                j,
-                                ref_model=self.ref_model,
-                                signal_request=SignalRequest(
-                                    need_ref=self.algorithm.config.init_kl_coef > 0,
-                                    need_kl_intermediates=self.algorithm.config.init_kl_coef > 0,
-                                ),
-                            )
-                            old_lp_j = old_lp[:, j] if old_lp.ndim > 1 else old_lp
-                            loss, metrics = self.algorithm.compute_signal_loss(
-                                signals, adv_b, old_lp_j
-                            )
-                            # Scale loss by num_accum so the accumulated
-                            # gradient matches a single pass over the full
-                            # stacked batch in magnitude.
-                            loss = loss / num_accum
+                    with timer.time("evaluate"), autocast_ctx:
+                        signals = self.evaluator.evaluate(
+                            self.collector,
+                            self.model,
+                            b,
+                            j,
+                            ref_model=self.ref_model,
+                            signal_request=SignalRequest(
+                                need_ref=self.algorithm.config.init_kl_coef > 0,
+                                need_kl_intermediates=self.algorithm.config.init_kl_coef > 0,
+                            ),
+                        )
+                        old_lp_j = old_lp[:, j] if old_lp.ndim > 1 else old_lp
+                        loss, metrics = self.algorithm.compute_signal_loss(
+                            signals, adv_b, old_lp_j
+                        )
+                        # Scale loss by num_accum so the accumulated
+                        # gradient matches a single pass over the full
+                        # stacked batch in magnitude.
+                        loss = loss / num_accum
 
                     # Grad-split diagnostic: fire ONCE per process on first
                     # backward we actually reach, to verify the KL term is

@@ -3,38 +3,45 @@
 Pairs ``vrl.models.families.janus_pro.JanusProPolicy`` with the generic
 ``OnlineTrainer`` CEA pipeline:
 
-    Collector  →  TokenLogProbEvaluator  →  TokenGRPO  →  OnlineTrainer
+    Collector  →  GenerationRuntime (engine)  →  JanusProPipelineExecutor
+                                                          |
+                                                          v
+                                                    OutputBatch
+                                                          |
+                Collector  ←  reward / ExperienceBatch  ←  ┘
 
-Per-call lifecycle:
+Per-call lifecycle (post-Phase-7):
 
-  1. Tokenise N prompts via ``VLChatProcessor`` →
-     conditional + unconditional ids+masks.
-  2. Sample ``image_token_num`` tokens autoregressively under CFG,
-     capturing the *guided* log-probability of each sampled token.
-     This per-token tensor is the GRPO ``old_log_prob``.
-  3. Decode tokens → pixels in ``[-1, 1]`` and convert to ``[0, 1]``
-     for the reward layer (``vrl/rewards/multi.py``).
-  4. Score → fill ``ExperienceBatch.rewards``.
+  1. Build a ``GenerationRequest`` from prompts + config + per-call
+     kwargs (group size, target text, references, seed).
+  2. Submit it through ``GenerationRuntime`` — the executor handles
+     prompt tokenisation, AR sampling under CFG, and VQ decode, and
+     returns an ``OutputBatch`` with images + per-token logprobs +
+     prompt/uncond tokens.
+  3. Score rewards on the decoded images.
+  4. Pack the trainer-shaped :class:`ExperienceBatch` (preserving the
+     exact field layout that ``JanusProPolicy.replay_forward`` and
+     ``TokenLogProbEvaluator`` read).
 
-Single-prompt → multiple samples is implemented by repeating the prompt
-``n_samples_per_prompt`` times before tokenisation; the ``group_ids``
-field carries the original prompt index so GRPO can normalise within
-each group.
+The runtime construction (engine loop + scheduler + executor registry)
+is lazy in ``__init__`` — the public collector signature is unchanged
+for ``vrl/scripts/janus_pro/train.py``.
 """
 
 from __future__ import annotations
 
 import inspect
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import torch
-import torch.nn.functional as F
 
 from vrl.rollouts.types import ExperienceBatch
 
 if TYPE_CHECKING:  # pragma: no cover
+    from vrl.engine.generation import GenerationRuntime, OutputBatch
     from vrl.models.families.janus_pro.policy import JanusProPolicy
     from vrl.rewards.base import RewardFunction
 
@@ -55,6 +62,10 @@ class JanusProCollectorConfig:
     # Optional cap on per-rollout text length (truncates prompt encoding).
     max_text_length: int = 256
 
+    # Engine-side same-shape request batching. Default 1 preserves the
+    # current trainer behavior; raise this for concurrent collect callers.
+    max_batch_requests: int = 1
+
 
 class JanusProCollector:
     """Collect on-policy rollouts from a ``JanusProPolicy`` wrapper.
@@ -65,13 +76,68 @@ class JanusProCollector:
 
     def __init__(
         self,
-        model: "JanusProPolicy",
-        reward_fn: "RewardFunction | None" = None,
+        model: JanusProPolicy,
+        reward_fn: RewardFunction | None = None,
         config: JanusProCollectorConfig | None = None,
     ) -> None:
         self.model = model
         self.reward_fn = reward_fn
         self.config = config or JanusProCollectorConfig()
+        self._runtime: GenerationRuntime | None = None
+
+    # ------------------------------------------------------------------
+    # Runtime construction
+    # ------------------------------------------------------------------
+
+    def _build_runtime(self) -> GenerationRuntime:
+        """Lazily wire engine-loop ⇒ generation runtime around ``self.model``.
+
+        Mirrors §3.1.1 of the SGLang-style sprint: P0 reuses the existing
+        ``EngineLoop`` + ``Scheduler`` with ``GenerationBatchPlanner``.
+        Default config keeps one generation request per tick; increasing
+        ``max_batch_requests`` enables
+        same-shape request fusion. We register a single ``JanusProPipelineExecutor`` keyed on
+        ``(family="janus_pro", task="ar_t2i")``.
+        """
+        from vrl.engine import (
+            EngineLoop,
+            Scheduler,
+        )
+        from vrl.engine.generation import (
+            FamilyPipelineRegistry,
+            GenerationBatchPlanner,
+            GenerationModelRunner,
+            GenerationRuntime,
+            GenerationWorker,
+        )
+        from vrl.models.families.janus_pro.executor import (
+            JanusProPipelineExecutor,
+        )
+
+        registry = FamilyPipelineRegistry()
+        registry.register(JanusProPipelineExecutor(self.model))
+        worker = GenerationWorker(registry)
+        runner = GenerationModelRunner(worker, execute_in_thread=False)
+        engine_loop = EngineLoop(
+            scheduler=Scheduler(
+                batch_planner=GenerationBatchPlanner(
+                    max_batch_size=self.config.max_batch_requests,
+                ),
+            ),
+            model_runner=runner,
+        )
+        return GenerationRuntime(engine_loop)
+
+    @property
+    def runtime(self) -> GenerationRuntime:
+        if self._runtime is None:
+            self._runtime = self._build_runtime()
+        return self._runtime
+
+    async def shutdown(self) -> None:
+        if self._runtime is not None:
+            await self._runtime.shutdown()
+            self._runtime = None
 
     # ------------------------------------------------------------------
     # Public: rollout
@@ -92,43 +158,12 @@ class JanusProCollector:
         ``Wan_2_1Collector`` contract so the two collectors are swap-ins
         for each other.
         """
+        from vrl.engine.generation import GenerationRequest
+
         cfg = self.config
         device = self.model.device
 
         n_per = int(kwargs.get("group_size") or cfg.n_samples_per_prompt)
-
-        repeated_prompts = [p for p in prompts for _ in range(n_per)]
-        group_ids = torch.arange(len(prompts), device=device).repeat_interleave(n_per)
-
-        prompt_ids, prompt_mask = self._tokenize_prompts(repeated_prompts)
-        uncond_ids, uncond_mask = self._tokenize_prompts([""] * len(repeated_prompts))
-        # Independent tokenisation can yield different padded lengths.
-        # Right-pad the shorter side so cond/uncond can share a single
-        # trunk forward in sample_image_tokens (which torch.cat-s along B).
-        pad_id = getattr(self.model.processor.tokenizer, "pad_token_id", None) or 0
-        prompt_ids, prompt_mask, uncond_ids, uncond_mask = self._align_pair(
-            prompt_ids, prompt_mask, uncond_ids, uncond_mask, pad_id=pad_id,
-        )
-
-        cond_embeds = self._embed(prompt_ids)
-        uncond_embeds = self._embed(uncond_ids)
-
-        image_token_ids, old_logprobs = self.model.sample_image_tokens(
-            cond_embeds, uncond_embeds, prompt_mask, uncond_mask,
-            cfg_weight=cfg.cfg_weight,
-            temperature=cfg.temperature,
-            image_token_num=cfg.image_token_num,
-        )  # both [B, L_img]
-
-        images = self.model.decode_image_tokens(
-            image_token_ids, image_size=cfg.image_size,
-        )  # [B, 3, H, W] in [-1, 1]
-
-        if cfg.rescale_to_unit:
-            images_for_reward = (images + 1.0) * 0.5
-            images_for_reward = images_for_reward.clamp(0.0, 1.0)
-        else:
-            images_for_reward = images
 
         # Forward PromptExample-level metadata so OCR/ref-based rewards
         # can read target_text / references. Shared across all group samples.
@@ -143,133 +178,134 @@ class JanusProCollector:
         if sample_md:
             rollout_metadata.update(sample_md)
 
+        seed = kwargs.get("seed")
+
+        sampling: dict[str, Any] = {
+            "cfg_weight": cfg.cfg_weight,
+            "temperature": cfg.temperature,
+            "image_token_num": cfg.image_token_num,
+            "image_size": cfg.image_size,
+            "max_text_length": cfg.max_text_length,
+        }
+        if seed is not None:
+            sampling["seed"] = seed
+
+        request = GenerationRequest(
+            request_id=f"janus_pro-{uuid.uuid4()}",
+            family="janus_pro",
+            task="ar_t2i",
+            prompts=prompts,
+            samples_per_prompt=n_per,
+            sampling=sampling,
+            return_artifacts={"output", "token_ids", "token_log_probs"},
+            metadata=dict(rollout_metadata),
+        )
+
+        output = await self.runtime.generate(request)
+        if output.error:
+            raise RuntimeError(
+                f"Janus-Pro generation failed (request_id={request.request_id}): "
+                f"{output.error}",
+            )
+
+        return await self._output_batch_to_experience_batch(
+            output,
+            prompts=prompts,
+            n_per=n_per,
+            device=device,
+            rollout_metadata=rollout_metadata,
+        )
+
+    # ------------------------------------------------------------------
+    # OutputBatch → ExperienceBatch
+    # ------------------------------------------------------------------
+
+    async def _output_batch_to_experience_batch(
+        self,
+        output: OutputBatch,
+        *,
+        prompts: list[str],
+        n_per: int,
+        device: torch.device,
+        rollout_metadata: dict[str, Any],
+    ) -> ExperienceBatch:
+        """Translate engine ``OutputBatch`` → trainer ``ExperienceBatch``.
+
+        Field map — preserves exactly the pre-migration shape so
+        ``JanusProPolicy.replay_forward`` and ``TokenLogProbEvaluator``
+        keep working without changes:
+
+        - ``observations`` ← ``extra["prompt_input_ids"]`` unsqueezed to
+          ``[B, 1, L_text]`` (OnlineTrainer's CEA path expects
+          ``observations.shape[1] == num_timesteps`` — AR has T=1).
+        - ``actions`` ← ``extra["token_ids"]`` ``[B, L_img]``.
+        - ``extras["log_probs"]`` ← ``extra["token_log_probs"]`` unsqueezed
+          to ``[B, 1, L_img]``.
+        - ``extras["token_mask"]`` ← ``extra["token_mask"]`` ``[B, L_img]``.
+        - ``extras["prompt_attention_mask"]`` ← ``extra["prompt_attention_mask"]``.
+        - ``extras["uncond_input_ids"]`` ← ``extra["uncond_input_ids"]``.
+        - ``extras["uncond_attention_mask"]`` ← ``extra["uncond_attention_mask"]``.
+        - ``videos`` ← ``output.output.unsqueeze(2)`` (shape
+          ``[B, 3, 1, H, W]`` — reward layer expects T dim).
+        - ``group_ids`` ← prompt-major indices ``[0,0,...,1,1,...]``.
+        """
+        cfg = self.config
+        images = output.output  # [B, 3, H, W] in [-1, 1]
+
+        repeated_prompts = [p for p in prompts for _ in range(n_per)]
+        group_ids = torch.arange(len(prompts), device=device).repeat_interleave(
+            n_per,
+        )
+
+        if cfg.rescale_to_unit:
+            images_for_reward = (images + 1.0) * 0.5
+            images_for_reward = images_for_reward.clamp(0.0, 1.0)
+        else:
+            images_for_reward = images
+
         rewards = await self._score(
             images_for_reward, repeated_prompts, rollout_metadata,
         )
 
-        # Per-token mask: every image-token position counts.
-        token_mask = torch.ones_like(old_logprobs)
+        # Pull executor extras.
+        token_ids = output.extra["token_ids"]              # [B, L_img]
+        token_log_probs = output.extra["token_log_probs"]  # [B, L_img]
+        token_mask = output.extra["token_mask"]            # [B, L_img]
+        prompt_ids = output.extra["prompt_input_ids"]      # [B, L_text]
+        prompt_mask = output.extra["prompt_attention_mask"]
+        uncond_ids = output.extra["uncond_input_ids"]
+        uncond_mask = output.extra["uncond_attention_mask"]
+        rollout_context = dict(output.extra.get("context", {}))
 
         # OnlineTrainer CEA convention (see Wan_2_1Collector):
         #   observations shape[1] == num_timesteps  (AR has 1 "step")
         #   extras["log_probs"] shape == [B, num_timesteps, ...]
-        # so trainer's ``old_log_probs[:, j]`` with j=0 yields ``[B, L_img]``,
-        # which is exactly what ``TokenGRPO.compute_signal_loss`` expects.
-        observations = prompt_ids.unsqueeze(1)                # [B, 1, L_text]
-        log_probs_3d = old_logprobs.detach().unsqueeze(1)     # [B, 1, L_img]
+        observations = prompt_ids.unsqueeze(1)             # [B, 1, L_text]
+        log_probs_3d = token_log_probs.detach().unsqueeze(1)  # [B, 1, L_img]
 
         return ExperienceBatch(
             observations=observations,          # [B, 1, L_text]
-            actions=image_token_ids,            # sampled image tokens [B, L_img]
+            actions=token_ids,                  # sampled image tokens [B, L_img]
             rewards=rewards,                    # [B]
-            dones=torch.ones(len(repeated_prompts), dtype=torch.bool, device=device),
+            dones=torch.ones(
+                len(repeated_prompts), dtype=torch.bool, device=device,
+            ),
             group_ids=group_ids,                # [B]
             extras={
-                "log_probs": log_probs_3d,                    # [B, 1, L_img]
-                "prompt_attention_mask": prompt_mask,         # [B, L_text]
-                "uncond_input_ids": uncond_ids,               # [B, L_text]
-                "uncond_attention_mask": uncond_mask,         # [B, L_text]
-                "token_mask": token_mask,                     # [B, L_img]
+                "log_probs": log_probs_3d,                   # [B, 1, L_img]
+                "prompt_attention_mask": prompt_mask,        # [B, L_text]
+                "uncond_input_ids": uncond_ids,              # [B, L_text]
+                "uncond_attention_mask": uncond_mask,        # [B, L_text]
+                "token_mask": token_mask,                    # [B, L_img]
             },
-            context={
-                "cfg_weight": cfg.cfg_weight,
-                "image_token_num": cfg.image_token_num,
-            },
-            videos=images.unsqueeze(2),         # [B, 3, 1, H, W] — reward layer expects T dim
+            context=rollout_context,
+            videos=images.unsqueeze(2),         # [B, 3, 1, H, W]
             prompts=repeated_prompts,
         )
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Reward scoring
     # ------------------------------------------------------------------
-
-    def _tokenize_prompts(self, prompts: list[str]) -> tuple[torch.Tensor, torch.Tensor]:
-        """Wrap each prompt in Janus' T2I conversation format and tokenise."""
-        proc = self.model.processor
-        device = self.model.device
-        cap = self.config.max_text_length
-
-        # Janus' VLChatProcessor exposes its tokenizer; wrap each prompt in
-        # the canonical T2I template documented in the upstream repo.
-        # Using a simple format here — the upstream chat-template path
-        # depends on the processor version and is brittle for batch use.
-        tokenizer = proc.tokenizer
-        formatted = [self._format_t2i_prompt(p) for p in prompts]
-        # padding="max_length" so every collect() call produces the same
-        # L_text → stack_batches across prompts in OnlineTrainer can concat
-        # along dim=0. Real HF tokenizers honour this; fallbacks below catch
-        # stubs that ignore the padding arg.
-        enc = tokenizer(
-            formatted,
-            return_tensors="pt",
-            padding="max_length",
-            truncation=True,
-            max_length=cap,
-        )
-        ids = enc["input_ids"]
-        mask = enc["attention_mask"]
-        # Belt-and-braces: force L_text == cap even if the tokenizer ignored
-        # padding="max_length" (stubs, or tokenisers without a pad_token).
-        if ids.shape[1] < cap:
-            pad_id = getattr(tokenizer, "pad_token_id", None) or 0
-            extra = cap - ids.shape[1]
-            ids = torch.cat(
-                [ids, torch.full((ids.shape[0], extra), pad_id, dtype=ids.dtype)],
-                dim=1,
-            )
-            mask = torch.cat(
-                [mask, torch.zeros((mask.shape[0], extra), dtype=mask.dtype)],
-                dim=1,
-            )
-        return ids.to(device), mask.to(device)
-
-    @staticmethod
-    def _align_pair(
-        a_ids: torch.Tensor, a_mask: torch.Tensor,
-        b_ids: torch.Tensor, b_mask: torch.Tensor,
-        pad_id: int = 0,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Right-pad two ``[B, L]`` token tensors to a common length."""
-        L = max(a_ids.shape[1], b_ids.shape[1])
-
-        def _pad(ids: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-            cur = ids.shape[1]
-            if cur == L:
-                return ids, mask
-            extra = L - cur
-            pad_ids = torch.full(
-                (ids.shape[0], extra), pad_id, dtype=ids.dtype, device=ids.device,
-            )
-            pad_mask = torch.zeros(
-                (mask.shape[0], extra), dtype=mask.dtype, device=mask.device,
-            )
-            return torch.cat([ids, pad_ids], dim=1), torch.cat([mask, pad_mask], dim=1)
-
-        a_ids, a_mask = _pad(a_ids, a_mask)
-        b_ids, b_mask = _pad(b_ids, b_mask)
-        return a_ids, a_mask, b_ids, b_mask
-
-    @staticmethod
-    def _format_t2i_prompt(prompt: str) -> str:
-        """Format a prompt for Janus T2I generation.
-
-        Mirrors ``deepseek-ai/Janus/generation_inference.py``: a short
-        chat-style header followed by the BOS image-generation tag.
-        """
-        # Keeping this minimal — for serious deployments use the upstream
-        # ``apply_sft_template_for_multi_turn_prompts`` helper.
-        return (
-            f"<｜User｜>: {prompt}\n\n"
-            f"<｜Assistant｜>:<begin_of_image>"
-        )
-
-    def _embed(self, token_ids: torch.Tensor) -> torch.Tensor:
-        return self._embed_with(self.model, token_ids)
-
-    @staticmethod
-    def _embed_with(model: "JanusProPolicy", token_ids: torch.Tensor) -> torch.Tensor:
-        embed = model.language_model.get_input_embeddings()
-        return embed(token_ids)
 
     async def _score(
         self,
@@ -314,5 +350,6 @@ class JanusProCollector:
         else:
             raw = [await self.reward_fn.score(r) for r in rollouts]
 
-        return torch.tensor([float(s) for s in raw], device=device,
-                            dtype=torch.float32)
+        return torch.tensor(
+            [float(s) for s in raw], device=device, dtype=torch.float32,
+        )
