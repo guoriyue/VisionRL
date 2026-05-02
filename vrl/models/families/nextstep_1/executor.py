@@ -45,13 +45,14 @@ from vrl.engine.generation.types import (
     RolloutTrajectoryData,
     WorkloadSignature,
 )
-from vrl.executors.base import FamilyPipelineExecutor
+from vrl.executors.ar import ActiveSequence, ARTokenScheduler
+from vrl.executors.base import BatchedFamilyPipelineExecutor
 from vrl.executors.batching import forward_batch_by_merging_prompts
 
 logger = logging.getLogger(__name__)
 
 
-class NextStep1PipelineExecutor:
+class NextStep1PipelineExecutor(BatchedFamilyPipelineExecutor):
     """Continuous-token AR executor for NextStep-1 text-to-image rollouts.
 
     The collector constructs a ``GenerationRequest`` whose ``sampling``
@@ -144,10 +145,22 @@ class NextStep1PipelineExecutor:
         if generator is not None:
             sample_kwargs["generator"] = generator
 
-        tokens, saved_noise, old_logprobs = self.model.sample_image_tokens(
-            cond_embeds, uncond_embeds, prompt_mask, uncond_mask,
-            **sample_kwargs,
-        )
+        if bool(sampling.get("use_ar_scheduler", False)):
+            tokens, saved_noise, old_logprobs = self._sample_with_ar_scheduler(
+                request=request,
+                sample_specs=sample_specs,
+                cond_embeds=cond_embeds,
+                uncond_embeds=uncond_embeds,
+                prompt_mask=prompt_mask,
+                uncond_mask=uncond_mask,
+                image_token_num=image_token_num,
+                sample_kwargs=sample_kwargs,
+            )
+        else:
+            tokens, saved_noise, old_logprobs = self.model.sample_image_tokens(
+                cond_embeds, uncond_embeds, prompt_mask, uncond_mask,
+                **sample_kwargs,
+            )
         # tokens:        [B, L_img, D_token]
         # saved_noise:   [B, L_img, D_token]
         # old_logprobs:  [B, L_img]
@@ -222,6 +235,90 @@ class NextStep1PipelineExecutor:
         )
 
     # -- internals -----------------------------------------------------
+
+    def _sample_with_ar_scheduler(
+        self,
+        *,
+        request: GenerationRequest,
+        sample_specs: list[GenerationSampleSpec],
+        cond_embeds: torch.Tensor,
+        uncond_embeds: torch.Tensor | None,
+        prompt_mask: torch.Tensor,
+        uncond_mask: torch.Tensor | None,
+        image_token_num: int,
+        sample_kwargs: dict[str, Any],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Run NextStep sampling through the executor-internal AR scheduler.
+
+        This first production path is intentionally full-row only. Partial
+        active-sequence batches require KV cache row slice/scatter support.
+        """
+        required = ("init_ar_state", "step_ar", "finalize_ar_state")
+        missing = [name for name in required if not hasattr(self.model, name)]
+        if missing:
+            raise TypeError(
+                "use_ar_scheduler=True requires model step API methods: "
+                + ", ".join(missing)
+            )
+
+        if cond_embeds.shape[0] != len(sample_specs):
+            raise ValueError(
+                "Scheduled AR expects one sample spec per embedded row: "
+                f"{len(sample_specs)} specs for {cond_embeds.shape[0]} rows"
+            )
+
+        state = self.model.init_ar_state(
+            cond_embeds,
+            uncond_embeds,
+            prompt_mask,
+            uncond_mask,
+            **sample_kwargs,
+        )
+        sequences = [
+            ActiveSequence(
+                request_id=request.request_id,
+                sample_id=spec.sample_id,
+                family=request.family,
+                task=request.task,
+                tokenizer_key="nextstep_1",
+                dtype=str(cond_embeds.dtype),
+                max_new_tokens=image_token_num,
+                metadata={
+                    **dict(spec.metadata),
+                    "row_index": row_index,
+                    "prompt_index": spec.prompt_index,
+                    "sample_index": spec.sample_index,
+                },
+            )
+            for row_index, spec in enumerate(sample_specs)
+        ]
+        scheduler = ARTokenScheduler(max_batch_size=len(sequences))
+        scheduler.add_many(sequences)
+
+        while True:
+            batch = scheduler.pop_batch()
+            if batch is None:
+                break
+            if len(batch.sequences) != len(sequences):
+                raise NotImplementedError(
+                    "NextStep scheduled AR currently supports full-row token "
+                    "batches only. KV slice/scatter is required before partial "
+                    "sequence scheduling."
+                )
+            result = self.model.step_ar(
+                state,
+                batch.sequences,
+                generator=sample_kwargs.get("generator"),
+            )
+            if "saved_noise" not in result.replay_extras:
+                raise ValueError(
+                    "NextStep step_ar must return replay_extras['saved_noise']"
+                )
+            for sequence in batch.sequences:
+                sequence.advance()
+            scheduler.push_back_unfinished(batch)
+
+        return self.model.finalize_ar_state(state)
 
     def _tokenize_prompts(
         self,
@@ -308,7 +405,3 @@ def _peak_memory_mb() -> float | None:
 
 
 __all__ = ["NextStep1PipelineExecutor"]
-
-
-# Confirm we satisfy the protocol at import time.
-_executor_protocol: type[FamilyPipelineExecutor] = FamilyPipelineExecutor

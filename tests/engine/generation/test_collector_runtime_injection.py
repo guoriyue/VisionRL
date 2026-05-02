@@ -7,11 +7,11 @@ from typing import Any
 import pytest
 import torch
 
-from vrl.engine.generation import GenerationIdFactory, OutputBatch
+from vrl.engine.generation import GenerationIdFactory, OutputBatch, RolloutBackend
 from vrl.rollouts.types import ExperienceBatch
 
 
-class _FakeRuntime:
+class _FakeRuntime(RolloutBackend):
     def __init__(self) -> None:
         self.requests: list[Any] = []
 

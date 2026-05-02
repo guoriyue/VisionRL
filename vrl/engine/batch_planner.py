@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from vrl.engine.protocols import BatchPlanner
 from vrl.engine.types import SchedulerRequest
 
 
-class ContinuousBatchPlanner:
+class ContinuousBatchPlanner(BatchPlanner):
     """FIFO batch planner: running requests first, then waiting up to budget."""
 
     def __init__(self, max_batch_size: int = 32) -> None:

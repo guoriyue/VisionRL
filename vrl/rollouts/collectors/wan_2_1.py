@@ -27,6 +27,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from vrl.rollouts.collectors.base import Collector
 from vrl.rollouts.types import ExperienceBatch
 
 if TYPE_CHECKING:
@@ -80,7 +81,7 @@ class Wan_2_1CollectorConfig:
     max_batch_requests: int = 1
 
 
-class Wan_2_1Collector:
+class Wan_2_1Collector(Collector):
     """Collect rollouts from Wan 2.1 with per-step log-probabilities.
 
     Collector is the RL-semantics layer. The denoise loop, decode, and

@@ -11,9 +11,10 @@ import pytest
 def make_stub_collector(cfg: Any | None = None, family: str | None = None):
     import torch
 
+    from vrl.rollouts.collectors.base import Collector
     from vrl.rollouts.types import ExperienceBatch
 
-    class _StubCollector:
+    class _StubCollector(Collector):
         async def collect(self, prompts: list[str], **kwargs: Any) -> ExperienceBatch:
             group_size = int(kwargs["group_size"])
             prompt = prompts[0]

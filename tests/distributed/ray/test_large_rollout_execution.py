@@ -20,18 +20,19 @@ from vrl.distributed.ray import (
     RayWorkerHandle,
 )
 from vrl.engine.generation import GenerationRequest, OutputBatch, WorkloadSignature
+from vrl.executors import ChunkedFamilyPipelineExecutor, PipelineChunkResult
 from vrl.executors.planning import MicroBatchPlan
 
 
 @dataclass(slots=True)
-class _TensorChunk:
+class _TensorChunk(PipelineChunkResult):
     value: torch.Tensor
     prompt_index: int
     sample_start: int
     sample_count: int
 
 
-class _FakeChunkedExecutor:
+class _FakeChunkedExecutor(ChunkedFamilyPipelineExecutor):
     family = "fake"
     task = "t2i"
 

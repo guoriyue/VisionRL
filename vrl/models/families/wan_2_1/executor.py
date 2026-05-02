@@ -36,7 +36,10 @@ from vrl.engine.generation.types import (
     OutputBatch,
     WorkloadSignature,
 )
-from vrl.executors.base import ChunkedFamilyPipelineExecutor, FamilyPipelineExecutor
+from vrl.executors.base import (
+    BatchedFamilyPipelineExecutor,
+    ChunkedFamilyPipelineExecutor,
+)
 from vrl.executors.batching import forward_batch_by_merging_prompts
 from vrl.executors.diffusion import (
     DiffusionChunkResult,
@@ -55,7 +58,10 @@ from vrl.executors.planning import (
 logger = logging.getLogger(__name__)
 
 
-class Wan_2_1PipelineExecutor:
+class Wan_2_1PipelineExecutor(
+    ChunkedFamilyPipelineExecutor,
+    BatchedFamilyPipelineExecutor,
+):
     """Diffusion executor for Wan 2.1 text-to-video rollouts.
 
     The collector constructs a ``GenerationRequest`` whose ``sampling``
@@ -322,10 +328,3 @@ class Wan_2_1PipelineExecutor:
 
 
 __all__ = ["Wan_2_1PipelineExecutor"]
-
-
-# Confirm we satisfy the protocol at import time.
-_executor_protocol: type[FamilyPipelineExecutor] = FamilyPipelineExecutor
-_chunked_executor_protocol: type[ChunkedFamilyPipelineExecutor] = (
-    ChunkedFamilyPipelineExecutor
-)

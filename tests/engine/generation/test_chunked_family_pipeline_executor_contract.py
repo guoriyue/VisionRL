@@ -14,18 +14,18 @@ from vrl.engine.generation import (
     OutputBatch,
     WorkloadSignature,
 )
-from vrl.executors import ChunkedFamilyPipelineExecutor
+from vrl.executors import ChunkedFamilyPipelineExecutor, PipelineChunkResult
 from vrl.executors.planning import MicroBatchPlan
 
 
 @dataclass(slots=True)
-class _ChunkResult:
+class _ChunkResult(PipelineChunkResult):
     prompt_index: int
     sample_start: int
     sample_count: int
 
 
-class _ChunkedExecutor:
+class _ChunkedExecutor(ChunkedFamilyPipelineExecutor):
     family = "fake"
     task = "t2i"
 

@@ -22,13 +22,13 @@ from vrl.engine.generation import (
     WorkloadSignature,
 )
 from vrl.engine.types import SchedulerOutput, SchedulerRequest
-from vrl.executors import FamilyPipelineExecutor
+from vrl.executors import BatchedFamilyPipelineExecutor, FamilyPipelineExecutor
 from vrl.executors.batching import (
     forward_batch_by_merging_prompts,
 )
 
 
-class _FakeExecutor:
+class _FakeExecutor(BatchedFamilyPipelineExecutor):
     family = "fake"
     task = "t2i"
 

@@ -7,10 +7,11 @@ from typing import Any
 
 from vrl.distributed.ray.rollout_executor import DistributedRolloutExecutor
 from vrl.distributed.ray.weight_sync import RolloutWeightSync
+from vrl.engine.generation.runtime import RolloutBackend
 from vrl.engine.generation.types import GenerationRequest, OutputBatch
 
 
-class RayDistributedRuntime:
+class RayDistributedRuntime(RolloutBackend):
     """Collector-facing runtime backed by Ray rollout workers."""
 
     def __init__(

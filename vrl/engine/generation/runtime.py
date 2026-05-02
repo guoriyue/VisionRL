@@ -11,6 +11,7 @@ from vrl.engine.generation.types import (
 )
 from vrl.engine.generation.worker import GenerationWorker
 from vrl.engine.loop import EngineLoop
+from vrl.engine.protocols import BatchPlanner
 from vrl.engine.types import (
     ModelRunnerOutput,
     RequestOutput,
@@ -26,7 +27,7 @@ class RolloutBackend(Protocol):
         ...
 
 
-class GenerationRuntime:
+class GenerationRuntime(RolloutBackend):
     """Typed facade over the existing EngineLoop."""
 
     def __init__(self, engine_loop: EngineLoop) -> None:
@@ -95,7 +96,7 @@ class GenerationModelRunner:
         )
 
 
-class GenerationBatchPlanner:
+class GenerationBatchPlanner(BatchPlanner):
     """Select same-signature generation requests for one engine tick."""
 
     def __init__(self, max_batch_size: int = 1) -> None:

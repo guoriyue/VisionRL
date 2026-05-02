@@ -45,6 +45,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
+from vrl.executors.ar import ARStepResult
 from vrl.models.ar import AutoregressivePolicy
 from vrl.models.families.nextstep_1.flow_step import (
     flow_logprob_at,
@@ -102,6 +103,25 @@ class NextStep1Config:
 
     # Memory
     gradient_checkpointing: bool = True
+
+
+@dataclass(slots=True)
+class NextStep1ARState:
+    """Mutable state for one full-row NextStep AR sampling loop."""
+
+    kv_cond: Any
+    kv_uncond: Any | None
+    c_cond: torch.Tensor
+    c_uncond: torch.Tensor | None
+    tokens: torch.Tensor
+    saved_noise: torch.Tensor
+    logprobs: torch.Tensor
+    cfg_scale: float
+    num_flow_steps: int
+    noise_level: float
+    image_token_num: int
+    generator: torch.Generator | None = None
+    position: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -263,61 +283,176 @@ class NextStep1Policy(nn.Module, AutoregressivePolicy):
                            replay the same trajectory deterministically.
             log_probs      ``[B, L_img]`` — Gaussian log-prob of each token.
         """
+        state = self.init_ar_state(
+            prompt_embeds,
+            uncond_embeds,
+            prompt_mask,
+            uncond_mask,
+            cfg_scale=cfg_scale,
+            num_flow_steps=num_flow_steps,
+            noise_level=noise_level,
+            image_token_num=image_token_num,
+            generator=generator,
+        )
+        while state.position < state.image_token_num:
+            self._sample_ar_step(state)
+        return self.finalize_ar_state(state)
+
+    @torch.no_grad()
+    def init_ar_state(
+        self,
+        prompt_embeds: torch.Tensor,
+        uncond_embeds: torch.Tensor | None,
+        prompt_mask: torch.Tensor,
+        uncond_mask: torch.Tensor | None,
+        *,
+        cfg_scale: float | None = None,
+        num_flow_steps: int | None = None,
+        noise_level: float | None = None,
+        image_token_num: int | None = None,
+        generator: torch.Generator | None = None,
+    ) -> NextStep1ARState:
+        """Initialize full-row AR state for scheduled executor sampling."""
         cfg = self.config
         cfg_scale = cfg_scale if cfg_scale is not None else cfg.cfg_scale
-        num_flow_steps = num_flow_steps if num_flow_steps is not None else cfg.num_flow_steps
+        num_flow_steps = (
+            num_flow_steps if num_flow_steps is not None else cfg.num_flow_steps
+        )
         noise_level = noise_level if noise_level is not None else cfg.noise_level
-        L_img = image_token_num if image_token_num is not None else cfg.image_token_num
+        image_token_num = (
+            image_token_num if image_token_num is not None else cfg.image_token_num
+        )
 
-        B = prompt_embeds.shape[0]
-        D_token = cfg.token_dim
+        batch_size = prompt_embeds.shape[0]
+        token_dim = cfg.token_dim
         device = prompt_embeds.device
 
-        tokens = torch.zeros(B, L_img, D_token, device=device, dtype=self.dtype)
-        saved_noise = torch.zeros(B, L_img, D_token, device=device, dtype=self.dtype)
-        logprobs = torch.zeros(B, L_img, device=device, dtype=torch.float32)
+        tokens = torch.zeros(
+            batch_size, image_token_num, token_dim, device=device, dtype=self.dtype
+        )
+        saved_noise = torch.zeros(
+            batch_size, image_token_num, token_dim, device=device, dtype=self.dtype
+        )
+        logprobs = torch.zeros(
+            batch_size, image_token_num, device=device, dtype=torch.float32
+        )
 
-        # Prime the LLM with the text prompt; cache KV.
         kv_cond = self._init_kv(prompt_embeds, prompt_mask)
         kv_uncond = (
             self._init_kv(uncond_embeds, uncond_mask)
             if uncond_embeds is not None else None
         )
-
-        # The conditioning hidden state for the *next* token to sample is
-        # the LLM's last hidden output.
         c_cond = self._last_hidden(kv_cond)
         c_uncond = self._last_hidden(kv_uncond) if kv_uncond is not None else None
 
-        for j in range(L_img):
-            # x_0 prior captured BEFORE flow ODE so we can replay later.
-            x0 = torch.randn(B, D_token, device=device, dtype=self.dtype, generator=generator)
+        return NextStep1ARState(
+            kv_cond=kv_cond,
+            kv_uncond=kv_uncond,
+            c_cond=c_cond,
+            c_uncond=c_uncond,
+            tokens=tokens,
+            saved_noise=saved_noise,
+            logprobs=logprobs,
+            cfg_scale=float(cfg_scale),
+            num_flow_steps=int(num_flow_steps),
+            noise_level=float(noise_level),
+            image_token_num=int(image_token_num),
+            generator=generator,
+        )
 
-            # TODO(nextstep-binding): flow_sample_with_logprob currently
-            # samples its own x_0 internally. To make replay exact we should
-            # plumb x0 through. For the scaffold we accept a small bias.
-            step = flow_sample_with_logprob(
-                self.image_head,
-                cond=c_cond,
-                num_flow_steps=num_flow_steps,
-                noise_level=noise_level,
-                cfg_uncond=c_uncond,
-                cfg_scale=cfg_scale,
-                generator=generator,
+    @torch.no_grad()
+    def step_ar(
+        self,
+        state: NextStep1ARState,
+        sequences: list[Any],
+        *,
+        generator: torch.Generator | None = None,
+    ) -> ARStepResult:
+        """Run one scheduled full-row AR token step.
+
+        Partial row scheduling requires KV cache slice/scatter support. Until
+        that helper exists, the scheduled path deliberately accepts only the
+        full active row set in row order.
+        """
+        if not sequences:
+            raise ValueError("step_ar requires at least one ActiveSequence")
+
+        row_indices = [int(seq.metadata.get("row_index", -1)) for seq in sequences]
+        expected = list(range(state.tokens.shape[0]))
+        if row_indices != expected:
+            raise NotImplementedError(
+                "NextStep1Policy.step_ar currently supports full-row scheduling "
+                f"only. Got row_indices={row_indices}, expected={expected}."
             )
-            tokens[:, j] = step.token
-            saved_noise[:, j] = x0
-            logprobs[:, j] = step.log_prob.float()
 
-            # Project the sampled token back into LLM hidden dim and
-            # advance the AR loop.
-            proj = self._image_in_projector(step.token)              # [B, D_hidden]
-            kv_cond, c_cond = self._step_llm(kv_cond, proj)
-            if kv_uncond is not None:
-                proj_u = self._image_in_projector(step.token)
-                kv_uncond, c_uncond = self._step_llm(kv_uncond, proj_u)
+        positions = [int(seq.position) for seq in sequences]
+        if any(position != state.position for position in positions):
+            raise ValueError(
+                "ActiveSequence positions must match NextStep1ARState.position"
+            )
 
-        return tokens, saved_noise, logprobs
+        step = self._sample_ar_step(state, generator=generator)
+        return ARStepResult(
+            sequence_ids=[str(seq.sample_id) for seq in sequences],
+            positions=positions,
+            token=step.token,
+            log_prob=step.log_prob.float(),
+            replay_extras={"saved_noise": step.initial_noise},
+        )
+
+    @torch.no_grad()
+    def finalize_ar_state(
+        self,
+        state: NextStep1ARState,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return sampled tokens, replay noise, and old log-probs."""
+        return state.tokens, state.saved_noise, state.logprobs
+
+    def _sample_ar_step(
+        self,
+        state: NextStep1ARState,
+        *,
+        generator: torch.Generator | None = None,
+    ) -> Any:
+        if state.position >= state.image_token_num:
+            raise ValueError("NextStep1ARState has already finished sampling")
+
+        step_generator = generator if generator is not None else state.generator
+        batch_size = state.tokens.shape[0]
+        token_dim = state.tokens.shape[-1]
+        device = state.tokens.device
+        initial_noise = torch.randn(
+            batch_size,
+            token_dim,
+            device=device,
+            dtype=self.dtype,
+            generator=step_generator,
+        )
+        step = flow_sample_with_logprob(
+            self.image_head,
+            cond=state.c_cond,
+            num_flow_steps=state.num_flow_steps,
+            noise_level=state.noise_level,
+            cfg_uncond=state.c_uncond,
+            cfg_scale=state.cfg_scale,
+            generator=step_generator,
+            initial_noise=initial_noise,
+        )
+
+        position = state.position
+        state.tokens[:, position] = step.token
+        state.saved_noise[:, position] = step.initial_noise
+        state.logprobs[:, position] = step.log_prob.float()
+
+        proj = self._image_in_projector(step.token)
+        state.kv_cond, state.c_cond = self._step_llm(state.kv_cond, proj)
+        if state.kv_uncond is not None:
+            proj_u = self._image_in_projector(step.token)
+            state.kv_uncond, state.c_uncond = self._step_llm(
+                state.kv_uncond, proj_u
+            )
+        state.position += 1
+        return step
 
     # ------------------------------------------------------------------
     # Public: training-time log-prob recomputation

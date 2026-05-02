@@ -27,7 +27,12 @@ from vrl.engine.generation import (
     GenerationIdFactory,
     GenerationRequest,
 )
+from vrl.executors.ar import ARStepResult
 from vrl.models.families.nextstep_1.executor import NextStep1PipelineExecutor
+from vrl.models.families.nextstep_1.flow_step import (
+    flow_logprob_at,
+    flow_sample_with_logprob,
+)
 
 # ---------------------------------------------------------------------------
 # Stubs
@@ -93,6 +98,19 @@ class _StubLanguageModel:
         return self._embed
 
 
+class _ZeroVelocityHead:
+    input_dim: int = 4
+
+    def net(
+        self,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        cond: torch.Tensor,
+    ) -> torch.Tensor:
+        del t, cond
+        return torch.zeros_like(x)
+
+
 @dataclass
 class _StubPolicy:
     """Bare-minimum NextStep1Policy stub.
@@ -111,6 +129,8 @@ class _StubPolicy:
     hidden_dim: int = 8
     image_size_default: int = 64
     sample_calls: int = 0
+    ar_init_calls: int = 0
+    ar_step_calls: int = 0
     decode_calls: int = 0
     last_sample_kwargs: dict[str, Any] = field(default_factory=dict)
     family: str = "nextstep_1-stub"
@@ -134,26 +154,97 @@ class _StubPolicy:
         image_token_num: int | None = None,
         generator: torch.Generator | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        del uncond_embeds, prompt_mask, uncond_mask
-        del cfg_scale, num_flow_steps, noise_level
         self.sample_calls += 1
         self.last_sample_kwargs = {
             "image_token_num": image_token_num,
             "generator_is_set": generator is not None,
         }
-        B = prompt_embeds.shape[0]
-        L = int(image_token_num or self.image_token_num)
-        D = self.token_dim
+        state = self.init_ar_state(
+            prompt_embeds,
+            uncond_embeds,
+            prompt_mask,
+            uncond_mask,
+            cfg_scale=cfg_scale,
+            num_flow_steps=num_flow_steps,
+            noise_level=noise_level,
+            image_token_num=image_token_num,
+            generator=generator,
+        )
+        while state["position"] < state["image_token_num"]:
+            self._sample_ar_step(state)
+        return self.finalize_ar_state(state)
 
-        # Derive deterministic outputs from generator if available; fall
-        # back to a fresh generator otherwise so unit tests without a seed
-        # also work.
+    def init_ar_state(
+        self,
+        prompt_embeds: torch.Tensor,
+        uncond_embeds: torch.Tensor | None,
+        prompt_mask: torch.Tensor,
+        uncond_mask: torch.Tensor | None,
+        *,
+        cfg_scale: float | None = None,
+        num_flow_steps: int | None = None,
+        noise_level: float | None = None,
+        image_token_num: int | None = None,
+        generator: torch.Generator | None = None,
+    ) -> dict[str, Any]:
+        del uncond_embeds, prompt_mask, uncond_mask
+        del cfg_scale, num_flow_steps, noise_level
+        self.ar_init_calls += 1
         gen = generator if generator is not None else torch.Generator().manual_seed(0)
-        tokens = torch.randn(B, L, D, generator=gen)
-        saved_noise = torch.randn(B, L, D, generator=gen)
-        # log_probs negative-real, derived from tokens so non-trivial.
-        log_probs = -(tokens.float() ** 2).mean(dim=-1)  # [B, L]
-        return tokens, saved_noise, log_probs
+        batch_size = prompt_embeds.shape[0]
+        image_token_num = int(image_token_num or self.image_token_num)
+        return {
+            "tokens": torch.zeros(batch_size, image_token_num, self.token_dim),
+            "saved_noise": torch.zeros(batch_size, image_token_num, self.token_dim),
+            "log_probs": torch.zeros(batch_size, image_token_num),
+            "image_token_num": image_token_num,
+            "generator": gen,
+            "position": 0,
+        }
+
+    def step_ar(
+        self,
+        state: dict[str, Any],
+        sequences: list[Any],
+        *,
+        generator: torch.Generator | None = None,
+    ) -> ARStepResult:
+        del generator
+        self.ar_step_calls += 1
+        row_indices = [sequence.metadata["row_index"] for sequence in sequences]
+        assert row_indices == list(range(state["tokens"].shape[0]))
+        positions = [sequence.position for sequence in sequences]
+        assert all(position == state["position"] for position in positions)
+        token, saved_noise, log_prob = self._sample_ar_step(state)
+        return ARStepResult(
+            sequence_ids=[sequence.sample_id for sequence in sequences],
+            positions=positions,
+            token=token,
+            log_prob=log_prob,
+            replay_extras={"saved_noise": saved_noise},
+        )
+
+    def finalize_ar_state(
+        self,
+        state: dict[str, Any],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return state["tokens"], state["saved_noise"], state["log_probs"]
+
+    def _sample_ar_step(
+        self,
+        state: dict[str, Any],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        batch_size = state["tokens"].shape[0]
+        gen = state["generator"]
+        token = torch.randn(batch_size, self.token_dim, generator=gen)
+        saved_noise = torch.randn(batch_size, self.token_dim, generator=gen)
+        log_prob = -(token.float() ** 2).mean(dim=-1)
+        position = state["position"]
+        state["tokens"][:, position] = token
+        state["saved_noise"][:, position] = saved_noise
+        state["log_probs"][:, position] = log_prob
+        state["position"] += 1
+        return token, saved_noise, log_prob
 
     @torch.no_grad()
     def decode_image_tokens(
@@ -297,6 +388,36 @@ def test_executor_seed_reproducibility() -> None:
     assert torch.equal(out_a.output, out_b.output)
 
 
+def test_executor_scheduled_ar_matches_black_box_path_bitwise() -> None:
+    """Scheduled full-row AR path preserves the black-box output contract."""
+    policy_black_box = _StubPolicy()
+    executor_black_box = NextStep1PipelineExecutor(policy_black_box)
+    request_black_box = _request(seed=1234)
+    specs_black_box = GenerationIdFactory().build_sample_specs(request_black_box)
+    out_black_box = executor_black_box.forward(request_black_box, specs_black_box)
+
+    policy_scheduled = _StubPolicy()
+    executor_scheduled = NextStep1PipelineExecutor(policy_scheduled)
+    request_scheduled = _request(seed=1234)
+    request_scheduled.sampling["use_ar_scheduler"] = True
+    specs_scheduled = GenerationIdFactory().build_sample_specs(request_scheduled)
+    out_scheduled = executor_scheduled.forward(request_scheduled, specs_scheduled)
+
+    assert policy_scheduled.sample_calls == 0
+    assert policy_scheduled.ar_init_calls == 1
+    assert policy_scheduled.ar_step_calls == request_scheduled.sampling[
+        "image_token_num"
+    ]
+    assert torch.equal(out_black_box.extra["tokens"], out_scheduled.extra["tokens"])
+    assert torch.equal(
+        out_black_box.extra["saved_noise"], out_scheduled.extra["saved_noise"]
+    )
+    assert torch.equal(
+        out_black_box.extra["log_probs"], out_scheduled.extra["log_probs"]
+    )
+    assert torch.equal(out_black_box.output, out_scheduled.output)
+
+
 def test_executor_different_seeds_produce_different_tokens() -> None:
     """Different seeds → different tokens (sanity check on stub determinism)."""
     policy = _StubPolicy()
@@ -369,3 +490,31 @@ def test_executor_sample_call_count_is_one() -> None:
     executor.forward(request, specs)
     assert policy.sample_calls == 1
     assert policy.decode_calls == 1
+
+
+def test_flow_sample_saved_noise_replays_sample_logprob() -> None:
+    """Explicit initial_noise is the replay artifact used by flow_logprob_at."""
+    head = _ZeroVelocityHead()
+    cond = torch.zeros(2, 8)
+    initial_noise = torch.full((2, head.input_dim), 0.25)
+    generator = torch.Generator().manual_seed(7)
+
+    sample = flow_sample_with_logprob(
+        head,
+        cond,
+        num_flow_steps=4,
+        noise_level=1.0,
+        generator=generator,
+        initial_noise=initial_noise,
+    )
+    replay_log_prob = flow_logprob_at(
+        head,
+        cond,
+        target_token=sample.token,
+        saved_noise=sample.initial_noise,
+        num_flow_steps=4,
+        noise_level=1.0,
+    )
+
+    assert torch.equal(sample.initial_noise, initial_noise)
+    assert torch.allclose(sample.log_prob, replay_log_prob)

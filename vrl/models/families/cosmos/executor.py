@@ -40,7 +40,10 @@ from vrl.engine.generation.types import (
     OutputBatch,
     WorkloadSignature,
 )
-from vrl.executors.base import ChunkedFamilyPipelineExecutor, FamilyPipelineExecutor
+from vrl.executors.base import (
+    BatchedFamilyPipelineExecutor,
+    ChunkedFamilyPipelineExecutor,
+)
 from vrl.executors.batching import forward_batch_by_merging_prompts
 from vrl.executors.diffusion import (
     DiffusionChunkResult,
@@ -59,7 +62,10 @@ from vrl.executors.planning import (
 logger = logging.getLogger(__name__)
 
 
-class CosmosPipelineExecutor:
+class CosmosPipelineExecutor(
+    ChunkedFamilyPipelineExecutor,
+    BatchedFamilyPipelineExecutor,
+):
     """Diffusion executor for Cosmos Predict2 Video2World rollouts.
 
     The collector constructs a ``GenerationRequest`` whose ``sampling``
@@ -339,10 +345,3 @@ class CosmosPipelineExecutor:
 
 
 __all__ = ["CosmosPipelineExecutor"]
-
-
-# Confirm we satisfy the protocol at import time.
-_executor_protocol: type[FamilyPipelineExecutor] = FamilyPipelineExecutor
-_chunked_executor_protocol: type[ChunkedFamilyPipelineExecutor] = (
-    ChunkedFamilyPipelineExecutor
-)

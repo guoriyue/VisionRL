@@ -18,6 +18,7 @@ from vrl.engine.generation.types import (
     RolloutDitTrajectory,
     RolloutTrajectoryData,
 )
+from vrl.executors.base import PipelineChunkResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +36,7 @@ class DiffusionDenoiseConfig:
 
 
 @dataclass(slots=True)
-class DiffusionChunkResult:
+class DiffusionChunkResult(PipelineChunkResult):
     """Output of one fused diffusion micro-batch."""
 
     observations: Any

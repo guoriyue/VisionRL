@@ -20,7 +20,7 @@ class RolloutWeightSync(Protocol):
         ...
 
 
-class RayRolloutWeightSync:
+class RayRolloutWeightSync(RolloutWeightSync):
     """Call ``update_weights`` on every Ray rollout worker."""
 
     def __init__(self, workers: list[RayWorkerHandle]) -> None:

@@ -18,6 +18,7 @@ import torch
 import torch.nn.functional as F
 
 from vrl.rollouts.collectors.base import Collector
+from vrl.rollouts.evaluators.base import Evaluator
 from vrl.rollouts.evaluators.types import SignalBatch, SignalRequest
 from vrl.rollouts.types import ExperienceBatch
 
@@ -34,12 +35,10 @@ def _has_active_adapter(model: Any) -> bool:
     sub = getattr(model, "language_model", None)
     if sub is None:
         sub = model
-    return hasattr(sub, "disable_adapter") and callable(
-        getattr(sub, "disable_adapter")
-    )
+    return hasattr(sub, "disable_adapter") and callable(sub.disable_adapter)
 
 
-class TokenLogProbEvaluator:
+class TokenLogProbEvaluator(Evaluator):
     """Recompute per-token log-probs of sampled tokens under the policy.
 
     Two-pass when ``need_ref=True``:

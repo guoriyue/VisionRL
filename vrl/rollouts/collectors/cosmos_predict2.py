@@ -35,6 +35,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from vrl.rollouts.collectors.base import Collector
 from vrl.rollouts.types import ExperienceBatch
 
 if TYPE_CHECKING:
@@ -77,7 +78,7 @@ class CosmosPredict2CollectorConfig:
     max_batch_requests: int = 1
 
 
-class CosmosPredict2Collector:
+class CosmosPredict2Collector(Collector):
     """Collect rollouts from Cosmos Predict2 V2W with per-step log-probs.
 
     The denoise loop, prompt encode, micro-batching and decode all run

@@ -35,6 +35,7 @@ class FlowStepResult:
     log_prob: torch.Tensor       # [B]             — Gaussian log p(token | mean)
     mean: torch.Tensor           # [B, D_token]    — deterministic flow ODE solution
     std: torch.Tensor            # [B] or scalar   — Gaussian std at sampling step
+    initial_noise: torch.Tensor  # [B, D_token]    — x_0 prior used by replay
 
 
 def flow_sample_with_logprob(
@@ -46,6 +47,7 @@ def flow_sample_with_logprob(
     cfg_uncond: torch.Tensor | None = None,
     cfg_scale: float = 1.0,
     generator: torch.Generator | None = None,
+    initial_noise: torch.Tensor | None = None,
     velocity_fn: Callable[..., torch.Tensor] | None = None,
 ) -> FlowStepResult:
     """Sample one continuous token from the flow head and return its log-prob.
@@ -78,6 +80,9 @@ def flow_sample_with_logprob(
             with ``s = cfg_scale``. Skip if cfg_scale ≈ 1.
         cfg_scale: CFG strength on the velocity.
         generator: Optional torch.Generator for reproducibility.
+        initial_noise: Optional explicit ``x_0`` prior. When provided, this
+            exact tensor is used as the deterministic flow prefix and returned
+            as ``FlowStepResult.initial_noise`` for replay.
         velocity_fn: Optional override for how to call image_head. If None,
             we try ``image_head.velocity(...)`` then ``image_head(...)``.
 
@@ -105,8 +110,19 @@ def flow_sample_with_logprob(
         )
     D = int(token_dim)
 
-    # x_0 ~ N(0, I) — flow-matching prior is standard normal
-    x = torch.randn(B, D, device=device, dtype=dtype, generator=generator)
+    # x_0 ~ N(0, I) — flow-matching prior is standard normal. This is the
+    # replay artifact saved by NextStepPolicy; when supplied explicitly, do
+    # not sample another prior inside this helper.
+    if initial_noise is None:
+        x = torch.randn(B, D, device=device, dtype=dtype, generator=generator)
+    else:
+        if initial_noise.shape != (B, D):
+            raise ValueError(
+                "initial_noise must have shape "
+                f"{(B, D)}, got {tuple(initial_noise.shape)}"
+            )
+        x = initial_noise.to(device=device, dtype=dtype)
+    x0 = x
 
     # Linear time grid t in [0, 1]
     t_grid = torch.linspace(0.0, 1.0, num_flow_steps + 1, device=device, dtype=dtype)
@@ -146,7 +162,12 @@ def flow_sample_with_logprob(
     std_scalar = noise_level * math.sqrt(dt)
     std = torch.full((B,), std_scalar, device=device, dtype=dtype)
 
-    eps = torch.randn_like(mean)
+    eps = torch.randn(
+        mean.shape,
+        device=mean.device,
+        dtype=mean.dtype,
+        generator=generator,
+    )
     token = mean + std_scalar * eps
 
     # Isotropic Gaussian log-prob, summed across token dim, then mean per
@@ -159,7 +180,13 @@ def flow_sample_with_logprob(
         - 0.5 * float(D) * math.log(2.0 * math.pi)
     )
 
-    return FlowStepResult(token=token, log_prob=log_prob, mean=mean, std=std)
+    return FlowStepResult(
+        token=token,
+        log_prob=log_prob,
+        mean=mean,
+        std=std,
+        initial_noise=x0,
+    )
 
 
 def flow_logprob_at(

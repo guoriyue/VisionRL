@@ -27,6 +27,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from vrl.rollouts.collectors.base import Collector
 from vrl.rollouts.types import ExperienceBatch
 
 if TYPE_CHECKING:
@@ -81,7 +82,7 @@ class SD3_5CollectorConfig:
     max_batch_requests: int = 1
 
 
-class SD3_5Collector:
+class SD3_5Collector(Collector):
     """Collect rollouts from SD3.5-M with per-step log-probabilities.
 
     Group rollouts of size ``group_size`` are split into micro-rollouts

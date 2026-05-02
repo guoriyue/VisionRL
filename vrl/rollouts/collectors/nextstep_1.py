@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+from vrl.rollouts.collectors.base import Collector
 from vrl.rollouts.types import ExperienceBatch
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -58,7 +59,7 @@ class NextStep1CollectorConfig:
     max_batch_requests: int = 1
 
 
-class NextStep1Collector:
+class NextStep1Collector(Collector):
     """Collect on-policy rollouts from a ``NextStep1Policy`` wrapper."""
 
     def __init__(

@@ -43,13 +43,13 @@ from vrl.engine.generation.types import (
     OutputBatch,
     WorkloadSignature,
 )
-from vrl.executors.base import FamilyPipelineExecutor
+from vrl.executors.base import BatchedFamilyPipelineExecutor
 from vrl.executors.batching import forward_batch_by_merging_prompts
 
 logger = logging.getLogger(__name__)
 
 
-class JanusProPipelineExecutor:
+class JanusProPipelineExecutor(BatchedFamilyPipelineExecutor):
     """AR executor for Janus-Pro text-to-image rollouts.
 
     The collector constructs a ``GenerationRequest`` whose ``sampling``
@@ -331,7 +331,3 @@ _ = F
 
 
 __all__ = ["JanusProPipelineExecutor"]
-
-
-# Confirm we satisfy the protocol at import time.
-_executor_protocol: type[FamilyPipelineExecutor] = FamilyPipelineExecutor

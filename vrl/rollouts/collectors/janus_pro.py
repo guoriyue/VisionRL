@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+from vrl.rollouts.collectors.base import Collector
 from vrl.rollouts.types import ExperienceBatch
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -67,7 +68,7 @@ class JanusProCollectorConfig:
     max_batch_requests: int = 1
 
 
-class JanusProCollector:
+class JanusProCollector(Collector):
     """Collect on-policy rollouts from a ``JanusProPolicy`` wrapper.
 
     Implements the same ``Collector`` Protocol as ``Wan_2_1Collector``

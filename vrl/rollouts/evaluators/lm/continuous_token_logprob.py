@@ -17,16 +17,17 @@ from typing import Any
 import torch
 
 from vrl.rollouts.collectors.base import Collector
+from vrl.rollouts.evaluators.base import Evaluator
 from vrl.rollouts.evaluators.types import SignalBatch, SignalRequest
 from vrl.rollouts.types import ExperienceBatch
 
 
 def _has_active_adapter(model: Any) -> bool:
     sub = getattr(model, "language_model", None) or model
-    return hasattr(sub, "disable_adapter") and callable(getattr(sub, "disable_adapter"))
+    return hasattr(sub, "disable_adapter") and callable(sub.disable_adapter)
 
 
-class ContinuousTokenLogProbEvaluator:
+class ContinuousTokenLogProbEvaluator(Evaluator):
     """Recompute Gaussian log-probs of sampled continuous tokens.
 
     Two-pass when ``need_ref=True`` — same LoRA-on / LoRA-off contract as

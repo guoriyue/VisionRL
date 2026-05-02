@@ -6,6 +6,7 @@ import contextlib
 from typing import Any
 
 import vrl.algorithms.flow_matching as flow_matching_math
+from vrl.rollouts.evaluators.base import Evaluator
 from vrl.rollouts.evaluators.types import SignalBatch, SignalRequest
 from vrl.rollouts.types import ExperienceBatch
 
@@ -13,7 +14,7 @@ from vrl.rollouts.types import ExperienceBatch
 # FlowMatchingEvaluator
 # ------------------------------------------------------------------
 
-class FlowMatchingEvaluator:
+class FlowMatchingEvaluator(Evaluator):
     """Signal extraction for flow-matching diffusion models.
 
     Uses ``sde_step_with_logprob`` to compute log-probabilities and

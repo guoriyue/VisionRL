@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from vrl.rollouts.collectors.base import Collector
+from vrl.rollouts.evaluators.base import Evaluator
+
 
 class TestOnlineTrainerCeaRegressions:
     def _make_cea_trainer(self, rewards: list[float]):
@@ -46,7 +49,7 @@ class TestOnlineTrainerCeaRegressions:
                 )
                 return loss, metrics
 
-        class _Collector:
+        class _Collector(Collector):
             def __init__(self, reward_values: list[float]) -> None:
                 self._reward_values = reward_values
                 self._cursor = 0
@@ -71,7 +74,7 @@ class TestOnlineTrainerCeaRegressions:
                     prompts=list(prompts) * group_size,
                 )
 
-        class _Evaluator:
+        class _Evaluator(Evaluator):
             def evaluate(
                 self,
                 collector,
@@ -169,7 +172,7 @@ class TestOnlineTrainerCeaRegressions:
                     loss=loss.item(), policy_loss=loss.item(), approx_kl=0.0,
                 )
 
-        class _CapturingCollector:
+        class _CapturingCollector(Collector):
             async def collect(self, prompts, **kwargs):
                 captured_kwargs.append(dict(kwargs))
                 group_size = int(kwargs.get("group_size", 1))
@@ -185,7 +188,7 @@ class TestOnlineTrainerCeaRegressions:
                     prompts=list(prompts) * group_size,
                 )
 
-        class _Evaluator:
+        class _Evaluator(Evaluator):
             def evaluate(self, collector, model, batch, timestep_idx, **kw):
                 batch_size = batch.rewards.shape[0]
                 return SignalBatch(log_prob=model.weight.view(1).expand(batch_size))
@@ -269,7 +272,7 @@ class TestOnlineTrainerCeaRegressions:
                     approx_kl=float(old_log_probs.mean().item()),
                 )
 
-        class _Collector:
+        class _Collector(Collector):
             async def collect(self, prompts, **kwargs):
                 prompts = list(prompts)
                 collect_calls.append(prompts)
@@ -297,7 +300,7 @@ class TestOnlineTrainerCeaRegressions:
                     prompts=[p for p in prompts for _ in range(group_size)],
                 )
 
-        class _Evaluator:
+        class _Evaluator(Evaluator):
             def evaluate(self, collector, model, batch, timestep_idx, **kw):
                 del collector, timestep_idx, kw
                 evaluate_batch_sizes.append(int(batch.rewards.shape[0]))
