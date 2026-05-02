@@ -14,8 +14,9 @@ from vrl.engine.generation import (
     OutputBatch,
     WorkloadSignature,
 )
+from vrl.engine.generation.gather import ChunkGatherer, require_chunk_gatherer
 from vrl.executors import ChunkedFamilyPipelineExecutor, PipelineChunkResult
-from vrl.executors.planning import MicroBatchPlan
+from vrl.executors.microbatching import MicroBatchPlan
 
 
 @dataclass(slots=True)
@@ -80,8 +81,7 @@ class _ChunkedExecutor(ChunkedFamilyPipelineExecutor):
             prompts=list(request.prompts),
             sample_specs=sample_specs,
             output=[
-                (chunk.prompt_index, chunk.sample_start, chunk.sample_count)
-                for chunk in chunks
+                (chunk.prompt_index, chunk.sample_start, chunk.sample_count) for chunk in chunks
             ],
         )
 
@@ -100,6 +100,8 @@ def _request() -> GenerationRequest:
 def test_chunked_executor_extends_family_executor_contract() -> None:
     executor = _ChunkedExecutor()
     assert isinstance(executor, ChunkedFamilyPipelineExecutor)
+    assert isinstance(executor, ChunkGatherer)
+    assert require_chunk_gatherer(executor) is executor
 
     request = _request()
     specs = GenerationIdFactory().build_sample_specs(request)

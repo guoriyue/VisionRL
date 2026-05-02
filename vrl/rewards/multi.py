@@ -10,7 +10,6 @@ from typing import Any
 from vrl.algorithms.types import Rollout
 from vrl.rewards.base import RewardFunction
 
-
 # Registry of reward function factories.
 # Each factory takes (device,) and returns a RewardFunction instance.
 _REWARD_REGISTRY: dict[str, type[RewardFunction]] = {}

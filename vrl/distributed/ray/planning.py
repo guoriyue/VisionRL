@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from vrl.distributed.ray.types import RayWorkerHandle
 from vrl.engine.generation.types import GenerationRequest
-from vrl.executors.planning import (
+from vrl.executors.microbatching import (
     MicroBatchPlan,
     plan_prompt_group_microbatches,
 )

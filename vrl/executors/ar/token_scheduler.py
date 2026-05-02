@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
 from dataclasses import dataclass
 
 from vrl.executors.ar.sequence import ActiveSequence, ARSequenceKey
@@ -58,20 +57,26 @@ class ARTokenScheduler:
             self.add(sequence)
 
     def pop_batch(self) -> ARTokenBatch | None:
-        groups: OrderedDict[ARSequenceKey, list[ActiveSequence]] = OrderedDict()
+        groups: dict[tuple[ARSequenceKey, int], list[ActiveSequence]] = {}
+        ordered_keys: list[tuple[ARSequenceKey, int]] = []
         retained: list[ActiveSequence] = []
 
         for sequence in self._pending:
             if sequence.finished:
                 continue
-            groups.setdefault(sequence.key, []).append(sequence)
+            group_key = (sequence.key, sequence.position)
+            if group_key not in groups:
+                groups[group_key] = []
+                ordered_keys.append(group_key)
+            groups[group_key].append(sequence)
             retained.append(sequence)
 
         self._pending = retained
         if not groups:
             return None
 
-        key, selected_group = next(iter(groups.items()))
+        key, _position = ordered_keys[0]
+        selected_group = groups[ordered_keys[0]]
         selected = selected_group[: self.max_batch_size]
         selected_ids = {id(sequence) for sequence in selected}
         self._pending = [

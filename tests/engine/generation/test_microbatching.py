@@ -1,10 +1,10 @@
-"""Tests for generation execution planning helpers."""
+"""Tests for generation executor micro-batching helpers."""
 
 from __future__ import annotations
 
 
 def test_plan_prompt_group_microbatches_prompt_major() -> None:
-    from vrl.executors.planning import plan_prompt_group_microbatches
+    from vrl.executors.microbatching import plan_prompt_group_microbatches
 
     plan = plan_prompt_group_microbatches(
         ["a", "b"],
@@ -28,7 +28,7 @@ def test_plan_prompt_group_microbatches_prompt_major() -> None:
 
 
 def test_run_microbatches_with_oom_retry_splits_until_success() -> None:
-    from vrl.executors.planning import (
+    from vrl.executors.microbatching import (
         MicroBatchPlan,
         run_microbatches_with_oom_retry,
     )

@@ -11,6 +11,7 @@ from vrl.distributed.ray.planning import DeviceAssignment, DistributedExecutionP
 from vrl.distributed.ray.rollout_executor import DistributedRolloutExecutor
 from vrl.distributed.ray.rollout_worker import RayRolloutWorker
 from vrl.distributed.ray.runtime import RayDistributedRuntime
+from vrl.distributed.ray.spec import RolloutRuntimeSpec
 from vrl.distributed.ray.train_actor import RayTrainActor
 from vrl.distributed.ray.train_group import RayTrainGroup, RayTrainRankSpec
 from vrl.distributed.ray.types import RayChunkResult, RayWorkerHandle
@@ -35,6 +36,7 @@ __all__ = [
     "RayTrainGroup",
     "RayTrainRankSpec",
     "RayWorkerHandle",
+    "RolloutRuntimeSpec",
     "RolloutWeightSync",
     "create_rollout_placement_group",
 ]

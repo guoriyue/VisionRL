@@ -36,7 +36,7 @@ class PickScoreReward(RewardFunction):
         if self._scorer is not None:
             return
         import torch
-        from transformers import CLIPProcessor, CLIPModel
+        from transformers import CLIPModel, CLIPProcessor
 
         dtype = getattr(torch, self._dtype_str, torch.float32)
 
@@ -68,9 +68,9 @@ class PickScoreReward(RewardFunction):
 
     async def score(self, rollout: Rollout) -> float:
         self._ensure_loaded()
+        import numpy as np
         import torch
         from PIL import Image
-        import numpy as np
 
         output = rollout.trajectory.output
         prompt = rollout.trajectory.prompt

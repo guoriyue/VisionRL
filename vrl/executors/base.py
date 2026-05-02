@@ -12,7 +12,7 @@ if TYPE_CHECKING:
         OutputBatch,
         WorkloadSignature,
     )
-    from vrl.executors.planning import MicroBatchPlan
+    from vrl.executors.microbatching import MicroBatchPlan
 
 
 class PipelineChunkResult(Protocol):

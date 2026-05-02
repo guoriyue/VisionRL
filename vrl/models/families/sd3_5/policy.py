@@ -3,7 +3,7 @@
 Single-protocol adapter for Stable Diffusion 3.5-Medium image generation.
 The contract is:
 
-    encode_prompt → prepare_sampling → forward_step ×N → decode_latents
+    encode_prompt -> prepare_sampling -> forward_step xN -> decode_latents
 
 The collector (or default ``DiffusionPolicy.inference`` loop) owns the
 scheduler step / SDE step. ``forward_step`` does only one transformer
@@ -73,7 +73,7 @@ class SD3_5Policy(DiffusionPolicy):
     # -- backend ownership (called by builder, not by collectors) -------
 
     @classmethod
-    def from_spec(cls, spec: Any) -> "SD3_5Policy":
+    def from_spec(cls, spec: Any) -> SD3_5Policy:
         """Load the diffusers SD3.5 pipeline + freeze non-trainable modules."""
         from diffusers import StableDiffusion3Pipeline
 
@@ -151,7 +151,7 @@ class SD3_5Policy(DiffusionPolicy):
         negative_prompt: str | list[str] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Encode prompt via SD3's three text encoders (T5 + 2× CLIP).
+        """Encode prompt via SD3's three text encoders (T5 + 2x CLIP).
 
         Returns prompt_embeds (joint T5+CLIP sequence), pooled_prompt_embeds
         (CLIP pooled), and their negative counterparts when CFG is active.
@@ -275,10 +275,7 @@ class SD3_5Policy(DiffusionPolicy):
         # SD3 timestep is broadcast across batch as the raw float (not /1000).
         # If t is already shape [B] (eval path packs timesteps as [1, B]),
         # Tensor.expand(bsz) is a no-op on the equal-sized dim.
-        if t.ndim == 0:
-            timestep_batch = t.expand(bsz)
-        else:
-            timestep_batch = t
+        timestep_batch = t.expand(bsz) if t.ndim == 0 else t
 
         if state.do_cfg:
             combined_latents = torch.cat([latent_input, latent_input], dim=0)

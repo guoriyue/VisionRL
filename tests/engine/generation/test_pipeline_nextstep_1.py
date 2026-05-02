@@ -27,7 +27,7 @@ from vrl.engine.generation import (
     GenerationIdFactory,
     GenerationRequest,
 )
-from vrl.executors.ar import ARStepResult
+from vrl.models.ar import ARStepResult
 from vrl.models.families.nextstep_1.executor import NextStep1PipelineExecutor
 from vrl.models.families.nextstep_1.flow_step import (
     flow_logprob_at,
@@ -200,6 +200,7 @@ class _StubPolicy:
             "image_token_num": image_token_num,
             "generator": gen,
             "position": 0,
+            "positions": torch.zeros(batch_size, dtype=torch.long),
         }
 
     def step_ar(
@@ -212,10 +213,14 @@ class _StubPolicy:
         del generator
         self.ar_step_calls += 1
         row_indices = [sequence.metadata["row_index"] for sequence in sequences]
-        assert row_indices == list(range(state["tokens"].shape[0]))
         positions = [sequence.position for sequence in sequences]
-        assert all(position == state["position"] for position in positions)
-        token, saved_noise, log_prob = self._sample_ar_step(state)
+        assert len(set(positions)) == 1
+        assert positions == [int(state["positions"][row].item()) for row in row_indices]
+        token, saved_noise, log_prob = self._sample_ar_step(
+            state,
+            row_indices=row_indices,
+            position=positions[0],
+        )
         return ARStepResult(
             sequence_ids=[sequence.sample_id for sequence in sequences],
             positions=positions,
@@ -233,17 +238,28 @@ class _StubPolicy:
     def _sample_ar_step(
         self,
         state: dict[str, Any],
+        *,
+        row_indices: list[int] | None = None,
+        position: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        batch_size = state["tokens"].shape[0]
+        if row_indices is None:
+            row_indices = list(range(state["tokens"].shape[0]))
+        rows = torch.tensor(row_indices, dtype=torch.long)
+        row_positions = [int(state["positions"][row].item()) for row in row_indices]
+        assert len(set(row_positions)) == 1
+        position = row_positions[0] if position is None else position
+        assert all(row_position == position for row_position in row_positions)
+
+        batch_size = len(row_indices)
         gen = state["generator"]
         token = torch.randn(batch_size, self.token_dim, generator=gen)
         saved_noise = torch.randn(batch_size, self.token_dim, generator=gen)
         log_prob = -(token.float() ** 2).mean(dim=-1)
-        position = state["position"]
-        state["tokens"][:, position] = token
-        state["saved_noise"][:, position] = saved_noise
-        state["log_probs"][:, position] = log_prob
-        state["position"] += 1
+        state["tokens"][rows, position] = token
+        state["saved_noise"][rows, position] = saved_noise
+        state["log_probs"][rows, position] = log_prob
+        state["positions"][rows] += 1
+        state["position"] = int(state["positions"].min().item())
         return token, saved_noise, log_prob
 
     @torch.no_grad()
@@ -416,6 +432,49 @@ def test_executor_scheduled_ar_matches_black_box_path_bitwise() -> None:
         out_black_box.extra["log_probs"], out_scheduled.extra["log_probs"]
     )
     assert torch.equal(out_black_box.output, out_scheduled.output)
+
+
+def test_executor_partial_scheduled_ar_is_deterministic_and_complete() -> None:
+    """Partial scheduled AR is reproducible and keeps replay artifacts aligned."""
+    policy_a = _StubPolicy()
+    executor_a = NextStep1PipelineExecutor(policy_a)
+    request_a = _request(seed=1234, samples_per_prompt=5)
+    request_a.sampling["use_ar_scheduler"] = True
+    request_a.sampling["ar_scheduler_batch_size"] = 2
+    specs_a = GenerationIdFactory().build_sample_specs(request_a)
+    out_a = executor_a.forward(request_a, specs_a)
+
+    policy_b = _StubPolicy()
+    executor_b = NextStep1PipelineExecutor(policy_b)
+    request_b = _request(seed=1234, samples_per_prompt=5)
+    request_b.sampling["use_ar_scheduler"] = True
+    request_b.sampling["ar_scheduler_batch_size"] = 2
+    specs_b = GenerationIdFactory().build_sample_specs(request_b)
+    out_b = executor_b.forward(request_b, specs_b)
+
+    assert policy_a.sample_calls == 0
+    assert policy_a.ar_init_calls == 1
+    assert policy_a.ar_step_calls > request_a.sampling["image_token_num"]
+    assert [spec.sample_id for spec in out_a.sample_specs] == [
+        spec.sample_id for spec in specs_a
+    ]
+    assert out_a.extra["tokens"].shape == (5, request_a.sampling["image_token_num"], 4)
+    assert out_a.extra["saved_noise"].shape == (
+        5,
+        request_a.sampling["image_token_num"],
+        4,
+    )
+    assert out_a.extra["log_probs"].shape == (5, request_a.sampling["image_token_num"])
+    assert torch.equal(out_a.extra["tokens"], out_b.extra["tokens"])
+    assert torch.equal(
+        out_a.extra["saved_noise"],
+        out_b.extra["saved_noise"],
+    )
+    assert torch.equal(
+        out_a.extra["log_probs"],
+        out_b.extra["log_probs"],
+    )
+    assert torch.equal(out_a.output, out_b.output)
 
 
 def test_executor_different_seeds_produce_different_tokens() -> None:

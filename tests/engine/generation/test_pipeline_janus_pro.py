@@ -19,6 +19,7 @@ from vrl.engine.generation import (
     GenerationIdFactory,
     GenerationRequest,
 )
+from vrl.models.ar import ARStepResult
 from vrl.models.families.janus_pro.executor import JanusProPipelineExecutor
 
 # ---------------------------------------------------------------------------
@@ -81,6 +82,8 @@ class _StubPolicy:
 
     image_token_num: int = 4
     sample_calls: list[dict[str, Any]] = field(default_factory=list)
+    ar_init_calls: int = 0
+    ar_step_calls: int = 0
 
     def __post_init__(self) -> None:
         self._processor = _StubProcessor()
@@ -128,10 +131,95 @@ class _StubPolicy:
                 "L_text": cond_inputs_embeds.shape[1],
             },
         )
-        # Use the global RNG so torch.manual_seed in the executor governs
-        # reproducibility — exactly what the parity test relies on.
-        token_ids = torch.randint(0, IMG_VOCAB, (B, L_img), dtype=torch.long)
-        log_probs = -torch.rand(B, L_img, dtype=torch.float32)
+        state = self.init_ar_state(
+            cond_inputs_embeds,
+            uncond_inputs_embeds,
+            cond_attention_mask,
+            uncond_attention_mask,
+            cfg_weight=cfg_weight,
+            temperature=temperature,
+            image_token_num=L_img,
+        )
+        while state["position"] < state["image_token_num"]:
+            self._sample_ar_step(state)
+        return self.finalize_ar_state(state)
+
+    def init_ar_state(
+        self,
+        cond_inputs_embeds: torch.Tensor,
+        uncond_inputs_embeds: torch.Tensor,
+        cond_attention_mask: torch.Tensor,
+        uncond_attention_mask: torch.Tensor,
+        *,
+        cfg_weight: float | None = None,
+        temperature: float | None = None,
+        image_token_num: int | None = None,
+    ) -> dict[str, Any]:
+        del uncond_inputs_embeds, cond_attention_mask, uncond_attention_mask
+        del cfg_weight, temperature
+        self.ar_init_calls += 1
+        batch_size = cond_inputs_embeds.shape[0]
+        image_token_num = int(image_token_num or self.image_token_num)
+        return {
+            "token_ids": torch.zeros(batch_size, image_token_num, dtype=torch.long),
+            "log_probs": torch.zeros(batch_size, image_token_num),
+            "image_token_num": image_token_num,
+            "position": 0,
+            "positions": torch.zeros(batch_size, dtype=torch.long),
+        }
+
+    def step_ar(
+        self,
+        state: dict[str, Any],
+        sequences: list[Any],
+        *,
+        generator: torch.Generator | None = None,
+    ) -> ARStepResult:
+        del generator
+        self.ar_step_calls += 1
+        row_indices = [sequence.metadata["row_index"] for sequence in sequences]
+        positions = [sequence.position for sequence in sequences]
+        assert len(set(positions)) == 1
+        assert positions == [int(state["positions"][row].item()) for row in row_indices]
+        token, log_prob = self._sample_ar_step(
+            state,
+            row_indices=row_indices,
+            position=positions[0],
+        )
+        return ARStepResult(
+            sequence_ids=[sequence.sample_id for sequence in sequences],
+            positions=positions,
+            token=token,
+            log_prob=log_prob,
+        )
+
+    def finalize_ar_state(
+        self,
+        state: dict[str, Any],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return state["token_ids"], state["log_probs"]
+
+    def _sample_ar_step(
+        self,
+        state: dict[str, Any],
+        *,
+        row_indices: list[int] | None = None,
+        position: int | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if row_indices is None:
+            row_indices = list(range(state["token_ids"].shape[0]))
+        rows = torch.tensor(row_indices, dtype=torch.long)
+        row_positions = [int(state["positions"][row].item()) for row in row_indices]
+        assert len(set(row_positions)) == 1
+        position = row_positions[0] if position is None else position
+        assert all(row_position == position for row_position in row_positions)
+
+        token_ids = torch.randint(0, IMG_VOCAB, (len(row_indices),), dtype=torch.long)
+        log_probs = -torch.rand(len(row_indices), dtype=torch.float32)
+        state["token_ids"][rows, position] = token_ids
+        state["log_probs"][rows, position] = log_probs
+        state["positions"][rows] += 1
+        state["position"] = int(state["positions"].min().item())
         return token_ids, log_probs
 
     def decode_image_tokens(
@@ -268,6 +356,52 @@ def test_executor_seed_reproducibility() -> None:
     assert torch.equal(out_a.extra["token_ids"], out_b.extra["token_ids"])
     assert torch.equal(
         out_a.extra["token_log_probs"], out_b.extra["token_log_probs"],
+    )
+    assert torch.equal(out_a.output, out_b.output)
+
+
+def test_executor_partial_scheduled_ar_is_deterministic_and_complete() -> None:
+    """Partial scheduled AR is reproducible and preserves sample order."""
+    policy_a = _StubPolicy(image_token_num=4)
+    executor_a = JanusProPipelineExecutor(policy_a)
+    req_a = _request(
+        samples_per_prompt=5,
+        image_token_num=4,
+        image_size=64,
+        max_text_length=8,
+        seed=1234,
+    )
+    req_a.sampling["use_ar_scheduler"] = True
+    req_a.sampling["ar_scheduler_batch_size"] = 2
+    specs_a = GenerationIdFactory().build_sample_specs(req_a)
+    out_a = executor_a.forward(req_a, specs_a)
+
+    policy_b = _StubPolicy(image_token_num=4)
+    executor_b = JanusProPipelineExecutor(policy_b)
+    req_b = _request(
+        samples_per_prompt=5,
+        image_token_num=4,
+        image_size=64,
+        max_text_length=8,
+        seed=1234,
+    )
+    req_b.sampling["use_ar_scheduler"] = True
+    req_b.sampling["ar_scheduler_batch_size"] = 2
+    specs_b = GenerationIdFactory().build_sample_specs(req_b)
+    out_b = executor_b.forward(req_b, specs_b)
+
+    assert policy_a.sample_calls == []
+    assert policy_a.ar_init_calls == 1
+    assert policy_a.ar_step_calls > req_a.sampling["image_token_num"]
+    assert [spec.sample_id for spec in out_a.sample_specs] == [
+        spec.sample_id for spec in specs_a
+    ]
+    assert out_a.extra["token_ids"].shape == (5, 4)
+    assert out_a.extra["token_log_probs"].shape == (5, 4)
+    assert torch.equal(out_a.extra["token_ids"], out_b.extra["token_ids"])
+    assert torch.equal(
+        out_a.extra["token_log_probs"],
+        out_b.extra["token_log_probs"],
     )
     assert torch.equal(out_a.output, out_b.output)
 

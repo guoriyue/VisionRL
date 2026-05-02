@@ -61,11 +61,11 @@ Token-level GRPO over an AR image generator. This is the line closest to
   evaluator
 - `vrl/rollouts/collectors/janus_pro.py` — Janus-Pro rollout collector
 - `vrl/models/families/janus_pro/model.py` — Janus-Pro model wrapper
-- `vrl/scripts/janus_pro/janus_pro_1b_ocr_grpo.py` — first end-to-end
-  task (OCR reward)
-- `vrl/scripts/janus_pro/janus_pro_1b_grpo.py` — base recipe
-- `vrl/scripts/nextstep_1/nextstep_1_ocr_grpo.py` — second AR family
-  (NextStep) under the same TokenGRPO contract
+- `vrl/scripts/train.py` plus `configs/experiment/janus_pro_1b_ocr_grpo.yaml`
+  — first end-to-end task (OCR reward)
+- `vrl/scripts/janus_pro/train.py` — Janus-Pro family training implementation
+- `vrl/scripts/nextstep_1/train.py` — second AR family (NextStep) under the
+  same TokenGRPO contract
 - `tests/algorithms/test_grpo_token.py`,
   `tests/rollouts/test_janus_pro_collector.py`,
   `tests/models/test_janus_wrapper.py` — covering the path
@@ -82,7 +82,8 @@ as a research thrust, not a polished product:
 
 - `vrl/models/families/cosmos/{model,predict1,predict2,predict25,variants}.py`
 - `vrl/rollouts/collectors/cosmos_predict2.py`
-- `vrl/scripts/cosmos/cosmos_predict2_2b_grpo.py` — single GRPO recipe
+- `vrl/scripts/train.py` plus `configs/experiment/cosmos_predict2_2b_grpo.yaml`
+  — single GRPO recipe
 - `tests/models/test_cosmos_predict2_step.py`,
   `tests/rollouts/test_cosmos_predict2_collector.py`,
   `tests/e2e/test_serving_cosmos.py`
@@ -170,17 +171,17 @@ pip install -e ".[dev]"      # pytest, ruff, httpx
 
 ```bash
 # AR image RL (Janus-Pro, OCR reward)
-python -m vrl.scripts.janus_pro.janus_pro_1b_ocr_grpo
+python -m vrl.scripts.train --config experiment/janus_pro_1b_ocr_grpo
 
 # AR image RL (NextStep, OCR reward)
-python -m vrl.scripts.nextstep_1.nextstep_1_ocr_grpo
+python -m vrl.scripts.train --config experiment/nextstep_1_ocr_grpo
 
 # World model RL (Cosmos Predict 2, GRPO)
-python -m vrl.scripts.cosmos.cosmos_predict2_2b_grpo
+python -m vrl.scripts.train --config experiment/cosmos_predict2_2b_grpo
 
 # Diffusion baselines
-python -m vrl.scripts.sd3_5.sd3_5_ocr_grpo
-python -m vrl.scripts.wan_2_1.wan_2_1_1_3b_grpo
+python -m vrl.scripts.train --config experiment/sd3_5_ocr_grpo
+python -m vrl.scripts.train --config experiment/wan_2_1_1_3b_grpo
 
 # Serving gateway
 vrl-serve
@@ -203,15 +204,17 @@ ls vrl/algorithms/grpo_token.py
 ls vrl/rollouts/evaluators/lm/token_logprob.py
 ls vrl/rollouts/collectors/janus_pro.py
 ls vrl/models/families/janus_pro/model.py
-ls vrl/scripts/janus_pro/janus_pro_1b_ocr_grpo.py
-ls vrl/scripts/nextstep_1/nextstep_1_ocr_grpo.py
+ls vrl/scripts/train.py
+ls vrl/scripts/janus_pro/train.py
+ls vrl/scripts/nextstep_1/train.py
 ls tests/algorithms/test_grpo_token.py
 grep -nE "^class TokenGRPO" vrl/algorithms/grpo_token.py
 
 # Bet B — World model RL (early-stage)
 ls vrl/models/families/cosmos/predict2.py
 ls vrl/rollouts/collectors/cosmos_predict2.py
-ls vrl/scripts/cosmos/cosmos_predict2_2b_grpo.py
+ls vrl/scripts/cosmos/train.py
+ls configs/experiment/cosmos_predict2_2b_grpo.yaml
 ls tests/e2e/test_serving_cosmos.py
 
 # Bet C — Engine skeleton (benchmark-gated)

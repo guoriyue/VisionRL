@@ -34,7 +34,7 @@ class CLIPScoreReward(RewardFunction):
         import torch
         import torch.nn as nn
         import torchvision.transforms as T
-        from transformers import CLIPModel, CLIPProcessor, AutoImageProcessor
+        from transformers import AutoImageProcessor, CLIPModel, CLIPProcessor
 
         def _get_size(size: Any) -> tuple[int, int] | int:
             if isinstance(size, int):
@@ -74,8 +74,8 @@ class CLIPScoreReward(RewardFunction):
 
     async def score(self, rollout: Rollout) -> float:
         self._ensure_loaded()
-        import torch
         import numpy as np
+        import torch
 
         output = rollout.trajectory.output
         prompt = rollout.trajectory.prompt

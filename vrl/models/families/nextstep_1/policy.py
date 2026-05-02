@@ -45,8 +45,12 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from vrl.executors.ar import ARStepResult
-from vrl.models.ar import AutoregressivePolicy
+from vrl.models.ar import (
+    ARStepResult,
+    AutoregressivePolicy,
+    ar_concat_rows,
+    ar_split_rows,
+)
 from vrl.models.families.nextstep_1.flow_step import (
     flow_logprob_at,
     flow_sample_with_logprob,
@@ -107,10 +111,10 @@ class NextStep1Config:
 
 @dataclass(slots=True)
 class NextStep1ARState:
-    """Mutable state for one full-row NextStep AR sampling loop."""
+    """Mutable per-row state for one scheduled NextStep AR sampling loop."""
 
-    kv_cond: Any
-    kv_uncond: Any | None
+    kv_cond_rows: list[Any]
+    kv_uncond_rows: list[Any] | None
     c_cond: torch.Tensor
     c_uncond: torch.Tensor | None
     tokens: torch.Tensor
@@ -122,6 +126,7 @@ class NextStep1ARState:
     image_token_num: int
     generator: torch.Generator | None = None
     position: int = 0
+    positions: torch.Tensor | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -346,8 +351,9 @@ class NextStep1Policy(nn.Module, AutoregressivePolicy):
         c_uncond = self._last_hidden(kv_uncond) if kv_uncond is not None else None
 
         return NextStep1ARState(
-            kv_cond=kv_cond,
-            kv_uncond=kv_uncond,
+            kv_cond_rows=ar_split_rows(kv_cond, batch_size),
+            kv_uncond_rows=ar_split_rows(kv_uncond, batch_size)
+            if kv_uncond is not None else None,
             c_cond=c_cond,
             c_uncond=c_uncond,
             tokens=tokens,
@@ -358,6 +364,7 @@ class NextStep1Policy(nn.Module, AutoregressivePolicy):
             noise_level=float(noise_level),
             image_token_num=int(image_token_num),
             generator=generator,
+            positions=torch.zeros(batch_size, device=device, dtype=torch.long),
         )
 
     @torch.no_grad()
@@ -368,30 +375,33 @@ class NextStep1Policy(nn.Module, AutoregressivePolicy):
         *,
         generator: torch.Generator | None = None,
     ) -> ARStepResult:
-        """Run one scheduled full-row AR token step.
-
-        Partial row scheduling requires KV cache slice/scatter support. Until
-        that helper exists, the scheduled path deliberately accepts only the
-        full active row set in row order.
-        """
+        """Run one scheduled AR token step for rows at the same position."""
         if not sequences:
             raise ValueError("step_ar requires at least one ActiveSequence")
 
         row_indices = [int(seq.metadata.get("row_index", -1)) for seq in sequences]
-        expected = list(range(state.tokens.shape[0]))
-        if row_indices != expected:
-            raise NotImplementedError(
-                "NextStep1Policy.step_ar currently supports full-row scheduling "
-                f"only. Got row_indices={row_indices}, expected={expected}."
-            )
+        if any(row < 0 or row >= state.tokens.shape[0] for row in row_indices):
+            raise ValueError(f"invalid NextStep row indices: {row_indices}")
 
         positions = [int(seq.position) for seq in sequences]
-        if any(position != state.position for position in positions):
+        if len(set(positions)) != 1:
+            raise ValueError("ActiveSequence positions must match within one AR step")
+        if state.positions is None:
+            raise ValueError("NextStep1ARState.positions is required")
+        expected_positions = [
+            int(state.positions[row].item()) for row in row_indices
+        ]
+        if positions != expected_positions:
             raise ValueError(
-                "ActiveSequence positions must match NextStep1ARState.position"
+                "ActiveSequence positions must match NextStep1ARState row positions"
             )
 
-        step = self._sample_ar_step(state, generator=generator)
+        step = self._sample_ar_step(
+            state,
+            row_indices=row_indices,
+            position=positions[0],
+            generator=generator,
+        )
         return ARStepResult(
             sequence_ids=[str(seq.sample_id) for seq in sequences],
             positions=positions,
@@ -412,15 +422,34 @@ class NextStep1Policy(nn.Module, AutoregressivePolicy):
         self,
         state: NextStep1ARState,
         *,
+        row_indices: list[int] | None = None,
+        position: int | None = None,
         generator: torch.Generator | None = None,
     ) -> Any:
-        if state.position >= state.image_token_num:
+        if state.positions is None:
+            raise ValueError("NextStep1ARState.positions is required")
+
+        if row_indices is None:
+            row_indices = list(range(state.tokens.shape[0]))
+        if not row_indices:
+            raise ValueError("row_indices must be non-empty")
+        if any(row < 0 or row >= state.tokens.shape[0] for row in row_indices):
+            raise ValueError(f"invalid NextStep row indices: {row_indices}")
+
+        row_positions = [int(state.positions[row].item()) for row in row_indices]
+        if len(set(row_positions)) != 1:
+            raise ValueError("NextStep rows in one AR step must share a position")
+        position = row_positions[0] if position is None else int(position)
+        if any(pos != position for pos in row_positions):
+            raise ValueError("requested position does not match row positions")
+        if position >= state.image_token_num:
             raise ValueError("NextStep1ARState has already finished sampling")
 
         step_generator = generator if generator is not None else state.generator
-        batch_size = state.tokens.shape[0]
+        batch_size = len(row_indices)
         token_dim = state.tokens.shape[-1]
         device = state.tokens.device
+        rows = torch.tensor(row_indices, device=device, dtype=torch.long)
         initial_noise = torch.randn(
             batch_size,
             token_dim,
@@ -428,30 +457,50 @@ class NextStep1Policy(nn.Module, AutoregressivePolicy):
             dtype=self.dtype,
             generator=step_generator,
         )
+        c_cond = state.c_cond.index_select(0, rows)
+        c_uncond = (
+            state.c_uncond.index_select(0, rows)
+            if state.c_uncond is not None else None
+        )
         step = flow_sample_with_logprob(
             self.image_head,
-            cond=state.c_cond,
+            cond=c_cond,
             num_flow_steps=state.num_flow_steps,
             noise_level=state.noise_level,
-            cfg_uncond=state.c_uncond,
+            cfg_uncond=c_uncond,
             cfg_scale=state.cfg_scale,
             generator=step_generator,
             initial_noise=initial_noise,
         )
 
-        position = state.position
-        state.tokens[:, position] = step.token
-        state.saved_noise[:, position] = step.initial_noise
-        state.logprobs[:, position] = step.log_prob.float()
+        state.tokens[rows, position] = step.token
+        state.saved_noise[rows, position] = step.initial_noise
+        state.logprobs[rows, position] = step.log_prob.float()
 
         proj = self._image_in_projector(step.token)
-        state.kv_cond, state.c_cond = self._step_llm(state.kv_cond, proj)
-        if state.kv_uncond is not None:
+        kv_cond = ar_concat_rows([state.kv_cond_rows[row] for row in row_indices])
+        kv_cond, c_cond_next = self._step_llm(kv_cond, proj)
+        for row, row_kv in zip(row_indices, ar_split_rows(kv_cond, batch_size), strict=True):
+            state.kv_cond_rows[row] = row_kv
+        state.c_cond.index_copy_(0, rows, c_cond_next)
+
+        if state.kv_uncond_rows is not None:
             proj_u = self._image_in_projector(step.token)
-            state.kv_uncond, state.c_uncond = self._step_llm(
-                state.kv_uncond, proj_u
+            kv_uncond = ar_concat_rows(
+                [state.kv_uncond_rows[row] for row in row_indices]
             )
-        state.position += 1
+            kv_uncond, c_uncond_next = self._step_llm(kv_uncond, proj_u)
+            for row, row_kv in zip(
+                row_indices,
+                ar_split_rows(kv_uncond, batch_size),
+                strict=True,
+            ):
+                state.kv_uncond_rows[row] = row_kv
+            assert state.c_uncond is not None
+            state.c_uncond.index_copy_(0, rows, c_uncond_next)
+
+        state.positions[rows] += 1
+        state.position = int(state.positions.min().item())
         return step
 
     # ------------------------------------------------------------------

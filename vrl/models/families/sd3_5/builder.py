@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from vrl.models.runtime import RuntimeBundle, RuntimeBuildSpec
+from vrl.models.runtime import RuntimeBuildSpec, RuntimeBundle
 
 logger = logging.getLogger(__name__)
 

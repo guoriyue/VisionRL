@@ -17,6 +17,7 @@ or below the configured boundary timestep.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import math
 import random
@@ -26,7 +27,12 @@ from pathlib import Path
 from typing import Any
 
 from vrl.models.diffusion import DiffusionPolicy, VideoGenerationRequest
-from vrl.models.families.wan_2_1.shared import stable_hash
+
+
+def _stable_hash(value: str) -> str:
+    """Short stable hash for Wan official prompt-cache keys."""
+
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
 def _clone_tensor_list_to_cpu(tensors: list[Any]) -> list[Any]:
@@ -93,7 +99,7 @@ class WanT2VOfficialPolicy(DiffusionPolicy):
     # -- backend ownership (called by builder, not by collectors) -------
 
     @classmethod
-    def from_spec(cls, spec: Any) -> "WanT2VOfficialPolicy":
+    def from_spec(cls, spec: Any) -> WanT2VOfficialPolicy:
         """Construct from a RuntimeBuildSpec.
 
         ``spec.model_name_or_path`` -> ``repo_dir`` (path to wan repo clone).
@@ -347,7 +353,7 @@ class WanT2VOfficialPolicy(DiffusionPolicy):
             else (negative_prompt[0] if isinstance(negative_prompt, list) and negative_prompt
                   else pipeline.sample_neg_prompt)
         )
-        prompt_hash = stable_hash(f"{request.model_name}|{prompt_str}|{n_prompt}")
+        prompt_hash = _stable_hash(f"{request.model_name}|{prompt_str}|{n_prompt}")
         cache_key = f"{task_key}|{checkpoint_dir}|{prompt_hash}"
 
         if cache_key in self._prompt_cache:
@@ -400,10 +406,9 @@ class WanT2VOfficialPolicy(DiffusionPolicy):
         torch = self._torch
 
         size_key = self._size_key(request.width, request.height)
-        if request.seed is not None:
-            seed = request.seed
-        else:
-            seed = random.randint(0, sys.maxsize)
+        seed = (
+            request.seed if request.seed is not None else random.randint(0, sys.maxsize)
+        )
         seed_g = torch.Generator(device=pipeline.device)
         seed_g.manual_seed(seed)
 

@@ -9,13 +9,21 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from omegaconf import DictConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from vrl.engine.generation import RolloutBackend
 
-async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
+
+async def train_wan_2_1_grpo(
+    cfg: DictConfig,
+    *,
+    rollout_runtime: RolloutBackend | None = None,
+) -> None:
     """Run Wan-family GRPO training driven by a merged YAML config."""
     import os
 
@@ -25,6 +33,7 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
     from vrl.algorithms.grpo_token import TokenGRPOConfig
     from vrl.algorithms.stat_tracking import PerPromptStatTracker
     from vrl.config.loader import build_configs
+    from vrl.engine.generation import build_rollout_backend_from_cfg
     from vrl.rewards.multi import MultiReward
     from vrl.rollouts.collectors.wan_2_1 import (
         Wan_2_1Collector,
@@ -48,7 +57,7 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     weight_dtype = torch.bfloat16 if trainer_config.bf16 else torch.float16
 
-    # 1. Build runtime (backend construction lives in family builder)
+    # 1. Build policy bundle (backend construction lives in family builder)
     from vrl.models.families.wan_2_1.builder import build_wan_2_1_runtime_bundle_from_cfg
 
     bundle = build_wan_2_1_runtime_bundle_from_cfg(cfg, device, weight_dtype)
@@ -81,6 +90,12 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
         same_latent=cfg.rollout.same_latent,
     )
     collector = Wan_2_1Collector(wan_model, reward_fn, collector_config)
+    collector._runtime = build_rollout_backend_from_cfg(
+        cfg,
+        runtime=rollout_runtime,
+        local_runtime_builder=collector._build_runtime,
+        driver_bundle=bundle,
+    )
 
     evaluator = FlowMatchingEvaluator(
         bundle.scheduler, noise_level=1.0, sde_type="sde",

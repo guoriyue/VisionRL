@@ -72,9 +72,9 @@ select = [
 ignore = [
     "E501",   # line length (handled by formatter)
     "B008",   # function call in default arg (FastAPI Depends)
-    "TCH001", # move into TYPE_CHECKING (conflicts with pydantic)
-    "TCH002",
-    "TCH003",
+    "TC001", # move into TYPE_CHECKING (conflicts with pydantic)
+    "TC002",
+    "TC003",
 ]
 
 [tool.ruff.lint.isort]

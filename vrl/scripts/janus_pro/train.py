@@ -25,27 +25,52 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from omegaconf import DictConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from vrl.engine.generation import RolloutBackend
 
-async def train_janus_pro_grpo(cfg: DictConfig) -> None:
+
+async def train_janus_pro_grpo(
+    cfg: DictConfig,
+    *,
+    rollout_runtime: RolloutBackend | None = None,
+) -> None:
     """Run Janus-Pro GRPO with a multi-component image-quality reward."""
-    await _train_janus_pro(cfg, ocr_mode=False)
+    await _train_janus_pro(
+        cfg,
+        ocr_mode=False,
+        rollout_runtime=rollout_runtime,
+    )
 
 
-async def train_janus_pro_ocr_grpo(cfg: DictConfig) -> None:
+async def train_janus_pro_ocr_grpo(
+    cfg: DictConfig,
+    *,
+    rollout_runtime: RolloutBackend | None = None,
+) -> None:
     """Run Janus-Pro GRPO with the OCR edit-distance reward.
 
     Manifest entries must carry ``target_text`` so ``OCRReward`` knows what
     string to look for in each rendered image.
     """
-    await _train_janus_pro(cfg, ocr_mode=True)
+    await _train_janus_pro(
+        cfg,
+        ocr_mode=True,
+        rollout_runtime=rollout_runtime,
+    )
 
 
-async def _train_janus_pro(cfg: DictConfig, *, ocr_mode: bool) -> None:
+async def _train_janus_pro(
+    cfg: DictConfig,
+    *,
+    ocr_mode: bool,
+    rollout_runtime: RolloutBackend | None = None,
+) -> None:
     import csv
 
     import torch
@@ -53,6 +78,7 @@ async def _train_janus_pro(cfg: DictConfig, *, ocr_mode: bool) -> None:
     from vrl.algorithms.grpo_token import TokenGRPO, TokenGRPOConfig
     from vrl.algorithms.stat_tracking import PerPromptStatTracker
     from vrl.config.loader import build_configs, require
+    from vrl.engine.generation import build_rollout_backend_from_cfg
     from vrl.models.families.janus_pro import JanusProConfig, JanusProPolicy
     from vrl.rollouts.collectors.janus_pro import (
         JanusProCollector,
@@ -116,6 +142,12 @@ async def _train_janus_pro(cfg: DictConfig, *, ocr_mode: bool) -> None:
             rescale_to_unit=bool(require(cfg, "rollout.rescale_to_unit")),
             max_text_length=int(require(cfg, "rollout.max_text_length")),
         ),
+    )
+    collector._runtime = build_rollout_backend_from_cfg(
+        cfg,
+        runtime=rollout_runtime,
+        local_runtime_builder=collector._build_runtime,
+        driver_policy=policy,
     )
     evaluator = TokenLogProbEvaluator()
     algo_section = cfg.algorithm

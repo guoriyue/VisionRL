@@ -58,8 +58,8 @@ def diffusion_dpo_loss(
       ``loss``           — scalar, the DPO objective to backprop
       ``raw_model_loss`` — diagnostic: average MSE under policy
       ``raw_ref_loss``   — diagnostic: average MSE under reference
-      ``model_diff``     — winner_loss − loser_loss under policy
-      ``ref_diff``       — winner_loss − loser_loss under reference
+      ``model_diff``     — winner_loss - loser_loss under policy
+      ``ref_diff``       — winner_loss - loser_loss under reference
       ``implicit_acc``   — fraction of pairs where the policy ranks winner
                            above loser more strongly than the reference does
     """

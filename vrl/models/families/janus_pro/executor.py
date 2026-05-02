@@ -16,9 +16,11 @@ Boundary:
   forward), and the unconditional token ids/masks (needed for replay /
   audit).
 
-Difference from diffusion executors: AR is a *single* black-box call —
-the model's ``sample_image_tokens`` runs the entire AR loop internally
-with KV cache and CFG. There is no per-step protocol here.
+Difference from diffusion executors: AR runs a token loop. The default path
+uses the model's black-box ``sample_image_tokens`` method; setting
+``sampling.use_ar_scheduler`` routes through the executor-internal
+``ARTokenScheduler`` and the model's ``init_ar_state`` / ``step_ar`` /
+``finalize_ar_state`` contract.
 
 Parity contract: same prompts + same seed (when seeded) produce
 bitwise-equal token ids, log-probs, and images, since
@@ -31,6 +33,8 @@ reproducible.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -43,13 +47,41 @@ from vrl.engine.generation.types import (
     OutputBatch,
     WorkloadSignature,
 )
-from vrl.executors.base import BatchedFamilyPipelineExecutor
+from vrl.executors.ar import ActiveSequence, ARTokenScheduler
+from vrl.executors.base import (
+    BatchedFamilyPipelineExecutor,
+    ChunkedFamilyPipelineExecutor,
+    PipelineChunkResult,
+)
 from vrl.executors.batching import forward_batch_by_merging_prompts
+from vrl.executors.microbatching import MicroBatchPlan
 
 logger = logging.getLogger(__name__)
 
 
-class JanusProPipelineExecutor(BatchedFamilyPipelineExecutor):
+@dataclass(slots=True)
+class JanusProARChunkResult(PipelineChunkResult):
+    """Output of one prompt/sample Janus-Pro AR chunk."""
+
+    prompt_index: int
+    sample_start: int
+    sample_count: int
+    output: torch.Tensor
+    token_ids: torch.Tensor
+    token_log_probs: torch.Tensor
+    token_mask: torch.Tensor
+    prompt_input_ids: torch.Tensor
+    prompt_attention_mask: torch.Tensor
+    uncond_input_ids: torch.Tensor
+    uncond_attention_mask: torch.Tensor
+    context: dict[str, Any]
+    peak_memory_mb: float | None = None
+
+
+class JanusProPipelineExecutor(
+    ChunkedFamilyPipelineExecutor,
+    BatchedFamilyPipelineExecutor,
+):
     """AR executor for Janus-Pro text-to-image rollouts.
 
     The collector constructs a ``GenerationRequest`` whose ``sampling``
@@ -147,16 +179,31 @@ class JanusProPipelineExecutor(BatchedFamilyPipelineExecutor):
         cond_embeds = self._embed(prompt_ids)
         uncond_embeds = self._embed(uncond_ids)
 
-        # 3. Run the AR sampling loop — black-box, owns its own KV cache.
-        token_ids, token_log_probs = self.model.sample_image_tokens(
-            cond_embeds,
-            uncond_embeds,
-            prompt_mask,
-            uncond_mask,
-            cfg_weight=cfg_weight,
-            temperature=temperature,
-            image_token_num=image_token_num,
-        )  # both [B, L_img]
+        # 3. Run the AR sampling loop.
+        sample_kwargs = {
+            "cfg_weight": cfg_weight,
+            "temperature": temperature,
+            "image_token_num": image_token_num,
+        }
+        if bool(sampling.get("use_ar_scheduler", False)):
+            token_ids, token_log_probs = self._sample_with_ar_scheduler(
+                request=request,
+                sample_specs=sample_specs,
+                cond_embeds=cond_embeds,
+                uncond_embeds=uncond_embeds,
+                prompt_mask=prompt_mask,
+                uncond_mask=uncond_mask,
+                image_token_num=image_token_num,
+                sample_kwargs=sample_kwargs,
+            )
+        else:
+            token_ids, token_log_probs = self.model.sample_image_tokens(
+                cond_embeds,
+                uncond_embeds,
+                prompt_mask,
+                uncond_mask,
+                **sample_kwargs,
+            )  # both [B, L_img]
 
         # 4. VQ decode tokens → pixels in [-1, 1].
         images = self.model.decode_image_tokens(
@@ -205,6 +252,136 @@ class JanusProPipelineExecutor(BatchedFamilyPipelineExecutor):
             peak_memory_mb=peak_mem_mb or 0.0,
         )
 
+    def forward_chunk(
+        self,
+        request: GenerationRequest,
+        chunk: MicroBatchPlan,
+    ) -> JanusProARChunkResult:
+        """Run one prompt-major AR chunk through the black-box sampling path."""
+
+        _validate_ar_chunk(request, chunk)
+        sampling = request.sampling
+
+        cfg_weight = float(sampling.get("cfg_weight", 5.0))
+        temperature = float(sampling.get("temperature", 1.0))
+        image_token_num = int(sampling.get("image_token_num", 576))
+        image_size = int(sampling.get("image_size", 384))
+        max_text_length = int(sampling.get("max_text_length", 256))
+        seed = sampling.get("seed")
+
+        if seed is not None:
+            torch.manual_seed(int(seed) + _chunk_seed_offset(request, chunk))
+
+        repeated_prompts = [chunk.prompt] * chunk.sample_count
+        prompt_ids, prompt_mask = self._tokenize_prompts(
+            repeated_prompts, max_text_length=max_text_length,
+        )
+        uncond_ids, uncond_mask = self._tokenize_prompts(
+            [""] * chunk.sample_count, max_text_length=max_text_length,
+        )
+        pad_id = (
+            getattr(self.model.processor.tokenizer, "pad_token_id", None) or 0
+        )
+        prompt_ids, prompt_mask, uncond_ids, uncond_mask = self._align_pair(
+            prompt_ids, prompt_mask, uncond_ids, uncond_mask, pad_id=pad_id,
+        )
+
+        cond_embeds = self._embed(prompt_ids)
+        uncond_embeds = self._embed(uncond_ids)
+
+        # Distributed AR chunks stay at prompt/sample granularity. The
+        # token-level scheduler remains executor-internal for direct execution.
+        token_ids, token_log_probs = self.model.sample_image_tokens(
+            cond_embeds,
+            uncond_embeds,
+            prompt_mask,
+            uncond_mask,
+            cfg_weight=cfg_weight,
+            temperature=temperature,
+            image_token_num=image_token_num,
+        )
+        images = self.model.decode_image_tokens(
+            token_ids, image_size=image_size,
+        )
+        token_mask = torch.ones_like(token_log_probs)
+        peak_mem_mb = _peak_memory_mb()
+
+        return JanusProARChunkResult(
+            prompt_index=chunk.prompt_index,
+            sample_start=chunk.sample_start,
+            sample_count=chunk.sample_count,
+            output=images,
+            token_ids=token_ids,
+            token_log_probs=token_log_probs,
+            token_mask=token_mask,
+            prompt_input_ids=prompt_ids,
+            prompt_attention_mask=prompt_mask,
+            uncond_input_ids=uncond_ids,
+            uncond_attention_mask=uncond_mask,
+            context={
+                "cfg_weight": cfg_weight,
+                "image_token_num": image_token_num,
+                "model_family": getattr(self.model, "model_family", "janus_pro"),
+            },
+            peak_memory_mb=peak_mem_mb,
+        )
+
+    def gather_chunks(
+        self,
+        request: GenerationRequest,
+        sample_specs: Sequence[GenerationSampleSpec],
+        chunks: Sequence[JanusProARChunkResult],
+    ) -> OutputBatch:
+        """Pack prompt/sample AR chunks back into the canonical OutputBatch."""
+
+        ordered_chunks = _ordered_ar_chunks(request, sample_specs, chunks)
+        token_ids = torch.cat([chunk.token_ids for chunk in ordered_chunks], dim=0)
+        token_log_probs = torch.cat(
+            [chunk.token_log_probs for chunk in ordered_chunks], dim=0,
+        )
+        output = torch.cat([chunk.output for chunk in ordered_chunks], dim=0)
+        peak_mem_mb = _max_peak_memory_mb(ordered_chunks)
+        metrics = GenerationMetrics(
+            num_prompts=len(request.prompts),
+            num_samples=len(sample_specs),
+            num_steps=int(request.sampling.get("image_token_num", 576)),
+            micro_batches=len(ordered_chunks),
+            peak_memory_mb=peak_mem_mb,
+        )
+        extra: dict[str, Any] = {
+            "token_ids": token_ids,
+            "token_log_probs": token_log_probs,
+            "token_mask": torch.cat(
+                [chunk.token_mask for chunk in ordered_chunks], dim=0,
+            ),
+            "prompt_input_ids": torch.cat(
+                [chunk.prompt_input_ids for chunk in ordered_chunks], dim=0,
+            ),
+            "prompt_attention_mask": torch.cat(
+                [chunk.prompt_attention_mask for chunk in ordered_chunks], dim=0,
+            ),
+            "uncond_input_ids": torch.cat(
+                [chunk.uncond_input_ids for chunk in ordered_chunks], dim=0,
+            ),
+            "uncond_attention_mask": torch.cat(
+                [chunk.uncond_attention_mask for chunk in ordered_chunks], dim=0,
+            ),
+            "context": dict(ordered_chunks[0].context),
+        }
+
+        return OutputBatch(
+            request_id=request.request_id,
+            family=request.family,
+            task=request.task,
+            prompts=list(request.prompts),
+            sample_specs=list(sample_specs),
+            output=output,
+            rollout_trajectory_data=None,
+            extra=extra,
+            metrics=metrics,
+            peak_memory_mb=peak_mem_mb or 0.0,
+        )
+
     def forward_batch(
         self,
         requests: list[GenerationRequest],
@@ -215,6 +392,78 @@ class JanusProPipelineExecutor(BatchedFamilyPipelineExecutor):
         )
 
     # -- internals -----------------------------------------------------
+
+    def _sample_with_ar_scheduler(
+        self,
+        *,
+        request: GenerationRequest,
+        sample_specs: list[GenerationSampleSpec],
+        cond_embeds: torch.Tensor,
+        uncond_embeds: torch.Tensor,
+        prompt_mask: torch.Tensor,
+        uncond_mask: torch.Tensor,
+        image_token_num: int,
+        sample_kwargs: dict[str, Any],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run Janus-Pro sampling through the executor-internal AR scheduler."""
+
+        required = ("init_ar_state", "step_ar", "finalize_ar_state")
+        missing = [name for name in required if not hasattr(self.model, name)]
+        if missing:
+            raise TypeError(
+                "use_ar_scheduler=True requires model step API methods: "
+                + ", ".join(missing)
+            )
+
+        if cond_embeds.shape[0] != len(sample_specs):
+            raise ValueError(
+                "Scheduled AR expects one sample spec per embedded row: "
+                f"{len(sample_specs)} specs for {cond_embeds.shape[0]} rows"
+            )
+
+        state = self.model.init_ar_state(
+            cond_embeds,
+            uncond_embeds,
+            prompt_mask,
+            uncond_mask,
+            **sample_kwargs,
+        )
+        sequences = [
+            ActiveSequence(
+                request_id=request.request_id,
+                sample_id=spec.sample_id,
+                family=request.family,
+                task=request.task,
+                tokenizer_key="janus_pro",
+                dtype=str(cond_embeds.dtype),
+                max_new_tokens=image_token_num,
+                metadata={
+                    **dict(spec.metadata),
+                    "row_index": row_index,
+                    "prompt_index": spec.prompt_index,
+                    "sample_index": spec.sample_index,
+                },
+            )
+            for row_index, spec in enumerate(sample_specs)
+        ]
+        scheduler = ARTokenScheduler(
+            max_batch_size=max(
+                1,
+                int(request.sampling.get("ar_scheduler_batch_size", len(sequences))),
+            )
+        )
+        scheduler.add_many(sequences)
+
+        while True:
+            batch = scheduler.pop_batch()
+            if batch is None:
+                break
+            self.model.step_ar(state, batch.sequences)
+            for sequence in batch.sequences:
+                sequence.advance()
+            scheduler.push_back_unfinished(batch)
+
+        return self.model.finalize_ar_state(state)
 
     def _tokenize_prompts(
         self,
@@ -324,10 +573,93 @@ def _peak_memory_mb() -> float | None:
     return peak_bytes / (1024 * 1024)
 
 
+def _validate_ar_chunk(request: GenerationRequest, chunk: MicroBatchPlan) -> None:
+    if chunk.prompt_index >= len(request.prompts):
+        raise ValueError(
+            f"chunk.prompt_index={chunk.prompt_index} is out of range",
+        )
+    if chunk.prompt != request.prompts[chunk.prompt_index]:
+        raise ValueError(
+            "chunk.prompt does not match request.prompts[chunk.prompt_index]",
+        )
+    if chunk.sample_end > request.samples_per_prompt:
+        raise ValueError(
+            "chunk sample range exceeds request.samples_per_prompt: "
+            f"{chunk.sample_start}:{chunk.sample_end} > "
+            f"{request.samples_per_prompt}",
+        )
+
+
+def _ordered_ar_chunks(
+    request: GenerationRequest,
+    sample_specs: Sequence[GenerationSampleSpec],
+    chunks: Sequence[JanusProARChunkResult],
+) -> list[JanusProARChunkResult]:
+    if not chunks:
+        raise ValueError("chunks must be non-empty")
+
+    ordered = sorted(chunks, key=lambda chunk: (chunk.prompt_index, chunk.sample_start))
+    expected = [(spec.prompt_index, spec.sample_index) for spec in sample_specs]
+    actual: list[tuple[int, int]] = []
+    for chunk in ordered:
+        _validate_ar_chunk(
+            request,
+            MicroBatchPlan(
+                prompt_index=chunk.prompt_index,
+                prompt=request.prompts[chunk.prompt_index],
+                sample_start=chunk.sample_start,
+                sample_count=chunk.sample_count,
+            ),
+        )
+        _require_rows("output", chunk.output, chunk.sample_count)
+        _require_rows("token_ids", chunk.token_ids, chunk.sample_count)
+        _require_rows("token_log_probs", chunk.token_log_probs, chunk.sample_count)
+        _require_rows("token_mask", chunk.token_mask, chunk.sample_count)
+        _require_rows("prompt_input_ids", chunk.prompt_input_ids, chunk.sample_count)
+        _require_rows(
+            "prompt_attention_mask", chunk.prompt_attention_mask, chunk.sample_count,
+        )
+        _require_rows("uncond_input_ids", chunk.uncond_input_ids, chunk.sample_count)
+        _require_rows(
+            "uncond_attention_mask", chunk.uncond_attention_mask, chunk.sample_count,
+        )
+        actual.extend(
+            (chunk.prompt_index, sample_index)
+            for sample_index in range(
+                chunk.sample_start, chunk.sample_start + chunk.sample_count,
+            )
+        )
+    if actual != expected:
+        raise ValueError(
+            "AR chunks do not cover sample_specs in prompt-major sample order",
+        )
+    return ordered
+
+
+def _require_rows(name: str, value: torch.Tensor, count: int) -> None:
+    if value.shape[0] != count:
+        raise ValueError(
+            f"chunk {name} has {value.shape[0]} rows, expected {count}",
+        )
+
+
+def _chunk_seed_offset(request: GenerationRequest, chunk: MicroBatchPlan) -> int:
+    return chunk.prompt_index * int(request.samples_per_prompt) + chunk.sample_start
+
+
+def _max_peak_memory_mb(chunks: Sequence[JanusProARChunkResult]) -> float | None:
+    peaks = [
+        chunk.peak_memory_mb
+        for chunk in chunks
+        if chunk.peak_memory_mb is not None
+    ]
+    return max(peaks) if peaks else None
+
+
 # F is imported for potential future uses (entropy etc.) — keep silent
 # usage so linters don't strip the import; Janus' executor itself only
 # uses model.sample_image_tokens which already does softmax internally.
 _ = F
 
 
-__all__ = ["JanusProPipelineExecutor"]
+__all__ = ["JanusProARChunkResult", "JanusProPipelineExecutor"]

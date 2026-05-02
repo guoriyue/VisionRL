@@ -8,25 +8,28 @@ from __future__ import annotations
 
 import functools
 import os
-from dataclasses import dataclass, field
-from typing import Any, Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 import torch
 import torch.distributed as dist
-from torch.distributed.fsdp import (
-    BackwardPrefetch,
-    FullyShardedDataParallel as FSDP,
-    MixedPrecision,
-    ShardingStrategy,
-    CPUOffload,
-)
-from torch.distributed.fsdp.api import FullStateDictConfig, StateDictType
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
     apply_activation_checkpointing,
     checkpoint_wrapper,
 )
+from torch.distributed.fsdp import (
+    BackwardPrefetch,
+    CPUOffload,
+    MixedPrecision,
+    ShardingStrategy,
+)
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
+)
+from torch.distributed.fsdp.api import FullStateDictConfig, StateDictType
+from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 
 
 @dataclass(slots=True)
@@ -147,7 +150,7 @@ class OptimizerOffloadHook:
     def post_step_hook(self, optimizer: Any, args: Any, kwargs: Any) -> None:
         for group in optimizer.param_groups:
             for param in group["params"]:
-                if param in optimizer.state and optimizer.state[param]:
+                if optimizer.state.get(param):
                     state = optimizer.state[param]
                     self.cpu_states[param] = {}
                     for key, val in state.items():

@@ -33,6 +33,8 @@ so parity reduces to "we call it once with the same arguments".
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -46,13 +48,41 @@ from vrl.engine.generation.types import (
     WorkloadSignature,
 )
 from vrl.executors.ar import ActiveSequence, ARTokenScheduler
-from vrl.executors.base import BatchedFamilyPipelineExecutor
+from vrl.executors.base import (
+    BatchedFamilyPipelineExecutor,
+    ChunkedFamilyPipelineExecutor,
+    PipelineChunkResult,
+)
 from vrl.executors.batching import forward_batch_by_merging_prompts
+from vrl.executors.microbatching import MicroBatchPlan
 
 logger = logging.getLogger(__name__)
 
 
-class NextStep1PipelineExecutor(BatchedFamilyPipelineExecutor):
+@dataclass(slots=True)
+class NextStep1ARChunkResult(PipelineChunkResult):
+    """Output of one prompt/sample NextStep-1 AR chunk."""
+
+    prompt_index: int
+    sample_start: int
+    sample_count: int
+    output: torch.Tensor
+    tokens: torch.Tensor
+    saved_noise: torch.Tensor
+    log_probs: torch.Tensor
+    images_for_reward: torch.Tensor
+    prompt_input_ids: torch.Tensor
+    prompt_attention_mask: torch.Tensor
+    uncond_input_ids: torch.Tensor
+    uncond_attention_mask: torch.Tensor
+    context: dict[str, Any]
+    peak_memory_mb: float | None = None
+
+
+class NextStep1PipelineExecutor(
+    ChunkedFamilyPipelineExecutor,
+    BatchedFamilyPipelineExecutor,
+):
     """Continuous-token AR executor for NextStep-1 text-to-image rollouts.
 
     The collector constructs a ``GenerationRequest`` whose ``sampling``
@@ -225,6 +255,156 @@ class NextStep1PipelineExecutor(BatchedFamilyPipelineExecutor):
             peak_memory_mb=peak_mem_mb or 0.0,
         )
 
+    def forward_chunk(
+        self,
+        request: GenerationRequest,
+        chunk: MicroBatchPlan,
+    ) -> NextStep1ARChunkResult:
+        """Run one prompt-major AR chunk through the black-box sampling path."""
+
+        _validate_ar_chunk(request, chunk)
+        sampling = request.sampling
+
+        cfg_scale = float(sampling["cfg_scale"])
+        num_flow_steps = int(sampling["num_flow_steps"])
+        noise_level = float(sampling["noise_level"])
+        image_token_num = int(sampling["image_token_num"])
+        image_size = int(sampling["image_size"])
+        max_text_length = int(sampling.get("max_text_length", 256))
+        rescale_to_unit = bool(sampling.get("rescale_to_unit", True))
+        seed = sampling.get("seed")
+
+        repeated_prompts = [chunk.prompt] * chunk.sample_count
+        prompt_ids, prompt_mask = self._tokenize_prompts(
+            repeated_prompts, max_text_length=max_text_length,
+        )
+        uncond_ids, uncond_mask = self._tokenize_prompts(
+            [""] * chunk.sample_count, max_text_length=max_text_length,
+        )
+        pad_id = getattr(self.model.processor, "pad_token_id", None) or 0
+        prompt_ids, prompt_mask, uncond_ids, uncond_mask = self._align_pair(
+            prompt_ids, prompt_mask, uncond_ids, uncond_mask, pad_id=pad_id,
+        )
+
+        cond_embeds = self._embed(prompt_ids)
+        uncond_embeds = self._embed(uncond_ids)
+
+        generator: torch.Generator | None = None
+        if seed is not None:
+            generator = torch.Generator(device=self.model.device)
+            generator.manual_seed(int(seed) + _chunk_seed_offset(request, chunk))
+
+        sample_kwargs: dict[str, Any] = {
+            "cfg_scale": cfg_scale,
+            "num_flow_steps": num_flow_steps,
+            "noise_level": noise_level,
+            "image_token_num": image_token_num,
+        }
+        if generator is not None:
+            sample_kwargs["generator"] = generator
+
+        # Distributed AR chunks stay at prompt/sample granularity. The
+        # token-level scheduler remains executor-internal for direct execution.
+        tokens, saved_noise, old_logprobs = self.model.sample_image_tokens(
+            cond_embeds, uncond_embeds, prompt_mask, uncond_mask,
+            **sample_kwargs,
+        )
+
+        images = self.model.decode_image_tokens(tokens, image_size=image_size)
+        if rescale_to_unit:
+            images_for_reward = (images + 1.0) * 0.5
+            images_for_reward = images_for_reward.clamp(0.0, 1.0)
+        else:
+            images_for_reward = images
+        peak_mem_mb = _peak_memory_mb()
+
+        return NextStep1ARChunkResult(
+            prompt_index=chunk.prompt_index,
+            sample_start=chunk.sample_start,
+            sample_count=chunk.sample_count,
+            output=images,
+            tokens=tokens,
+            saved_noise=saved_noise,
+            log_probs=old_logprobs,
+            images_for_reward=images_for_reward,
+            prompt_input_ids=prompt_ids,
+            prompt_attention_mask=prompt_mask,
+            uncond_input_ids=uncond_ids,
+            uncond_attention_mask=uncond_mask,
+            context={
+                "cfg_scale": cfg_scale,
+                "num_flow_steps": num_flow_steps,
+                "noise_level": noise_level,
+                "image_token_num": image_token_num,
+                "image_size": image_size,
+                "rescale_to_unit": rescale_to_unit,
+            },
+            peak_memory_mb=peak_mem_mb,
+        )
+
+    def gather_chunks(
+        self,
+        request: GenerationRequest,
+        sample_specs: Sequence[GenerationSampleSpec],
+        chunks: Sequence[NextStep1ARChunkResult],
+    ) -> OutputBatch:
+        """Pack prompt/sample AR chunks back into the canonical OutputBatch."""
+
+        ordered_chunks = _ordered_ar_chunks(request, sample_specs, chunks)
+        tokens = torch.cat([chunk.tokens for chunk in ordered_chunks], dim=0)
+        saved_noise = torch.cat(
+            [chunk.saved_noise for chunk in ordered_chunks], dim=0,
+        )
+        log_probs = torch.cat([chunk.log_probs for chunk in ordered_chunks], dim=0)
+        output = torch.cat([chunk.output for chunk in ordered_chunks], dim=0)
+        peak_mem_mb = _max_peak_memory_mb(ordered_chunks)
+        rollout_trajectory_data = RolloutTrajectoryData(
+            rollout_log_probs=log_probs,
+            denoising_env=None,
+            dit_trajectory=None,
+        )
+        metrics = GenerationMetrics(
+            num_prompts=len(request.prompts),
+            num_samples=len(sample_specs),
+            num_steps=int(request.sampling["image_token_num"]),
+            micro_batches=len(ordered_chunks),
+            peak_memory_mb=peak_mem_mb,
+        )
+        extra: dict[str, Any] = {
+            "tokens": tokens,
+            "saved_noise": saved_noise,
+            "log_probs": log_probs,
+            "images_for_reward": torch.cat(
+                [chunk.images_for_reward for chunk in ordered_chunks], dim=0,
+            ),
+            "prompt_input_ids": torch.cat(
+                [chunk.prompt_input_ids for chunk in ordered_chunks], dim=0,
+            ),
+            "prompt_attention_mask": torch.cat(
+                [chunk.prompt_attention_mask for chunk in ordered_chunks], dim=0,
+            ),
+            "uncond_input_ids": torch.cat(
+                [chunk.uncond_input_ids for chunk in ordered_chunks], dim=0,
+            ),
+            "uncond_attention_mask": torch.cat(
+                [chunk.uncond_attention_mask for chunk in ordered_chunks], dim=0,
+            ),
+            "context": dict(ordered_chunks[0].context),
+        }
+
+        return OutputBatch(
+            request_id=request.request_id,
+            family=request.family,
+            task=request.task,
+            prompts=list(request.prompts),
+            sample_specs=list(sample_specs),
+            output=output,
+            rollout_trajectory_data=rollout_trajectory_data,
+            extra=extra,
+            metrics=metrics,
+            peak_memory_mb=peak_mem_mb or 0.0,
+        )
+
     def forward_batch(
         self,
         requests: list[GenerationRequest],
@@ -248,11 +428,7 @@ class NextStep1PipelineExecutor(BatchedFamilyPipelineExecutor):
         image_token_num: int,
         sample_kwargs: dict[str, Any],
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Run NextStep sampling through the executor-internal AR scheduler.
-
-        This first production path is intentionally full-row only. Partial
-        active-sequence batches require KV cache row slice/scatter support.
-        """
+        """Run NextStep sampling through the executor-internal AR scheduler."""
         required = ("init_ar_state", "step_ar", "finalize_ar_state")
         missing = [name for name in required if not hasattr(self.model, name)]
         if missing:
@@ -292,19 +468,18 @@ class NextStep1PipelineExecutor(BatchedFamilyPipelineExecutor):
             )
             for row_index, spec in enumerate(sample_specs)
         ]
-        scheduler = ARTokenScheduler(max_batch_size=len(sequences))
+        scheduler = ARTokenScheduler(
+            max_batch_size=max(
+                1,
+                int(request.sampling.get("ar_scheduler_batch_size", len(sequences))),
+            )
+        )
         scheduler.add_many(sequences)
 
         while True:
             batch = scheduler.pop_batch()
             if batch is None:
                 break
-            if len(batch.sequences) != len(sequences):
-                raise NotImplementedError(
-                    "NextStep scheduled AR currently supports full-row token "
-                    "batches only. KV slice/scatter is required before partial "
-                    "sequence scheduling."
-                )
             result = self.model.step_ar(
                 state,
                 batch.sequences,
@@ -404,4 +579,88 @@ def _peak_memory_mb() -> float | None:
     return peak_bytes / (1024 * 1024)
 
 
-__all__ = ["NextStep1PipelineExecutor"]
+def _validate_ar_chunk(request: GenerationRequest, chunk: MicroBatchPlan) -> None:
+    if chunk.prompt_index >= len(request.prompts):
+        raise ValueError(
+            f"chunk.prompt_index={chunk.prompt_index} is out of range",
+        )
+    if chunk.prompt != request.prompts[chunk.prompt_index]:
+        raise ValueError(
+            "chunk.prompt does not match request.prompts[chunk.prompt_index]",
+        )
+    if chunk.sample_end > request.samples_per_prompt:
+        raise ValueError(
+            "chunk sample range exceeds request.samples_per_prompt: "
+            f"{chunk.sample_start}:{chunk.sample_end} > "
+            f"{request.samples_per_prompt}",
+        )
+
+
+def _ordered_ar_chunks(
+    request: GenerationRequest,
+    sample_specs: Sequence[GenerationSampleSpec],
+    chunks: Sequence[NextStep1ARChunkResult],
+) -> list[NextStep1ARChunkResult]:
+    if not chunks:
+        raise ValueError("chunks must be non-empty")
+
+    ordered = sorted(chunks, key=lambda chunk: (chunk.prompt_index, chunk.sample_start))
+    expected = [(spec.prompt_index, spec.sample_index) for spec in sample_specs]
+    actual: list[tuple[int, int]] = []
+    for chunk in ordered:
+        _validate_ar_chunk(
+            request,
+            MicroBatchPlan(
+                prompt_index=chunk.prompt_index,
+                prompt=request.prompts[chunk.prompt_index],
+                sample_start=chunk.sample_start,
+                sample_count=chunk.sample_count,
+            ),
+        )
+        _require_rows("output", chunk.output, chunk.sample_count)
+        _require_rows("tokens", chunk.tokens, chunk.sample_count)
+        _require_rows("saved_noise", chunk.saved_noise, chunk.sample_count)
+        _require_rows("log_probs", chunk.log_probs, chunk.sample_count)
+        _require_rows("images_for_reward", chunk.images_for_reward, chunk.sample_count)
+        _require_rows("prompt_input_ids", chunk.prompt_input_ids, chunk.sample_count)
+        _require_rows(
+            "prompt_attention_mask", chunk.prompt_attention_mask, chunk.sample_count,
+        )
+        _require_rows("uncond_input_ids", chunk.uncond_input_ids, chunk.sample_count)
+        _require_rows(
+            "uncond_attention_mask", chunk.uncond_attention_mask, chunk.sample_count,
+        )
+        actual.extend(
+            (chunk.prompt_index, sample_index)
+            for sample_index in range(
+                chunk.sample_start, chunk.sample_start + chunk.sample_count,
+            )
+        )
+    if actual != expected:
+        raise ValueError(
+            "AR chunks do not cover sample_specs in prompt-major sample order",
+        )
+    return ordered
+
+
+def _require_rows(name: str, value: torch.Tensor, count: int) -> None:
+    if value.shape[0] != count:
+        raise ValueError(
+            f"chunk {name} has {value.shape[0]} rows, expected {count}",
+        )
+
+
+def _chunk_seed_offset(request: GenerationRequest, chunk: MicroBatchPlan) -> int:
+    return chunk.prompt_index * int(request.samples_per_prompt) + chunk.sample_start
+
+
+def _max_peak_memory_mb(chunks: Sequence[NextStep1ARChunkResult]) -> float | None:
+    peaks = [
+        chunk.peak_memory_mb
+        for chunk in chunks
+        if chunk.peak_memory_mb is not None
+    ]
+    return max(peaks) if peaks else None
+
+
+__all__ = ["NextStep1ARChunkResult", "NextStep1PipelineExecutor"]

@@ -3,7 +3,7 @@
 Single-protocol adapter for the Cosmos Predict2 Video2World pipeline. The
 contract is:
 
-    encode_prompt → prepare_sampling → forward_step ×N → decode_latents
+    encode_prompt -> prepare_sampling -> forward_step xN -> decode_latents
 
 The collector owns the scheduler step / SDE step. ``forward_step`` does
 only one transformer forward (with optional CFG branch) and returns noise
@@ -74,7 +74,7 @@ class CosmosPredict2Policy(DiffusionPolicy):
     # -- backend ownership (called by builder, not by collectors) -------
 
     @classmethod
-    def from_spec(cls, spec: Any) -> "CosmosPredict2Policy":
+    def from_spec(cls, spec: Any) -> CosmosPredict2Policy:
         """Load Cosmos2VideoToWorldPipeline + freeze non-trainable modules.
 
         Patches the diffusers safety checker with a passthrough during load
@@ -84,7 +84,7 @@ class CosmosPredict2Policy(DiffusionPolicy):
         from diffusers import Cosmos2VideoToWorldPipeline
 
         class _PassthroughSafetyChecker:
-            def to(self, device: Any) -> "_PassthroughSafetyChecker":
+            def to(self, device: Any) -> _PassthroughSafetyChecker:
                 return self
 
             def check_text_safety(self, prompt: str) -> bool:
@@ -322,7 +322,6 @@ class CosmosPredict2Policy(DiffusionPolicy):
         """
         m = model if model is not None else self.pipeline.transformer
 
-        t = state.timesteps[step_idx]
         batch_size = state.latents.shape[0]
         transformer_dtype = state.prompt_embeds.dtype
 

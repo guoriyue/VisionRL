@@ -78,6 +78,7 @@ class DiffusionPolicy(ABC):
 
     async def load(self) -> None:
         """Load heavy modules. Default no-op for adapters constructed eagerly."""
+        return None
 
     def describe(self) -> dict[str, Any]:
         return {"family": self.family}
@@ -198,7 +199,7 @@ class DiffusionPolicy(ABC):
     # -- backend ownership (called by builder, NOT by collectors) ----------
 
     @classmethod
-    def from_spec(cls, spec: Any) -> "DiffusionPolicy":  # pragma: no cover (abstract)
+    def from_spec(cls, spec: Any) -> DiffusionPolicy:  # pragma: no cover (abstract)
         """Load the backend (pipeline / native modules) from a spec."""
         raise NotImplementedError
 

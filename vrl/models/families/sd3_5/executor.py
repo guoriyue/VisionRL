@@ -24,6 +24,7 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
+from vrl.engine.generation.gather import gather_diffusion_chunks
 from vrl.engine.generation.types import (
     GenerationRequest,
     GenerationSampleSpec,
@@ -38,12 +39,11 @@ from vrl.executors.batching import forward_batch_by_merging_prompts
 from vrl.executors.diffusion import (
     DiffusionChunkResult,
     DiffusionDenoiseConfig,
-    build_diffusion_output_batch,
     repeat_tensor_batch,
     run_diffusion_denoise_chunk,
     select_sde_window,
 )
-from vrl.executors.planning import (
+from vrl.executors.microbatching import (
     MicroBatchPlan,
     plan_prompt_group_microbatches,
     run_microbatches_with_oom_retry,
@@ -107,7 +107,8 @@ class SD3_5PipelineExecutor(
         prompts = list(request.prompts)
         samples_per_prompt = int(request.samples_per_prompt)
         sample_batch_size = max(
-            1, int(sampling.get("sample_batch_size", self.default_sample_batch_size)),
+            1,
+            int(sampling.get("sample_batch_size", self.default_sample_batch_size)),
         )
 
         plan = plan_prompt_group_microbatches(
@@ -183,21 +184,11 @@ class SD3_5PipelineExecutor(
         sample_specs: Sequence[GenerationSampleSpec],
         chunks: Sequence[DiffusionChunkResult],
     ) -> OutputBatch:
-        sampling = request.sampling
-        num_steps = int(sampling["num_steps"])
-        guidance_scale = float(sampling["guidance_scale"])
-        do_cfg_flag = bool(sampling.get("cfg", True))
-        return build_diffusion_output_batch(
-            request=request,
-            sample_specs=list(sample_specs),
-            prompts=list(request.prompts),
-            chunks=list(chunks),
-            num_steps=num_steps,
-            fallback_context={
-                "guidance_scale": guidance_scale,
-                "cfg": do_cfg_flag and guidance_scale > 1.0,
-                "model_family": getattr(self.model, "family", "sd3_5"),
-            },
+        return gather_diffusion_chunks(
+            request,
+            sample_specs,
+            chunks,
+            model_family=self.family,
         )
 
     def forward_batch(
@@ -206,7 +197,9 @@ class SD3_5PipelineExecutor(
         sample_specs_by_request: dict[str, list[GenerationSampleSpec]],
     ) -> dict[str, OutputBatch]:
         return forward_batch_by_merging_prompts(
-            self, requests, sample_specs_by_request,
+            self,
+            requests,
+            sample_specs_by_request,
         )
 
     # -- internals -----------------------------------------------------
@@ -296,7 +289,8 @@ class SD3_5PipelineExecutor(
         chunk_encoded: dict[str, Any] = {
             "prompt_embeds": repeat_tensor_batch(encoded["prompt_embeds"], chunk_g),
             "pooled_prompt_embeds": repeat_tensor_batch(
-                encoded["pooled_prompt_embeds"], chunk_g,
+                encoded["pooled_prompt_embeds"],
+                chunk_g,
             ),
         }
         neg = encoded.get("negative_prompt_embeds")
@@ -305,7 +299,8 @@ class SD3_5PipelineExecutor(
             chunk_encoded["negative_prompt_embeds"] = repeat_tensor_batch(neg, chunk_g)
         if neg_pool is not None:
             chunk_encoded["negative_pooled_prompt_embeds"] = repeat_tensor_batch(
-                neg_pool, chunk_g,
+                neg_pool,
+                chunk_g,
             )
 
         return run_diffusion_denoise_chunk(

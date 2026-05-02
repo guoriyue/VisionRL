@@ -6,7 +6,6 @@ import pytest
 
 from vrl.algorithms import GRPO
 
-
 # ---------------------------------------------------------------------------
 # Regression: single-sample GRPO advantage must NOT be NaN
 # ---------------------------------------------------------------------------

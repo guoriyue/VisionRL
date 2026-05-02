@@ -15,8 +15,9 @@ where channels 0:3 are the *winner* image and channels 3:6 are the
 from __future__ import annotations
 
 import io
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 import torch
 from torch.utils.data import Dataset
@@ -43,8 +44,8 @@ class PreferenceBatch:
 
         This is the layout consumed by ``diffusion_dpo_loss``.
         """
-        w, l = self.split_winner_loser()
-        return torch.cat([w, l], dim=0)
+        winner, loser = self.split_winner_loser()
+        return torch.cat([winner, loser], dim=0)
 
 
 class PickAPicPreferenceDataset(Dataset):

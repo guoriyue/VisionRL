@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import pickle
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+import pytest
 import torch
 
 from vrl.distributed.ray import (
@@ -18,10 +21,11 @@ from vrl.distributed.ray import (
     RayTrainActor,
     RayTrainGroup,
     RayWorkerHandle,
+    RolloutRuntimeSpec,
 )
 from vrl.engine.generation import GenerationRequest, OutputBatch, WorkloadSignature
 from vrl.executors import ChunkedFamilyPipelineExecutor, PipelineChunkResult
-from vrl.executors.planning import MicroBatchPlan
+from vrl.executors.microbatching import MicroBatchPlan
 
 
 @dataclass(slots=True)
@@ -77,17 +81,52 @@ class _FakeChunkedExecutor(ChunkedFamilyPipelineExecutor):
         sample_specs: list[Any],
         chunks: list[_TensorChunk],
     ) -> OutputBatch:
+        return _FakeChunkGatherer().gather_chunks(request, sample_specs, chunks)
+
+
+class _FakeChunkGatherer:
+    def gather_chunks(
+        self,
+        request: GenerationRequest,
+        sample_specs: Sequence[Any],
+        chunks: Sequence[_TensorChunk],
+    ) -> OutputBatch:
         return OutputBatch(
             request_id=request.request_id,
             family=request.family,
             task=request.task,
             prompts=list(request.prompts),
-            sample_specs=sample_specs,
+            sample_specs=list(sample_specs),
             output=[
-                (chunk.prompt_index, chunk.sample_start, chunk.sample_count)
-                for chunk in chunks
+                (chunk.prompt_index, chunk.sample_start, chunk.sample_count) for chunk in chunks
             ],
         )
+
+
+_FAKE_EXECUTOR_FACTORY = (
+    "tests.distributed.ray.test_large_rollout_execution:make_fake_chunked_executor"
+)
+
+
+def make_fake_chunked_executor(runtime_spec: RolloutRuntimeSpec) -> _FakeChunkedExecutor:
+    assert runtime_spec.family == "fake"
+    assert runtime_spec.executor_kwargs == {"sample_batch_size": 2}
+    return _FakeChunkedExecutor()
+
+
+def _runtime_spec(*, policy_version: int | None = 3) -> RolloutRuntimeSpec:
+    return RolloutRuntimeSpec(
+        family="fake",
+        task="t2i",
+        model_config={"model_name_or_path": "fake-model", "dtype": "float32"},
+        executor_kwargs={"sample_batch_size": 2},
+        policy_version=policy_version,
+        executor_factory=_FAKE_EXECUTOR_FACTORY,
+    )
+
+
+def _runtime_spec_dict(*, policy_version: int | None = 3) -> dict[str, Any]:
+    return _runtime_spec(policy_version=policy_version).to_dict()
 
 
 class _FakeActor:
@@ -162,14 +201,43 @@ def test_distributed_execution_planner_round_robins_chunks() -> None:
     ] == [(0, 0), (0, 2), (1, 0), (1, 2)]
 
 
+def test_rollout_runtime_spec_is_pickle_serializable() -> None:
+    spec = _runtime_spec(policy_version=3)
+
+    restored = pickle.loads(pickle.dumps(spec))
+
+    assert restored == spec
+    assert restored.to_dict() == spec.to_dict()
+
+
+@pytest.mark.parametrize("key", ["executor", "policy", "pipeline"])
+def test_rollout_runtime_spec_rejects_live_object_keys(key: str) -> None:
+    with pytest.raises(ValueError, match=key):
+        RayRolloutWorker(
+            worker_id="w0",
+            family="fake",
+            runtime_spec={
+                key: _FakeChunkedExecutor(),
+                "policy_version": 3,
+            },
+        )
+
+
+def test_rollout_runtime_spec_rejects_live_tensor_payload() -> None:
+    with pytest.raises(TypeError, match=r"torch\.Tensor"):
+        RolloutRuntimeSpec(
+            family="fake",
+            task="t2i",
+            model_config={"weights": torch.zeros(1)},
+            executor_factory=_FAKE_EXECUTOR_FACTORY,
+        )
+
+
 def test_ray_rollout_worker_returns_cpu_only_chunk_result() -> None:
     worker = RayRolloutWorker(
         worker_id="w0",
         family="fake",
-        runtime_spec={
-            "executor": _FakeChunkedExecutor(),
-            "policy_version": 3,
-        },
+        runtime_spec=_runtime_spec(policy_version=3),
     )
     result = worker.execute_chunk(
         _request(policy_version=3),
@@ -186,10 +254,7 @@ def test_ray_rollout_worker_rejects_stale_policy_version() -> None:
     worker = RayRolloutWorker(
         worker_id="w0",
         family="fake",
-        runtime_spec={
-            "executor": _FakeChunkedExecutor(),
-            "policy_version": 1,
-        },
+        runtime_spec=_runtime_spec_dict(policy_version=1),
     )
 
     result = worker.execute_chunk(
@@ -203,8 +268,8 @@ def test_ray_rollout_worker_rejects_stale_policy_version() -> None:
 
 def test_distributed_rollout_executor_gathers_direct_actor_results() -> None:
     actors = [
-        RayRolloutWorker("w0", "fake", {"executor": _FakeChunkedExecutor(), "policy_version": 3}),
-        RayRolloutWorker("w1", "fake", {"executor": _FakeChunkedExecutor(), "policy_version": 3}),
+        RayRolloutWorker("w0", "fake", _runtime_spec(policy_version=3)),
+        RayRolloutWorker("w1", "fake", _runtime_spec(policy_version=3)),
     ]
     workers = [
         RayWorkerHandle(worker_id="w0", node_id="n0", actor=actors[0]),
@@ -213,8 +278,9 @@ def test_distributed_rollout_executor_gathers_direct_actor_results() -> None:
     executor = DistributedRolloutExecutor(
         DistributedExecutionPlanner(),
         workers,
-        _FakeChunkedExecutor(),
+        _FakeChunkGatherer(),
     )
+    assert not isinstance(executor.gatherer, ChunkedFamilyPipelineExecutor)
 
     output = asyncio.run(executor.execute(_request(policy_version=3)))
 
@@ -223,13 +289,13 @@ def test_distributed_rollout_executor_gathers_direct_actor_results() -> None:
 
 def test_ray_distributed_runtime_delegates_to_executor() -> None:
     actors = [
-        RayRolloutWorker("w0", "fake", {"executor": _FakeChunkedExecutor()}),
+        RayRolloutWorker("w0", "fake", _runtime_spec(policy_version=None)),
     ]
     workers = [RayWorkerHandle(worker_id="w0", node_id="n0", actor=actors[0])]
     executor = DistributedRolloutExecutor(
         DistributedExecutionPlanner(),
         workers,
-        _FakeChunkedExecutor(),
+        _FakeChunkGatherer(),
     )
     runtime = RayDistributedRuntime(executor)
 
@@ -243,13 +309,13 @@ def test_ray_distributed_runtime_fills_current_policy_version() -> None:
     actor = RayRolloutWorker(
         "w0",
         "fake",
-        {"executor": _FakeChunkedExecutor(), "policy_version": 5},
+        _runtime_spec(policy_version=5),
     )
     workers = [RayWorkerHandle(worker_id="w0", node_id="n0", actor=actor)]
     executor = DistributedRolloutExecutor(
         DistributedExecutionPlanner(),
         workers,
-        _FakeChunkedExecutor(),
+        _FakeChunkGatherer(),
     )
     runtime = RayDistributedRuntime(executor)
     runtime.current_policy_version = 5

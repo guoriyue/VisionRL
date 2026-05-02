@@ -8,7 +8,6 @@ from vrl.algorithms import Rollout, Trajectory, TrajectoryStep
 from vrl.rewards.base import RewardFunction
 from vrl.rewards.composite import CompositeReward
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

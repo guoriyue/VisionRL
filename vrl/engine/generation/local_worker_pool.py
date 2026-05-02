@@ -12,7 +12,7 @@ from vrl.engine.generation.registry import FamilyPipelineRegistry
 from vrl.engine.generation.types import GenerationRequest, OutputBatch
 from vrl.engine.generation.worker import GenerationIdFactory
 from vrl.executors.base import PipelineChunkResult
-from vrl.executors.planning import (
+from vrl.executors.microbatching import (
     MicroBatchPlan,
     plan_prompt_group_microbatches,
 )

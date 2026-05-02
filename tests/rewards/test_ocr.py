@@ -6,7 +6,6 @@ import pytest
 
 from vrl.rewards.ocr import OCRReward, _normalize_text, _normalized_edit_distance
 
-
 # ---------------------------------------------------------------------------
 # Unit tests for text helpers
 # ---------------------------------------------------------------------------
@@ -66,6 +65,7 @@ _skip_no_rapidocr = pytest.mark.skipif(
 def _make_ocr_rollout(target_text: str, video_tensor=None):
     """Build a minimal Rollout with target_text metadata and a video tensor."""
     import torch
+
     from vrl.algorithms.types import Rollout, Trajectory
 
     if video_tensor is None:

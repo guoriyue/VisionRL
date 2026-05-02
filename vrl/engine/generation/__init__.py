@@ -1,5 +1,10 @@
 """SGLang-style generation runtime."""
 
+from vrl.engine.generation.factory import (
+    DRIVER_CUDA_OWNERSHIP_ERROR,
+    build_rollout_backend_from_cfg,
+    validate_rollout_backend_config,
+)
 from vrl.engine.generation.gather import (
     gather_pipeline_chunks,
     require_chunked_executor,
@@ -30,6 +35,7 @@ from vrl.engine.generation.types import (
 from vrl.engine.generation.worker import GenerationIdFactory, GenerationWorker
 
 __all__ = [
+    "DRIVER_CUDA_OWNERSHIP_ERROR",
     "ExecutorKey",
     "FamilyPipelineRegistry",
     "GenerationBatchPlanner",
@@ -50,6 +56,8 @@ __all__ = [
     "RolloutDitTrajectory",
     "RolloutTrajectoryData",
     "WorkloadSignature",
+    "build_rollout_backend_from_cfg",
     "gather_pipeline_chunks",
     "require_chunked_executor",
+    "validate_rollout_backend_config",
 ]

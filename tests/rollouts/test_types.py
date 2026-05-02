@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
-
 # ---------------------------------------------------------------------------
 # Regression: Bug 4 — stack_batches helper for group collection
 # ---------------------------------------------------------------------------
@@ -13,6 +10,7 @@ class TestStackBatches:
     def test_stacks_two_batches(self) -> None:
         """stack_batches concatenates tensor fields along batch dim."""
         import torch
+
         from vrl.rollouts.types import ExperienceBatch, stack_batches
 
         b1 = ExperienceBatch(
@@ -40,6 +38,7 @@ class TestStackBatches:
     def test_stacks_tensor_extras(self) -> None:
         """Tensor extras are concatenated; non-tensor extras kept from first."""
         import torch
+
         from vrl.rollouts.types import ExperienceBatch, stack_batches
 
         b1 = ExperienceBatch(
@@ -71,6 +70,7 @@ class TestStackBatches:
     def test_single_batch_passthrough(self) -> None:
         """Single batch → returned as-is (no copy overhead)."""
         import torch
+
         from vrl.rollouts.types import ExperienceBatch, stack_batches
 
         b = ExperienceBatch(
@@ -86,6 +86,7 @@ class TestStackBatches:
     def test_context_taken_from_first_batch(self) -> None:
         """context dict is taken from the first batch (not stacked)."""
         import torch
+
         from vrl.rollouts.types import ExperienceBatch, stack_batches
 
         ctx = {"guidance_scale": 7.0, "model_family": "cosmos"}
@@ -111,9 +112,9 @@ class TestStackBatches:
 
     def test_context_defaults_to_empty(self) -> None:
         """Without context, field defaults to empty dict."""
-        from vrl.rollouts.types import ExperienceBatch
-
         import torch
+
+        from vrl.rollouts.types import ExperienceBatch
         b = ExperienceBatch(
             observations=torch.randn(1, 2, 4),
             actions=torch.randn(1, 2, 4),
@@ -126,6 +127,7 @@ class TestStackBatches:
     def test_only_tensor_extras_stacked(self) -> None:
         """Only tensor values in extras get stacked; non-tensors kept from first."""
         import torch
+
         from vrl.rollouts.types import ExperienceBatch, stack_batches
 
         b1 = ExperienceBatch(

@@ -8,10 +8,10 @@ from typing import Any
 from vrl.distributed.ray.planning import DistributedExecutionPlanner
 from vrl.distributed.ray.types import RayChunkResult, RayWorkerHandle
 from vrl.distributed.ray.utils import require_ray
-from vrl.engine.generation.gather import gather_pipeline_chunks
+from vrl.engine.generation.gather import ChunkGatherer, gather_pipeline_chunks
 from vrl.engine.generation.types import GenerationRequest, OutputBatch
 from vrl.engine.generation.worker import GenerationIdFactory
-from vrl.executors.base import ChunkedFamilyPipelineExecutor, PipelineChunkResult
+from vrl.executors.base import PipelineChunkResult
 
 
 class DistributedRolloutExecutor:
@@ -21,7 +21,7 @@ class DistributedRolloutExecutor:
         self,
         planner: DistributedExecutionPlanner,
         workers: list[RayWorkerHandle],
-        gather_executor: ChunkedFamilyPipelineExecutor,
+        gatherer: ChunkGatherer,
         *,
         id_factory: GenerationIdFactory | None = None,
     ) -> None:
@@ -29,7 +29,7 @@ class DistributedRolloutExecutor:
             raise ValueError("DistributedRolloutExecutor requires at least one worker")
         self.planner = planner
         self.workers = list(workers)
-        self.gather_executor = gather_executor
+        self.gatherer = gatherer
         self.id_factory = id_factory or GenerationIdFactory()
 
     async def execute(self, request: GenerationRequest) -> OutputBatch:
@@ -91,7 +91,7 @@ class DistributedRolloutExecutor:
 
         sample_specs = self.id_factory.build_sample_specs(request)
         return gather_pipeline_chunks(
-            self.gather_executor,
+            self.gatherer,
             request,
             sample_specs,
             chunk_outputs,

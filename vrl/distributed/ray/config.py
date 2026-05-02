@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -71,3 +72,79 @@ class DistributedRolloutConfig:
             cpus_per_worker=config.cpus_per_rollout_worker,
             placement_strategy=config.placement_strategy,
         )
+
+    @classmethod
+    def from_cfg(cls, cfg: Any) -> DistributedRolloutConfig:
+        """Build rollout config from a full training cfg or rollout cfg slice."""
+        if isinstance(cfg, cls):
+            return cfg
+        if isinstance(cfg, RayConfig):
+            return cls.from_legacy(cfg)
+
+        direct_backend = _config_get(cfg, "backend", _MISSING)
+        distributed = _config_get(cfg, "distributed", _MISSING)
+        if distributed is _MISSING:
+            if direct_backend is _MISSING:
+                return cls()
+            distributed = cfg
+        rollout = _config_get(distributed, "rollout", _MISSING)
+        if rollout is _MISSING:
+            rollout = distributed
+
+        backend = _config_get(distributed, "backend", _config_get(rollout, "backend", "local"))
+
+        return cls(
+            backend=str(backend),
+            num_workers=int(_rollout_get(distributed, rollout, "num_workers", 1)),
+            gpus_per_worker=float(
+                _rollout_get(distributed, rollout, "gpus_per_worker", 1.0),
+            ),
+            cpus_per_worker=float(
+                _rollout_get(distributed, rollout, "cpus_per_worker", 1.0),
+            ),
+            placement_strategy=str(
+                _rollout_get(distributed, rollout, "placement_strategy", "SPREAD"),
+            ),
+            allow_driver_gpu_overlap=bool(
+                _rollout_get(
+                    distributed,
+                    rollout,
+                    "allow_driver_gpu_overlap",
+                    False,
+                ),
+            ),
+            max_inflight_chunks_per_worker=int(
+                _rollout_get(
+                    distributed,
+                    rollout,
+                    "max_inflight_chunks_per_worker",
+                    1,
+                ),
+            ),
+            sync_trainable_state=str(
+                _rollout_get(distributed, rollout, "sync_trainable_state", "disabled"),
+            ),
+        )
+
+
+_MISSING = object()
+
+
+def _config_get(node: Any, key: str, default: Any) -> Any:
+    if node is None:
+        return default
+    getter = getattr(node, "get", None)
+    if callable(getter):
+        try:
+            return getter(key, default)
+        except TypeError:
+            pass
+    try:
+        return node[key]
+    except (KeyError, IndexError, TypeError):
+        pass
+    return getattr(node, key, default)
+
+
+def _rollout_get(distributed: Any, rollout: Any, key: str, default: Any) -> Any:
+    return _config_get(rollout, key, _config_get(distributed, key, default))

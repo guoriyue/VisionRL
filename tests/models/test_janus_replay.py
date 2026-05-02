@@ -5,7 +5,7 @@ Covers the real boundaries of the refactor:
   2. Logits remain grad-carrying when params are unfrozen.
   3. ``JanusProCollector.forward_step`` is a thin shim that delegates
      verbatim to ``model.replay_forward``.
-  4. ``JanusProPolicy`` structurally satisfies ``AutoregressivePolicy``.
+  4. ``JanusProPolicy`` explicitly inherits ``AutoregressivePolicy``.
   5. ``TokenLogProbEvaluator.evaluate`` calls ``model.replay_forward``
      and NEVER routes through ``collector.forward_step`` any more.
 
@@ -14,12 +14,9 @@ Tests run on CPU in <1s — no real Janus weights are loaded.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from types import SimpleNamespace
-from typing import Any
 from unittest.mock import MagicMock, patch
 
-import pytest
 import torch
 import torch.nn as nn
 
@@ -36,7 +33,6 @@ from vrl.rollouts.collectors.janus_pro import (
 from vrl.rollouts.evaluators.lm.token_logprob import TokenLogProbEvaluator
 from vrl.rollouts.evaluators.types import SignalRequest
 from vrl.rollouts.types import ExperienceBatch
-
 
 HIDDEN = 32
 TEXT_VOCAB = 64
@@ -55,7 +51,7 @@ class _StubLM(nn.Module):
         self.embed = nn.Embedding(TEXT_VOCAB, HIDDEN)
 
     @property
-    def model(self) -> "_StubLM":
+    def model(self) -> _StubLM:
         # Property — not attribute — so ``train()`` does not infinite-recurse.
         return self
 
@@ -178,13 +174,13 @@ def test_janus_collector_has_no_forward_step() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 4 — structural Protocol conformance
+# Test 4 — explicit Protocol inheritance
 # ---------------------------------------------------------------------------
 
 
-def test_janus_protocol_structural_conformance() -> None:
+def test_janus_policy_inherits_ar_protocol() -> None:
     model = _build_stub_model()
-    # ``AutoregressivePolicy`` is ``@runtime_checkable`` — isinstance must work.
+    assert AutoregressivePolicy in type(model).__mro__
     assert isinstance(model, AutoregressivePolicy)
 
 

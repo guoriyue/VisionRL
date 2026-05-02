@@ -41,12 +41,13 @@ def test_active_sequence_advance_marks_finished_at_token_limit() -> None:
     assert sequence.remaining_tokens == 0
 
 
-def test_token_scheduler_batches_same_family_task_and_token_shape() -> None:
+def test_token_scheduler_batches_same_family_task_token_shape_and_position() -> None:
     scheduler = ARTokenScheduler(max_batch_size=2)
     scheduler.add_many([
         _seq("a", position=0),
-        _seq("b", position=8),
+        _seq("b", position=0),
         _seq("c", max_new_tokens=1024),
+        _seq("d", position=8),
     ])
 
     first = scheduler.pop_batch()
@@ -59,6 +60,11 @@ def test_token_scheduler_batches_same_family_task_and_token_shape() -> None:
     assert second is not None
     assert second.sample_ids == ["c"]
     assert second.key.max_new_tokens == 1024
+
+    third = scheduler.pop_batch()
+    assert third is not None
+    assert third.sample_ids == ["d"]
+    assert third.key.max_new_tokens == 576
 
 
 def test_token_scheduler_does_not_mix_tokenizers_or_dtypes() -> None:

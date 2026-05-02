@@ -32,16 +32,18 @@ class RemoteReward(RewardFunction):
 
     async def score(self, rollout: Rollout) -> float:
         payload = self._serialize_rollout(rollout)
-        async with aiohttp.ClientSession(timeout=self.timeout) as session:
-            async with session.post(self.url, json=payload) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
-                return float(data["score"])
+        async with aiohttp.ClientSession(timeout=self.timeout) as session, session.post(
+            self.url, json=payload
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            return float(data["score"])
 
     async def score_batch(self, rollouts: list[Rollout]) -> list[float]:
         payload = {"rollouts": [self._serialize_rollout(r) for r in rollouts]}
-        async with aiohttp.ClientSession(timeout=self.timeout) as session:
-            async with session.post(self.url, json=payload) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
-                return [float(s) for s in data["scores"]]
+        async with aiohttp.ClientSession(timeout=self.timeout) as session, session.post(
+            self.url, json=payload
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            return [float(s) for s in data["scores"]]

@@ -66,7 +66,7 @@ class WanT2VDiffusersPolicy(DiffusionPolicy):
     # -- backend ownership (called by builder, not by collectors) -------
 
     @classmethod
-    def from_spec(cls, spec: Any) -> "WanT2VDiffusersPolicy":
+    def from_spec(cls, spec: Any) -> WanT2VDiffusersPolicy:
         """Load the diffusers WanPipeline + freeze non-trainable modules."""
         from diffusers import WanPipeline
 
@@ -246,10 +246,7 @@ class WanT2VDiffusersPolicy(DiffusionPolicy):
         td = state.prompt_embeds.dtype
 
         latent_input = state.latents.to(td)
-        if t.ndim == 0:
-            timestep_batch = t.expand(bsz)
-        else:
-            timestep_batch = t
+        timestep_batch = t.expand(bsz) if t.ndim == 0 else t
 
         if state.do_cfg:
             combined_latents = torch.cat([latent_input, latent_input], dim=0)

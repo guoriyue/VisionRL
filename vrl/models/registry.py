@@ -3,10 +3,6 @@
 from __future__ import annotations
 
 import importlib
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass  # all registry entries are DiffusionPolicy subclasses; resolve_model returns Any
 
 _REGISTRY: dict[str, str] = {
     "sd3_5-diffusers-t2i": "vrl.models.families.sd3_5.policy:SD3_5Policy",

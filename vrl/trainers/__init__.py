@@ -13,8 +13,8 @@ __all__ = [
     "InMemoryWeightSyncer",
     "OnlineTrainer",
     "TextPromptDataset",
+    "TrainState",
     "Trainer",
     "TrainerConfig",
-    "TrainState",
     "WeightSyncer",
 ]

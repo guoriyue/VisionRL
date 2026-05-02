@@ -10,14 +10,11 @@ Validates:
 
 from __future__ import annotations
 
-import math
-
 import pytest
 import torch
 
 from vrl.algorithms.grpo_token import TokenGRPO, TokenGRPOConfig
 from vrl.rollouts.evaluators.types import SignalBatch
-
 
 # ---------------------------------------------------------------------------
 # Advantage path — should be byte-identical to GRPO
@@ -83,7 +80,7 @@ class TestPerTokenLoss:
         new_lp = old_lp + 5.0     # huge ratio
         adv = torch.ones(1)
         algo = TokenGRPO(TokenGRPOConfig(init_kl_coef=0.0, eps_clip=0.2))
-        loss, metrics = algo.compute_signal_loss(_signals(new_lp), adv, old_lp)
+        _loss, metrics = algo.compute_signal_loss(_signals(new_lp), adv, old_lp)
         assert metrics.clip_fraction == 1.0   # all 4 tokens clipped
 
 

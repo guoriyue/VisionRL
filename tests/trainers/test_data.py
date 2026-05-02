@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import pytest
-
 
 class TestDistributedKRepeatSampler:
     def test_k_repeat_distribution(self) -> None:
-        from torch.utils.data import TensorDataset
         import torch
+        from torch.utils.data import TensorDataset
+
         from vrl.trainers.data import DistributedKRepeatSampler
 
         dataset = TensorDataset(torch.arange(100))
@@ -21,8 +20,9 @@ class TestDistributedKRepeatSampler:
 
     def test_rank_sync(self) -> None:
         """Both ranks should see the same unique prompts."""
-        from torch.utils.data import TensorDataset
         import torch
+        from torch.utils.data import TensorDataset
+
         from vrl.trainers.data import DistributedKRepeatSampler
 
         dataset = TensorDataset(torch.arange(100))

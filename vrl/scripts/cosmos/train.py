@@ -9,14 +9,21 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from omegaconf import DictConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from vrl.engine.generation import RolloutBackend
 
-async def train_cosmos_predict2_grpo(cfg: DictConfig) -> None:
+
+async def train_cosmos_predict2_grpo(
+    cfg: DictConfig,
+    *,
+    rollout_runtime: RolloutBackend | None = None,
+) -> None:
     """Run Cosmos Predict2 GRPO training driven by a merged YAML config."""
     import os
 
@@ -26,6 +33,7 @@ async def train_cosmos_predict2_grpo(cfg: DictConfig) -> None:
     from vrl.algorithms.grpo_token import TokenGRPOConfig
     from vrl.algorithms.stat_tracking import PerPromptStatTracker
     from vrl.config.loader import build_configs, require
+    from vrl.engine.generation import build_rollout_backend_from_cfg
     from vrl.rewards.multi import MultiReward
     from vrl.rollouts.collectors.cosmos_predict2 import (
         CosmosPredict2Collector,
@@ -48,7 +56,7 @@ async def train_cosmos_predict2_grpo(cfg: DictConfig) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     weight_dtype = torch.bfloat16 if trainer_config.bf16 else torch.float16
 
-    # 1. Build runtime (backend construction lives in family builder)
+    # 1. Build policy bundle (backend construction lives in family builder)
     from vrl.models.families.cosmos.builder import (
         build_cosmos_predict2_runtime_bundle_from_cfg,
     )
@@ -103,6 +111,12 @@ async def train_cosmos_predict2_grpo(cfg: DictConfig) -> None:
     collector = CosmosPredict2Collector(
         cosmos_model, reward_fn, collector_config,
         reference_image=reference_image,
+    )
+    collector._runtime = build_rollout_backend_from_cfg(
+        cfg,
+        runtime=rollout_runtime,
+        local_runtime_builder=collector._build_runtime,
+        driver_bundle=bundle,
     )
 
     evaluator = FlowMatchingEvaluator(

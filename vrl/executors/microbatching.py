@@ -1,4 +1,4 @@
-"""Execution planning helpers for generation executors."""
+"""Micro-batching helpers for generation executors."""
 
 from __future__ import annotations
 

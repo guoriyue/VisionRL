@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
 from vrl.distributed.ray.actor import RayActorBase
+from vrl.distributed.ray.spec import RolloutRuntimeSpec
 from vrl.distributed.ray.types import RayChunkResult
 from vrl.distributed.ray.utils import import_from_path
+from vrl.engine.generation.gather import require_chunked_executor
 from vrl.engine.generation.types import GenerationRequest
 from vrl.executors.base import ChunkedFamilyPipelineExecutor
-from vrl.executors.planning import MicroBatchPlan
+from vrl.executors.microbatching import MicroBatchPlan
 
 
 class RayRolloutWorker(RayActorBase):
@@ -20,13 +24,13 @@ class RayRolloutWorker(RayActorBase):
         self,
         worker_id: str,
         family: str,
-        runtime_spec: dict[str, Any],
+        runtime_spec: RolloutRuntimeSpec | Mapping[str, Any],
     ) -> None:
         self.worker_id = worker_id
-        self.family = family
-        self.runtime_spec = dict(runtime_spec)
+        self.runtime_spec = _normalize_runtime_spec(runtime_spec, family=family)
+        self.family = self.runtime_spec.family or family
         self.executor: ChunkedFamilyPipelineExecutor | None = None
-        self._policy_version: int | None = self.runtime_spec.get("policy_version")
+        self._policy_version: int | None = self.runtime_spec.policy_version
 
     def load_policy(self) -> None:
         """Build the family executor from the serialized runtime spec."""
@@ -106,32 +110,44 @@ class RayRolloutWorker(RayActorBase):
             )
 
 
-def _build_executor(runtime_spec: dict[str, Any]) -> ChunkedFamilyPipelineExecutor:
-    executor = runtime_spec.get("executor")
-    if executor is not None:
-        return executor
+def _normalize_runtime_spec(
+    runtime_spec: RolloutRuntimeSpec | Mapping[str, Any],
+    *,
+    family: str,
+) -> RolloutRuntimeSpec:
+    spec = RolloutRuntimeSpec.from_value(runtime_spec)
+    if spec.family is not None and spec.family != family:
+        raise ValueError(
+            "RayRolloutWorker family mismatch: "
+            f"worker family={family!r}, runtime_spec.family={spec.family!r}",
+        )
+    if spec.family is None:
+        spec = replace(spec, family=family)
+    return spec
 
-    factory_path = runtime_spec.get("executor_factory")
+
+def _build_executor(runtime_spec: RolloutRuntimeSpec) -> ChunkedFamilyPipelineExecutor:
+    factory_path = runtime_spec.executor_factory
     if factory_path is not None:
         factory = import_from_path(str(factory_path))
         built = factory(runtime_spec)
-        return built
+        return require_chunked_executor(built)
 
-    builder_path = runtime_spec.get("runtime_builder")
-    executor_path = runtime_spec.get("executor_cls")
-    build_spec_payload = runtime_spec.get("build_spec")
-    if builder_path is None or executor_path is None or build_spec_payload is None:
-        raise NotImplementedError(
-            "RayRolloutWorker requires runtime_spec with either 'executor', "
-            "'executor_factory', or ('runtime_builder', 'executor_cls', 'build_spec')",
+    builder_path = runtime_spec.runtime_builder
+    executor_path = runtime_spec.executor_cls
+    if builder_path is None or executor_path is None:
+        raise ValueError(
+            "RayRolloutWorker requires runtime_spec with 'executor_factory' "
+            "or ('runtime_builder' and 'executor_cls') import paths",
         )
 
     from vrl.models.runtime import RuntimeBuildSpec
 
     build_runtime_bundle = import_from_path(str(builder_path))
     executor_cls = import_from_path(str(executor_path))
-    bundle = build_runtime_bundle(RuntimeBuildSpec(**dict(build_spec_payload)))
-    return executor_cls(bundle.policy)
+    bundle = build_runtime_bundle(RuntimeBuildSpec(**runtime_spec.build_spec_payload()))
+    built = executor_cls(bundle.policy, **dict(runtime_spec.executor_kwargs))
+    return require_chunked_executor(built)
 
 
 def _to_cpu(value: Any) -> Any:

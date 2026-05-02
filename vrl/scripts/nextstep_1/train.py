@@ -20,18 +20,27 @@ from __future__ import annotations
 import csv
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from omegaconf import DictConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from vrl.engine.generation import RolloutBackend
 
-async def train_nextstep_1_ocr_grpo(cfg: DictConfig) -> None:
+
+async def train_nextstep_1_ocr_grpo(
+    cfg: DictConfig,
+    *,
+    rollout_runtime: RolloutBackend | None = None,
+) -> None:
     """Run NextStep-1 OCR GRPO training driven by a merged YAML config."""
     import torch
 
     from vrl.algorithms.grpo_token import TokenGRPO, TokenGRPOConfig
     from vrl.config.loader import build_configs, require
+    from vrl.engine.generation import build_rollout_backend_from_cfg
     from vrl.models.families.nextstep_1 import NextStep1Config, NextStep1Policy
     from vrl.rewards.ocr import OCRReward
     from vrl.rollouts.collectors.nextstep_1 import (
@@ -105,6 +114,12 @@ async def train_nextstep_1_ocr_grpo(cfg: DictConfig) -> None:
         max_text_length=int(require(cfg, "rollout.max_text_length")),
     )
     collector = NextStep1Collector(model=model, reward_fn=reward, config=collector_config)
+    collector._runtime = build_rollout_backend_from_cfg(
+        cfg,
+        runtime=rollout_runtime,
+        local_runtime_builder=collector._build_runtime,
+        driver_policy=model,
+    )
 
     evaluator = ContinuousTokenLogProbEvaluator()
 

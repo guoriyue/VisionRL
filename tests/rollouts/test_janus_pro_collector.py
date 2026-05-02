@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 import torch
@@ -25,7 +24,6 @@ from vrl.rollouts.collectors.janus_pro import JanusProCollector, JanusProCollect
 from vrl.rollouts.evaluators.lm import TokenLogProbEvaluator
 from vrl.rollouts.evaluators.types import SignalRequest
 
-
 HIDDEN = 32
 TEXT_VOCAB = 64
 
@@ -39,7 +37,7 @@ class _StubLM(nn.Module):
     # register the stub as a submodule of itself — that cycle would cause
     # ``train()`` / ``apply()`` to recurse forever under OnlineTrainer.
     @property
-    def model(self) -> "_StubLM":
+    def model(self) -> _StubLM:
         return self
 
     def get_input_embeddings(self) -> nn.Embedding:
@@ -144,7 +142,7 @@ class TestCollect:
         prompts = ["a cat", "a dog"]
         batch = asyncio.run(stub_collector.collect(prompts))
 
-        # 2 prompts × 2 samples = 4 rollouts
+        # 2 prompts x 2 samples = 4 rollouts
         assert batch.actions.shape == (4, 4)        # [B, L_img]
         assert batch.rewards.shape == (4,)
         assert batch.group_ids.tolist() == [0, 0, 1, 1]
@@ -317,7 +315,7 @@ class TestEndToEnd:
             signal_request=SignalRequest(need_ref=False),
         )
         # OnlineTrainer slices [:, 0] before passing; replicate that here.
-        loss, metrics = algorithm.compute_signal_loss(
+        loss, _metrics = algorithm.compute_signal_loss(
             signals, advantages, batch.extras["log_probs"][:, 0],
         )
 

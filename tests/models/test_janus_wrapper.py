@@ -22,7 +22,6 @@ from vrl.models.families.janus_pro.policy import (
     image_token_logits_from_hidden,
 )
 
-
 HIDDEN = 32
 TEXT_VOCAB = 64
 IMG_VOCAB = JANUS_IMAGE_VOCAB_SIZE
@@ -36,7 +35,7 @@ class _StubLM(nn.Module):
         self.embed = nn.Embedding(TEXT_VOCAB, HIDDEN)
 
     @property
-    def model(self) -> "_StubLM":
+    def model(self) -> _StubLM:
         # Property (not attribute) so nn.Module does not register self as a
         # submodule of itself, which would make ``train()`` recurse forever.
         return self
@@ -285,9 +284,8 @@ class TestDisableAdapter:
     def test_raises_when_no_lora_adapter(self, stub_model: JanusProPolicy) -> None:
         """Silent-failure red-line: yielding a no-op would make ref == policy."""
         assert stub_model.has_lora_adapter is False
-        with pytest.raises(RuntimeError, match="no PEFT adapter"):
-            with stub_model.disable_adapter():
-                pass
+        with pytest.raises(RuntimeError, match="no PEFT adapter"), stub_model.disable_adapter():
+            pass
 
     def test_has_lora_adapter_flag(self, stub_model: JanusProPolicy) -> None:
         # Stub LM has no ``disable_adapter`` attr → flag must be False.

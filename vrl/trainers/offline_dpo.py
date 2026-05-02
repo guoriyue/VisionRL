@@ -15,13 +15,14 @@ VAE encoding. Set ``num_frames=1`` for true image-style training.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from typing import Any
 
 import torch
 import torch.nn as nn
 
-from vrl.algorithms.dpo import DiffusionDPOConfig, diffusion_dpo_loss, diffusion_sft_loss
+from vrl.algorithms.dpo import diffusion_dpo_loss, diffusion_sft_loss
 from vrl.trainers.pickapic import PreferenceBatch
 
 logger = logging.getLogger(__name__)
@@ -253,7 +254,7 @@ class OfflineDPOTrainer:
             return noisy, target
         if pt == "flow_matching":
             # Flow-matching schedulers expose ``scale_noise(sample, timestep, noise)``.
-            # Forward process: x_t = (1 - σ) * x_0 + σ * noise, target velocity = noise - x_0.
+            # Forward process: x_t = (1 - sigma) * x_0 + sigma * noise.
             if hasattr(self.noise_scheduler, "scale_noise"):
                 noisy = self.noise_scheduler.scale_noise(latents, timesteps, noise)
             else:
@@ -298,7 +299,7 @@ class OfflineDPOTrainer:
         # 4. Sample shared noise + timestep across each pair
         bsz_pair = latents.shape[0] // 2
         noise = torch.randn(
-            (bsz_pair,) + tuple(latents.shape[1:]),
+            (bsz_pair, *tuple(latents.shape[1:])),
             device=latents.device, dtype=latents.dtype,
         ).repeat(2, *([1] * (latents.ndim - 1)))
         ts_pair = self._sample_timesteps(bsz_pair)
