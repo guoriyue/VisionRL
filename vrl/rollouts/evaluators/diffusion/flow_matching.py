@@ -45,17 +45,16 @@ class FlowMatchingEvaluator:
     ) -> SignalBatch:
         """Replay one diffusion step -> sde_step_with_logprob -> SignalBatch.
 
-        Replay forward ownership lives on the policy (``model.replay_forward``).
-        ``collector`` is retained in the signature for trainer-interface
-        compatibility; the body never reads it.
+        Replay forward ownership lives on the family policy adapter. The
+        trainer still passes the trainable transformer as ``model`` so the
+        optimizer, gradient clipping, and checkpointing stay scoped to the
+        actual trainable module.
 
         When ref_model is the same object as model (LoRA scenario),
         uses ``disable_adapter()`` to get base-model predictions —
         matching flow_grpo train_wan2_1.py:940.
         """
         import torch
-
-        del collector  # replay ownership now on the policy
 
         if signal_request is None:
             signal_request = SignalRequest()
@@ -66,8 +65,12 @@ class FlowMatchingEvaluator:
         observations = batch.observations[:, timestep_idx]  # x_t
         actions = batch.actions[:, timestep_idx]             # x_{t-1}
 
-        # Forward pass through current model — policy owns the replay math.
-        fwd = model.replay_forward(batch, timestep_idx, model=model)
+        replay_owner = getattr(collector, "model", None)
+        if replay_owner is None or not hasattr(replay_owner, "replay_forward"):
+            replay_owner = model
+
+        # Forward pass through current trainable module — policy owns replay math.
+        fwd = replay_owner.replay_forward(batch, timestep_idx, model=model)
         noise_pred = fwd["noise_pred"]
 
         # SDE step with log-prob
@@ -93,14 +96,18 @@ class FlowMatchingEvaluator:
                 # disable LoRA adapter to get base model output.
                 # Port from flow_grpo train_wan2_1.py:940:
                 #   with transformer.module.disable_adapter():
-                use_adapter_disable = (
-                    ref_model is model
-                    and hasattr(model, "disable_adapter")
+                use_adapter_disable = ref_model is model and hasattr(
+                    model, "disable_adapter",
                 )
                 ctx = model.disable_adapter() if use_adapter_disable else contextlib.nullcontext()
 
                 with ctx:
-                    ref_fwd = ref_model.replay_forward(
+                    ref_replay_owner = (
+                        ref_model
+                        if hasattr(ref_model, "replay_forward")
+                        else replay_owner
+                    )
+                    ref_fwd = ref_replay_owner.replay_forward(
                         batch, timestep_idx, model=ref_model,
                     )
                     ref_noise_pred = ref_fwd["noise_pred"]

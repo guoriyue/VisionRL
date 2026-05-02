@@ -50,10 +50,16 @@ class RayRolloutWorker(RayActorBase):
         return self._policy_version
 
     def worker_metadata(self) -> dict[str, Any]:
+        try:
+            node_ip = self.get_node_ip()
+            gpu_ids = self.get_gpu_ids()
+        except Exception:
+            node_ip = "local"
+            gpu_ids = []
         return {
             "worker_id": self.worker_id,
-            "node_ip": self.get_node_ip(),
-            "gpu_ids": self.get_gpu_ids(),
+            "node_ip": node_ip,
+            "gpu_ids": gpu_ids,
             "policy_version": self._policy_version,
         }
 

@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
-
 # ---------------------------------------------------------------------------
 # sde_step_with_logprob — CPS and noise_level (Gap 1)
 # ---------------------------------------------------------------------------
@@ -31,6 +28,7 @@ class TestSDEStepWithLogprob:
     def test_sde_type_default(self) -> None:
         """Standard SDE mode returns valid result."""
         import torch
+
         from vrl.rollouts.evaluators.diffusion.flow_matching import sde_step_with_logprob
 
         scheduler = self._make_mock_scheduler()
@@ -50,6 +48,7 @@ class TestSDEStepWithLogprob:
     def test_cps_type(self) -> None:
         """CPS SDE type returns valid result with different math."""
         import torch
+
         from vrl.rollouts.evaluators.diffusion.flow_matching import sde_step_with_logprob
 
         scheduler = self._make_mock_scheduler()
@@ -69,6 +68,7 @@ class TestSDEStepWithLogprob:
     def test_noise_level_scales_output(self) -> None:
         """Different noise_level values produce different results in CPS."""
         import torch
+
         from vrl.rollouts.evaluators.diffusion.flow_matching import sde_step_with_logprob
 
         scheduler = self._make_mock_scheduler()
@@ -95,6 +95,7 @@ class TestSDEStepWithLogprob:
     def test_deterministic_mode(self) -> None:
         """Deterministic mode: same input → same output, zero noise."""
         import torch
+
         from vrl.rollouts.evaluators.diffusion.flow_matching import sde_step_with_logprob
 
         scheduler = self._make_mock_scheduler()
@@ -116,6 +117,7 @@ class TestSDEStepWithLogprob:
     def test_return_dt(self) -> None:
         """return_dt=True should populate the dt field."""
         import torch
+
         from vrl.rollouts.evaluators.diffusion.flow_matching import sde_step_with_logprob
 
         scheduler = self._make_mock_scheduler()
@@ -133,6 +135,7 @@ class TestSDEStepWithLogprob:
     def test_prev_sample_passthrough(self) -> None:
         """When prev_sample is given, the result should use it for log_prob calc."""
         import torch
+
         from vrl.rollouts.evaluators.diffusion.flow_matching import sde_step_with_logprob
 
         scheduler = self._make_mock_scheduler()
@@ -172,6 +175,133 @@ class TestFlowMatchingEvaluatorInit:
         assert evaluator.noise_level == 0.7
         assert evaluator.sde_type == "cps"
 
+    def test_evaluate_replays_through_collector_policy(self, monkeypatch) -> None:
+        """Diffusion trainers optimize the transformer while policy owns replay."""
+        import types
+
+        import torch
+
+        import vrl.rollouts.evaluators.diffusion.flow_matching as fm
+        from vrl.algorithms.diffusion.sde import SDEStepResult
+        from vrl.rollouts.evaluators.types import SignalRequest
+
+        class ReplayPolicy:
+            def __init__(self) -> None:
+                self.models: list[object] = []
+
+            def replay_forward(self, batch, timestep_idx, *, model=None):
+                self.models.append(model)
+                return {
+                    "noise_pred": torch.zeros_like(
+                        batch.observations[:, timestep_idx],
+                    ),
+                }
+
+        def fake_sde_step_with_logprob(
+            scheduler, model_output, timestep, sample, **kwargs,
+        ):
+            del scheduler, timestep, kwargs
+            return SDEStepResult(
+                prev_sample=sample,
+                log_prob=torch.zeros(sample.shape[0]),
+                prev_sample_mean=model_output,
+                std_dev_t=torch.ones(sample.shape[0]),
+            )
+
+        monkeypatch.setattr(fm, "sde_step_with_logprob", fake_sde_step_with_logprob)
+
+        policy = ReplayPolicy()
+        trainable_transformer = object()
+        batch = types.SimpleNamespace(
+            observations=torch.randn(2, 1, 4),
+            actions=torch.randn(2, 1, 4),
+            extras={"timesteps": torch.tensor([[0.8], [0.8]])},
+        )
+
+        evaluator = fm.FlowMatchingEvaluator(scheduler=None)
+        evaluator.evaluate(
+            collector=types.SimpleNamespace(model=policy),
+            model=trainable_transformer,
+            batch=batch,
+            timestep_idx=0,
+            signal_request=SignalRequest(need_ref=False),
+        )
+
+        assert policy.models == [trainable_transformer]
+
+    def test_ref_replay_uses_trainable_disable_adapter(self, monkeypatch) -> None:
+        """LoRA KL replay must disable the adapter on the trainable module."""
+        import contextlib
+        import types
+
+        import torch
+
+        import vrl.rollouts.evaluators.diffusion.flow_matching as fm
+        from vrl.algorithms.diffusion.sde import SDEStepResult
+        from vrl.rollouts.evaluators.types import SignalRequest
+
+        class TrainableTransformer:
+            def __init__(self) -> None:
+                self.disabled = False
+
+            @contextlib.contextmanager
+            def disable_adapter(self):
+                self.disabled = True
+                try:
+                    yield
+                finally:
+                    self.disabled = False
+
+        class ReplayPolicy:
+            def __init__(self, trainable: TrainableTransformer) -> None:
+                self.trainable = trainable
+                self.disabled_states: list[bool] = []
+
+            def replay_forward(self, batch, timestep_idx, *, model=None):
+                del timestep_idx, model
+                self.disabled_states.append(self.trainable.disabled)
+                return {"noise_pred": torch.zeros_like(batch.observations[:, 0])}
+
+        def fake_sde_step_with_logprob(
+            scheduler, model_output, timestep, sample, **kwargs,
+        ):
+            del scheduler, timestep
+            return SDEStepResult(
+                prev_sample=sample,
+                log_prob=torch.zeros(sample.shape[0]),
+                prev_sample_mean=model_output,
+                std_dev_t=torch.ones(sample.shape[0]),
+                dt=torch.ones(sample.shape[0])
+                if kwargs.get("return_dt")
+                else None,
+            )
+
+        monkeypatch.setattr(fm, "sde_step_with_logprob", fake_sde_step_with_logprob)
+
+        trainable = TrainableTransformer()
+        policy = ReplayPolicy(trainable)
+        batch = types.SimpleNamespace(
+            observations=torch.randn(2, 1, 4),
+            actions=torch.randn(2, 1, 4),
+            extras={"timesteps": torch.tensor([[0.8], [0.8]])},
+        )
+
+        evaluator = fm.FlowMatchingEvaluator(scheduler=None)
+        signals = evaluator.evaluate(
+            collector=types.SimpleNamespace(model=policy),
+            model=trainable,
+            batch=batch,
+            timestep_idx=0,
+            ref_model=trainable,
+            signal_request=SignalRequest(
+                need_ref=True,
+                need_kl_intermediates=True,
+            ),
+        )
+
+        assert policy.disabled_states == [False, True]
+        assert signals.ref_log_prob is not None
+
 
 # ---------------------------------------------------------------------------
 # KL divergence helper
@@ -181,6 +311,7 @@ class TestComputeKLDivergence:
     def test_zero_when_same(self) -> None:
         """KL divergence is 0 when means are identical."""
         import torch
+
         from vrl.rollouts.evaluators.diffusion.flow_matching import compute_kl_divergence
 
         mean = torch.randn(2, 4, 8, 8)
@@ -191,6 +322,7 @@ class TestComputeKLDivergence:
     def test_positive_when_different(self) -> None:
         """KL divergence is positive when means differ."""
         import torch
+
         from vrl.rollouts.evaluators.diffusion.flow_matching import compute_kl_divergence
 
         mean1 = torch.randn(2, 4, 8, 8)
@@ -202,6 +334,7 @@ class TestComputeKLDivergence:
     def test_with_dt(self) -> None:
         """KL with dt parameter scales the denominator."""
         import torch
+
         from vrl.rollouts.evaluators.diffusion.flow_matching import compute_kl_divergence
 
         mean1 = torch.randn(2, 4, 8, 8)
