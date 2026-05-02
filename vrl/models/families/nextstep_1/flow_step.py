@@ -20,8 +20,9 @@ diffusion. We follow the same convention.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 import torch
 
@@ -211,6 +212,8 @@ def flow_logprob_at(
     def _velocity(xk: torch.Tensor, tk: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         if velocity_fn is not None:
             return velocity_fn(xk, tk, c)
+        if hasattr(image_head, "net"):
+            return image_head.net(xk, tk, c)
         if hasattr(image_head, "velocity"):
             return image_head.velocity(xk, tk, c)  # type: ignore[no-any-return]
         return image_head(xk, tk, c)

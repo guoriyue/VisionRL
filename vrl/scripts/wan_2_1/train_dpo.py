@@ -1,8 +1,7 @@
 """Wan 2.1 Diffusion-DPO training recipe (offline, Pick-a-Pic v2).
 
-Each Wan-DPO entry-point in this directory is a thin wrapper that picks
-a YAML config and delegates to ``train_wan_2_1_dpo`` here. Pipeline
-construction, LoRA, encoders, training loop, and checkpointing live in
+The unified ``vrl.scripts.train`` entry point dispatches Wan-DPO configs here.
+Pipeline construction, LoRA, encoders, training loop, and checkpointing live in
 this module.
 
 DPO is offline preference learning — no rollout collection, no algorithm
@@ -71,6 +70,13 @@ def train_wan_2_1_dpo(cfg: DictConfig) -> None:
     import torch
     from torch.utils.data import DataLoader
 
+    from vrl.algorithms.dpo import DiffusionDPOConfig
+    from vrl.config.loader import (
+        build_algorithm_config,
+        optional_none,
+        require,
+        validate_training_config,
+    )
     from vrl.models.families.wan_2_1.builder import (
         build_wan_2_1_runtime_bundle_from_cfg,
     )
@@ -80,14 +86,6 @@ def train_wan_2_1_dpo(cfg: DictConfig) -> None:
         wan_forward,
     )
     from vrl.trainers.pickapic import collate_preference, load_pickapic
-
-    from vrl.algorithms.dpo import DiffusionDPOConfig
-    from vrl.config.loader import (
-        build_algorithm_config,
-        optional_none,
-        require,
-        validate_training_config,
-    )
 
     # DPO doesn't go through `build_configs()`, so validate explicitly here
     # to keep the YAML-as-source-of-truth contract (SPRINT patch 3 Phase 6).

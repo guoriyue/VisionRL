@@ -1,9 +1,8 @@
 """Wan 2.1 GRPO training recipe.
 
-Every Wan entry-point in this directory (1.3B basic / multi-reward / OCR,
-14B) is a thin wrapper that picks a YAML config and delegates to
-``train_wan_2_1_grpo`` here. Pipeline construction, LoRA, collector wiring,
-training loop, and checkpointing live in this module.
+The unified ``vrl.scripts.train`` entry point dispatches Wan GRPO configs here.
+Pipeline construction, LoRA, collector wiring, training loop, and checkpointing
+live in this module.
 """
 
 from __future__ import annotations
@@ -22,7 +21,8 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
 
     import torch
 
-    from vrl.algorithms.grpo import GRPO
+    from vrl.algorithms.grpo import GRPO, GRPOConfig
+    from vrl.algorithms.grpo_token import TokenGRPOConfig
     from vrl.algorithms.stat_tracking import PerPromptStatTracker
     from vrl.config.loader import build_configs
     from vrl.rewards.multi import MultiReward
@@ -33,9 +33,6 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
     from vrl.rollouts.evaluators.diffusion.flow_matching import FlowMatchingEvaluator
     from vrl.trainers.data import PromptExample, load_prompt_manifest
     from vrl.trainers.online import OnlineTrainer
-
-    from vrl.algorithms.grpo import GRPOConfig
-    from vrl.algorithms.grpo_token import TokenGRPOConfig
 
     built = build_configs(cfg)
     trainer_config = built["trainer"]

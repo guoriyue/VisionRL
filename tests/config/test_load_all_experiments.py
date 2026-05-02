@@ -33,6 +33,19 @@ _EXPECTED_ALGO_TYPE = {
     "diffusion_dpo": DiffusionDPOConfig,
 }
 
+_EXPECTED_TRAIN_TARGET = {
+    "cosmos_predict2_2b_grpo": "vrl.scripts.cosmos.train:train_cosmos_predict2_grpo",
+    "janus_pro_1b_grpo": "vrl.scripts.janus_pro.train:train_janus_pro_grpo",
+    "janus_pro_1b_ocr_grpo": "vrl.scripts.janus_pro.train:train_janus_pro_ocr_grpo",
+    "nextstep_1_ocr_grpo": "vrl.scripts.nextstep_1.train:train_nextstep_1_ocr_grpo",
+    "sd3_5_ocr_grpo": "vrl.scripts.sd3_5.train:train_sd3_5_grpo",
+    "wan_2_1_14b_grpo": "vrl.scripts.wan_2_1.train:train_wan_2_1_grpo",
+    "wan_2_1_1_3b_dpo": "vrl.scripts.wan_2_1.train_dpo:train_wan_2_1_dpo",
+    "wan_2_1_1_3b_grpo": "vrl.scripts.wan_2_1.train:train_wan_2_1_grpo",
+    "wan_2_1_1_3b_multi_reward_grpo": "vrl.scripts.wan_2_1.train:train_wan_2_1_grpo",
+    "wan_2_1_1_3b_ocr_grpo": "vrl.scripts.wan_2_1.train:train_wan_2_1_grpo",
+}
+
 
 def _experiment_names() -> list[str]:
     return sorted(p.stem for p in EXPERIMENT_DIR.glob("*.yaml"))
@@ -70,20 +83,29 @@ def test_build_algorithm_config_dispatch(name: str) -> None:
         )
 
 
-def test_no_experiment_orphans() -> None:
-    """If a script declares a default_config, the file must exist."""
+def test_no_experiment_named_training_wrappers() -> None:
+    """Experiment names belong in YAML, not Python module names."""
     import re
 
     scripts_dir = REPO_ROOT / "vrl" / "scripts"
-    pat = re.compile(r'default_config\s*=\s*"experiment/([^"]+)"')
-    referenced: set[str] = set()
+    experiment_names = set(_experiment_names())
+    offenders: list[str] = []
+    default_pat = re.compile(r'default_config\s*=\s*"experiment/([^"]+)"')
     for path in scripts_dir.rglob("*.py"):
-        for m in pat.finditer(path.read_text()):
-            referenced.add(m.group(1))
+        if path.stem in experiment_names:
+            offenders.append(str(path.relative_to(REPO_ROOT)))
+        if default_pat.search(path.read_text()):
+            offenders.append(str(path.relative_to(REPO_ROOT)))
 
-    available = set(_experiment_names())
-    missing = referenced - available
-    assert not missing, f"scripts reference missing experiment YAMLs: {missing}"
+    assert not offenders, "remove experiment-specific script wrappers:\n" + "\n".join(offenders)
+
+
+@pytest.mark.parametrize("name", _experiment_names())
+def test_unified_train_entrypoint_dispatches_every_experiment(name: str) -> None:
+    from vrl.scripts.train import resolve_train_target
+
+    cfg = load_config(f"experiment/{name}")
+    assert resolve_train_target(cfg).import_path == _EXPECTED_TRAIN_TARGET[name]
 
 
 def test_kind_vs_adv_estimator_conflict_fails_fast() -> None:
@@ -108,7 +130,7 @@ def test_legacy_adv_estimator_only_works() -> None:
 
 def test_unknown_kind_fails_fast() -> None:
     cfg = OmegaConf.create({"algorithm": {"kind": "qpo"}})
-    with pytest.raises(ValueError, match="unknown algorithm.kind"):
+    with pytest.raises(ValueError, match=r"unknown algorithm\.kind"):
         build_algorithm_config(cfg)
 
 
@@ -259,14 +281,14 @@ def test_build_reward_config_returns_explicit_kwargs_for_each_positive_component
 def test_validate_training_config_fails_when_trainer_output_dir_missing() -> None:
     cfg = load_config("experiment/wan_2_1_1_3b_grpo")
     del cfg.trainer["output_dir"]
-    with pytest.raises(ValueError, match="trainer.output_dir"):
+    with pytest.raises(ValueError, match=r"trainer\.output_dir"):
         validate_training_config(cfg)
 
 
 def test_validate_training_config_fails_when_actor_optim_lr_missing() -> None:
     cfg = load_config("experiment/wan_2_1_1_3b_grpo")
     del cfg.actor.optim["lr"]
-    with pytest.raises(ValueError, match="actor.optim.lr"):
+    with pytest.raises(ValueError, match=r"actor\.optim\.lr"):
         validate_training_config(cfg)
 
 
@@ -274,7 +296,7 @@ def test_validate_training_config_fails_when_nextstep_noise_level_missing() -> N
     """NextStep-1's continuous-token AR pipeline requires ``rollout.noise_level``."""
     cfg = load_config("experiment/nextstep_1_ocr_grpo")
     del cfg.rollout["noise_level"]
-    with pytest.raises(ValueError, match="rollout.noise_level"):
+    with pytest.raises(ValueError, match=r"rollout\.noise_level"):
         validate_training_config(cfg)
 
 
@@ -293,7 +315,7 @@ def test_dpo_allows_explicit_null_max_train_samples() -> None:
 def test_dpo_fails_when_max_train_steps_missing() -> None:
     cfg = load_config("experiment/wan_2_1_1_3b_dpo")
     del cfg.trainer["max_train_steps"]
-    with pytest.raises(ValueError, match="trainer.max_train_steps"):
+    with pytest.raises(ValueError, match=r"trainer\.max_train_steps"):
         validate_training_config(cfg)
 
 

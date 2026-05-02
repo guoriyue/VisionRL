@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 
-from vrl.algorithms.diffusion.sde import sde_step_with_logprob
+from vrl.algorithms.flow_matching import sde_step_with_logprob
 from vrl.engine.generation.types import (
     GenerationMetrics,
     GenerationRequest,

@@ -5,11 +5,7 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
-from vrl.algorithms.diffusion.sde import (  # noqa: F401
-    SDEStepResult,
-    compute_kl_divergence,
-    sde_step_with_logprob,
-)
+import vrl.algorithms.flow_matching as flow_matching_math
 from vrl.rollouts.evaluators.types import SignalBatch, SignalRequest
 from vrl.rollouts.types import ExperienceBatch
 
@@ -74,7 +70,7 @@ class FlowMatchingEvaluator:
         noise_pred = fwd["noise_pred"]
 
         # SDE step with log-prob
-        result = sde_step_with_logprob(
+        result = flow_matching_math.sde_step_with_logprob(
             self.scheduler,
             noise_pred,
             t,
@@ -112,7 +108,7 @@ class FlowMatchingEvaluator:
                     )
                     ref_noise_pred = ref_fwd["noise_pred"]
 
-                    ref_result = sde_step_with_logprob(
+                    ref_result = flow_matching_math.sde_step_with_logprob(
                         self.scheduler,
                         ref_noise_pred,
                         t,

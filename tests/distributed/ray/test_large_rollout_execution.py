@@ -15,6 +15,8 @@ from vrl.distributed.ray import (
     RayDistributedRuntime,
     RayRolloutWeightSync,
     RayRolloutWorker,
+    RayTrainActor,
+    RayTrainGroup,
     RayWorkerHandle,
 )
 from vrl.engine.generation import GenerationRequest, OutputBatch, WorkloadSignature
@@ -94,6 +96,20 @@ class _FakeActor:
     def update_weights(self, state_ref: Any, policy_version: int) -> None:
         del state_ref
         self.version = policy_version
+
+
+class _FakeTrainer:
+    def __init__(self) -> None:
+        self.seen: list[list[Any]] = []
+
+    async def step(self, prompts: list[Any]) -> dict[str, Any]:
+        self.seen.append(list(prompts))
+        return {"num_prompts": len(prompts)}
+
+
+def make_fake_trainer(train_config: Any) -> _FakeTrainer:
+    assert train_config["marker"] == "inside-actor"
+    return _FakeTrainer()
 
 
 def _request(*, policy_version: int | None = 3) -> GenerationRequest:
@@ -222,6 +238,27 @@ def test_ray_distributed_runtime_delegates_to_executor() -> None:
     assert output.output == [(0, 0, 2), (0, 2, 2), (1, 0, 2), (1, 2, 2)]
 
 
+def test_ray_distributed_runtime_fills_current_policy_version() -> None:
+    actor = RayRolloutWorker(
+        "w0",
+        "fake",
+        {"executor": _FakeChunkedExecutor(), "policy_version": 5},
+    )
+    workers = [RayWorkerHandle(worker_id="w0", node_id="n0", actor=actor)]
+    executor = DistributedRolloutExecutor(
+        DistributedExecutionPlanner(),
+        workers,
+        _FakeChunkedExecutor(),
+    )
+    runtime = RayDistributedRuntime(executor)
+    runtime.current_policy_version = 5
+
+    output = asyncio.run(runtime.generate(_request(policy_version=None)))
+
+    assert output.error is None
+    assert output.output == [(0, 0, 2), (0, 2, 2), (1, 0, 2), (1, 2, 2)]
+
+
 def test_ray_rollout_weight_sync_updates_direct_workers() -> None:
     actors = [_FakeActor(), _FakeActor()]
     workers = [
@@ -232,3 +269,31 @@ def test_ray_rollout_weight_sync_updates_direct_workers() -> None:
     asyncio.run(RayRolloutWeightSync(workers).push_to_rollout_workers({}, 7))
 
     assert [actor.version for actor in actors] == [7, 7]
+
+
+def test_ray_train_actor_builds_trainer_inside_actor() -> None:
+    actor = RayTrainActor(
+        {
+            "marker": "inside-actor",
+            "trainer_factory": make_fake_trainer,
+        },
+    )
+
+    result = actor.train_step(["p0", "p1"])
+
+    assert result == {"num_prompts": 2}
+    assert actor.metadata()["trainer_loaded"] is True
+
+
+def test_ray_train_group_delegates_to_primary_actor() -> None:
+    actor = RayTrainActor(
+        {
+            "marker": "inside-actor",
+            "trainer_factory": make_fake_trainer,
+        },
+    )
+    group = RayTrainGroup([actor])
+
+    result = group.train_step(["p0"])
+
+    assert result == {"num_prompts": 1}

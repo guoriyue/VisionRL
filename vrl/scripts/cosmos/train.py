@@ -1,9 +1,8 @@
 """Cosmos Predict2 GRPO training recipe.
 
-Entry-point scripts in this directory delegate to ``train_cosmos_predict2_grpo``
-here. Pipeline construction, LoRA, collector wiring, training loop,
-checkpointing, paired LoRA-vs-base eval, and middle-frame PNG dumps all
-live in this module.
+The unified ``vrl.scripts.train`` entry point dispatches Cosmos configs here.
+Pipeline construction, LoRA, collector wiring, training loop, checkpointing,
+paired LoRA-vs-base eval, and middle-frame PNG dumps all live in this module.
 """
 
 from __future__ import annotations
@@ -23,7 +22,8 @@ async def train_cosmos_predict2_grpo(cfg: DictConfig) -> None:
 
     import torch
 
-    from vrl.algorithms.grpo import GRPO
+    from vrl.algorithms.grpo import GRPO, GRPOConfig
+    from vrl.algorithms.grpo_token import TokenGRPOConfig
     from vrl.algorithms.stat_tracking import PerPromptStatTracker
     from vrl.config.loader import build_configs, require
     from vrl.rewards.multi import MultiReward
@@ -33,9 +33,6 @@ async def train_cosmos_predict2_grpo(cfg: DictConfig) -> None:
     )
     from vrl.rollouts.evaluators.diffusion.flow_matching import FlowMatchingEvaluator
     from vrl.trainers.online import OnlineTrainer
-
-    from vrl.algorithms.grpo import GRPOConfig
-    from vrl.algorithms.grpo_token import TokenGRPOConfig
 
     built = build_configs(cfg)
     trainer_config = built["trainer"]

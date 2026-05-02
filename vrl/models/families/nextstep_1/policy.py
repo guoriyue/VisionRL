@@ -38,8 +38,9 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -53,11 +54,11 @@ from vrl.models.families.nextstep_1.flow_step import (
 logger = logging.getLogger(__name__)
 
 
-# NextStep-1 image grid: 32×32 continuous patches at f8ch16 = 16-channel,
-# 8× downsample VAE (per the model card). Override via config if you load
+# NextStep-1 image grid: 32x32 continuous patches at f8ch16 = 16-channel,
+# 8x downsample VAE (per the model card). Override via config if you load
 # a different checkpoint that uses a different grid.
-NEXTSTEP_DEFAULT_TOKEN_NUM = 1024     # 32 × 32 patches per 256² image
-NEXTSTEP_DEFAULT_TOKEN_DIM = 16       # f8ch16 latent channels per patch
+NEXTSTEP_DEFAULT_TOKEN_NUM = 1024     # 32 x 32 patches per 256^2 image
+NEXTSTEP_DEFAULT_TOKEN_DIM = 64       # latent_patch_size^2 * f8ch16 channels
 NEXTSTEP_DEFAULT_PIXEL_SIZE = 256
 
 
@@ -99,6 +100,9 @@ class NextStep1Config:
     freeze_vae: bool = True
     freeze_image_head: bool = False     # train the 157M flow head with LoRA-style updates
 
+    # Memory
+    gradient_checkpointing: bool = True
+
 
 # ---------------------------------------------------------------------------
 # Wrapper
@@ -127,7 +131,7 @@ class NextStep1Policy(nn.Module, AutoregressivePolicy):
             "float32": torch.float32,
         }[config.dtype]
         self.dtype = torch_dtype
-        self.device = torch.device(config.device)
+        self._device = torch.device(config.device)
 
         self._pipeline = self._load_pipeline()
 
@@ -142,6 +146,9 @@ class NextStep1Policy(nn.Module, AutoregressivePolicy):
         self._image_out_projector = self._pipeline.model.image_out_projector
         self.vae = self._pipeline.vae
         self.processor = self._pipeline.tokenizer  # AutoTokenizer (naming aligns with Janus)
+        self.config.token_dim = int(
+            getattr(self.image_head, "input_dim", self.config.token_dim),
+        )
 
         # Freeze what shouldn't be trained.
         if config.freeze_vae:
@@ -190,6 +197,7 @@ class NextStep1Policy(nn.Module, AutoregressivePolicy):
             vae_name_or_path=self.config.vae_path,
             device=str(self.device),
             dtype=self.dtype,
+            enable_gradient_checkpointing=self.config.gradient_checkpointing,
         )
 
     def _attach_lora(self) -> None:
@@ -214,6 +222,11 @@ class NextStep1Policy(nn.Module, AutoregressivePolicy):
 
     def trainable_param_count(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    @property
+    def device(self) -> torch.device:
+        """Device where the upstream NextStep pipeline is loaded."""
+        return self._device
 
     # ------------------------------------------------------------------
     # Public: AR sampling with per-token log-probabilities
@@ -427,17 +440,19 @@ class NextStep1Policy(nn.Module, AutoregressivePolicy):
         image_size: int | None = None,
     ) -> torch.Tensor:
         """Continuous tokens → pixels in ``[-1, 1]`` via the f8ch16 VAE."""
-        # TODO(nextstep-binding): the upstream decode path probably does
-        #   - reshape [B, L_img, D] → [B, D, H_lat, W_lat]
-        #   - vae.decode(latent) → [B, 3, H_pix, W_pix]
-        # Mirror what NextStepPipeline.generate_image does after sampling.
-        H_lat = W_lat = int(tokens.shape[1] ** 0.5)
-        latent = tokens.transpose(1, 2).reshape(
-            tokens.shape[0], tokens.shape[2], H_lat, W_lat,
-        )
-        pixels = self.vae.decode(latent)
-        # NextStep's VAE returns ``[B, 3, H, W]`` in ``[-1, 1]`` per the model card.
-        return pixels
+        del image_size
+        side = int(tokens.shape[1] ** 0.5)
+        if side * side != tokens.shape[1]:
+            raise ValueError(
+                f"image_token_num must be a square grid, got {tokens.shape[1]}",
+            )
+        latent = self._pipeline.model.unpatchify(tokens, h=side, w=side)
+        latent = (
+            latent / self._pipeline.scaling_factor
+        ) + self._pipeline.shift_factor
+        decoded = self.vae.decode(latent.to(self.vae.dtype))
+        pixels = decoded.sample if hasattr(decoded, "sample") else decoded[0]
+        return pixels.to(torch.float32)
 
     # ------------------------------------------------------------------
     # Public: ref-policy hook

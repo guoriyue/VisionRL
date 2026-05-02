@@ -1,6 +1,6 @@
 """Janus-Pro GRPO training recipe.
 
-Entry-point scripts in this directory delegate here:
+The unified ``vrl.scripts.train`` entry point dispatches Janus-Pro configs here:
 
     JanusProPolicy  --(rollout)-->  JanusProCollector
                                        |

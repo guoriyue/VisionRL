@@ -47,6 +47,7 @@ ocr = [
 
 [project.scripts]
 vrl-serve = "vrl.gateway:main"
+vrl-train = "vrl.scripts.train:main"
 
 [tool.setuptools.packages.find]
 include = ["vrl*"]

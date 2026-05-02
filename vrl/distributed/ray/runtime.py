@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from vrl.distributed.ray.rollout_executor import DistributedRolloutExecutor
@@ -23,6 +24,8 @@ class RayDistributedRuntime:
         self.current_policy_version: int | None = None
 
     async def generate(self, request: GenerationRequest) -> OutputBatch:
+        if request.policy_version is None and self.current_policy_version is not None:
+            request = replace(request, policy_version=self.current_policy_version)
         return await self.executor.execute(request)
 
     async def update_weights(self, state_ref: Any, policy_version: int) -> None:

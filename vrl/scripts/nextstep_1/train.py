@@ -1,6 +1,6 @@
 """NextStep-1 OCR GRPO training recipe.
 
-Entry-point scripts in this directory delegate to
+The unified ``vrl.scripts.train`` entry point dispatches NextStep-1 configs to
 ``train_nextstep_1_ocr_grpo`` here. Continuous-token AR image RL —
 TokenGRPO + ContinuousTokenLogProbEvaluator + NextStep1Collector.
 
@@ -73,6 +73,7 @@ async def train_nextstep_1_ocr_grpo(cfg: DictConfig) -> None:
         image_size=int(sampling.image_size),
         freeze_vae=bool(require(cfg, "model.freeze_vae")),
         freeze_image_head=bool(require(cfg, "model.freeze_image_head")),
+        gradient_checkpointing=bool(trainer_config.gradient_checkpointing),
     ))
     logger.info("Trainable params: %.2f M", model.trainable_param_count() / 1e6)
 

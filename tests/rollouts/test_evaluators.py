@@ -29,7 +29,7 @@ class TestSDEStepWithLogprob:
         """Standard SDE mode returns valid result."""
         import torch
 
-        from vrl.rollouts.evaluators.diffusion.flow_matching import sde_step_with_logprob
+        from vrl.algorithms.flow_matching import sde_step_with_logprob
 
         scheduler = self._make_mock_scheduler()
         B = 2
@@ -49,7 +49,7 @@ class TestSDEStepWithLogprob:
         """CPS SDE type returns valid result with different math."""
         import torch
 
-        from vrl.rollouts.evaluators.diffusion.flow_matching import sde_step_with_logprob
+        from vrl.algorithms.flow_matching import sde_step_with_logprob
 
         scheduler = self._make_mock_scheduler()
         B = 2
@@ -69,7 +69,7 @@ class TestSDEStepWithLogprob:
         """Different noise_level values produce different results in CPS."""
         import torch
 
-        from vrl.rollouts.evaluators.diffusion.flow_matching import sde_step_with_logprob
+        from vrl.algorithms.flow_matching import sde_step_with_logprob
 
         scheduler = self._make_mock_scheduler()
         B = 1
@@ -96,7 +96,7 @@ class TestSDEStepWithLogprob:
         """Deterministic mode: same input → same output, zero noise."""
         import torch
 
-        from vrl.rollouts.evaluators.diffusion.flow_matching import sde_step_with_logprob
+        from vrl.algorithms.flow_matching import sde_step_with_logprob
 
         scheduler = self._make_mock_scheduler()
         B = 1
@@ -118,7 +118,7 @@ class TestSDEStepWithLogprob:
         """return_dt=True should populate the dt field."""
         import torch
 
-        from vrl.rollouts.evaluators.diffusion.flow_matching import sde_step_with_logprob
+        from vrl.algorithms.flow_matching import sde_step_with_logprob
 
         scheduler = self._make_mock_scheduler()
         B = 1
@@ -136,7 +136,7 @@ class TestSDEStepWithLogprob:
         """When prev_sample is given, the result should use it for log_prob calc."""
         import torch
 
-        from vrl.rollouts.evaluators.diffusion.flow_matching import sde_step_with_logprob
+        from vrl.algorithms.flow_matching import sde_step_with_logprob
 
         scheduler = self._make_mock_scheduler()
         B = 1
@@ -182,7 +182,7 @@ class TestFlowMatchingEvaluatorInit:
         import torch
 
         import vrl.rollouts.evaluators.diffusion.flow_matching as fm
-        from vrl.algorithms.diffusion.sde import SDEStepResult
+        from vrl.algorithms.flow_matching import SDEStepResult
         from vrl.rollouts.evaluators.types import SignalRequest
 
         class ReplayPolicy:
@@ -208,7 +208,11 @@ class TestFlowMatchingEvaluatorInit:
                 std_dev_t=torch.ones(sample.shape[0]),
             )
 
-        monkeypatch.setattr(fm, "sde_step_with_logprob", fake_sde_step_with_logprob)
+        monkeypatch.setattr(
+            fm.flow_matching_math,
+            "sde_step_with_logprob",
+            fake_sde_step_with_logprob,
+        )
 
         policy = ReplayPolicy()
         trainable_transformer = object()
@@ -237,7 +241,7 @@ class TestFlowMatchingEvaluatorInit:
         import torch
 
         import vrl.rollouts.evaluators.diffusion.flow_matching as fm
-        from vrl.algorithms.diffusion.sde import SDEStepResult
+        from vrl.algorithms.flow_matching import SDEStepResult
         from vrl.rollouts.evaluators.types import SignalRequest
 
         class TrainableTransformer:
@@ -276,7 +280,11 @@ class TestFlowMatchingEvaluatorInit:
                 else None,
             )
 
-        monkeypatch.setattr(fm, "sde_step_with_logprob", fake_sde_step_with_logprob)
+        monkeypatch.setattr(
+            fm.flow_matching_math,
+            "sde_step_with_logprob",
+            fake_sde_step_with_logprob,
+        )
 
         trainable = TrainableTransformer()
         policy = ReplayPolicy(trainable)
@@ -312,7 +320,7 @@ class TestComputeKLDivergence:
         """KL divergence is 0 when means are identical."""
         import torch
 
-        from vrl.rollouts.evaluators.diffusion.flow_matching import compute_kl_divergence
+        from vrl.algorithms.flow_matching import compute_kl_divergence
 
         mean = torch.randn(2, 4, 8, 8)
         std = torch.ones(2, 1, 1, 1) * 0.5
@@ -323,7 +331,7 @@ class TestComputeKLDivergence:
         """KL divergence is positive when means differ."""
         import torch
 
-        from vrl.rollouts.evaluators.diffusion.flow_matching import compute_kl_divergence
+        from vrl.algorithms.flow_matching import compute_kl_divergence
 
         mean1 = torch.randn(2, 4, 8, 8)
         mean2 = mean1 + 1.0  # shifted
@@ -335,7 +343,7 @@ class TestComputeKLDivergence:
         """KL with dt parameter scales the denominator."""
         import torch
 
-        from vrl.rollouts.evaluators.diffusion.flow_matching import compute_kl_divergence
+        from vrl.algorithms.flow_matching import compute_kl_divergence
 
         mean1 = torch.randn(2, 4, 8, 8)
         mean2 = mean1 + 0.5

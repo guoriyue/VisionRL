@@ -98,7 +98,7 @@ class GRPO(Algorithm):
         """
         import torch
 
-        from vrl.algorithms.diffusion.sde import compute_kl_divergence
+        from vrl.algorithms.flow_matching import compute_kl_divergence
 
         cfg = self.config
 

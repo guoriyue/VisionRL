@@ -469,11 +469,13 @@ class OnlineTrainer(Trainer):
                 )
             _old_lp_0 = _dbg_old_lp[:, 0] if _dbg_old_lp.ndim > 1 else _dbg_old_lp
             _diff = (_dbg_signals.log_prob - _old_lp_0).abs()
+            _old_lp_first = _old_lp_0.reshape(-1)[0]
+            _fresh_lp_first = _dbg_signals.log_prob.reshape(-1)[0]
             logger.info(
                 "DEBUG first-step log-prob diff: mean=%.6f max=%.6f | "
                 "old_lp[0]=%.6f fresh_lp[0]=%.6f",
                 _diff.mean().item(), _diff.max().item(),
-                _old_lp_0[0].item(), _dbg_signals.log_prob[0].item(),
+                _old_lp_first.item(), _fresh_lp_first.item(),
             )
 
         if cfg.debug.grad_split:
