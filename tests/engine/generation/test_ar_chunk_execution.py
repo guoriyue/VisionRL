@@ -19,13 +19,13 @@ from tests.engine.generation.test_pipeline_nextstep_1 import (
     _StubPolicy as _NextStepStubPolicy,
 )
 from vrl.engine.generation import (
+    ChunkedFamilyPipelineExecutor,
     FamilyPipelineRegistry,
     GenerationIdFactory,
     LocalRolloutWorkerPool,
     LocalWorkerSpec,
 )
-from vrl.executors import ChunkedFamilyPipelineExecutor
-from vrl.executors.microbatching import MicroBatchPlan
+from vrl.engine.generation.microbatching import MicroBatchPlan
 from vrl.models.families.janus_pro.executor import (
     JanusProChunkGatherer,
     JanusProPipelineExecutor,

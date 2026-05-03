@@ -267,16 +267,13 @@ class SD3_5Policy(DiffusionPolicy):
         self,
         state: SD3SamplingState,
         step_idx: int,
-        *,
-        model: Any = None,
     ) -> dict[str, Any]:
         """SD3 transformer forward + optional batched CFG.
 
-        ``model`` overrides the default transformer (used by the trainer to
-        forward through the LoRA-wrapped policy). Returns noise_pred plus
-        the un/conditional branches; the caller owns scheduler.step / SDE.
+        Returns noise_pred plus the un/conditional branches; the caller owns
+        scheduler.step / SDE.
         """
-        m = self._resolve_step_model(model)
+        m = self.transformer
 
         t = state.timesteps[step_idx]
         bsz = state.latents.shape[0]

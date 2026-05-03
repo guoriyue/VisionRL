@@ -2,6 +2,5 @@
 # Used by Wan-DPO (and any future diffusion-DPO recipe).
 algorithm:
   kind: diffusion_dpo
-  adv_estimator: dpo            # legacy alias; loader prefers `kind`
   beta: 5000.0                  # DPO temperature
   sft_weight: 0.0               # optional auxiliary SFT-on-winner loss

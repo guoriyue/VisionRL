@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from vrl.rollouts.collectors.base import Collector
-from vrl.rollouts.types import ExperienceBatch
+from vrl.rollouts.experience import ExperienceBatch
 
 if TYPE_CHECKING:
     from vrl.engine.generation import GenerationRuntime, OutputBatch

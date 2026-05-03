@@ -8,14 +8,14 @@ from vrl.engine.generation.gather import (
     gather_pipeline_chunks,
     require_chunked_executor,
 )
-from vrl.engine.generation.registry import FamilyPipelineRegistry
-from vrl.engine.generation.types import GenerationRequest, OutputBatch
-from vrl.engine.generation.worker import GenerationIdFactory
-from vrl.executors.base import PipelineChunkResult
-from vrl.executors.microbatching import (
+from vrl.engine.generation.microbatching import (
     MicroBatchPlan,
     plan_prompt_group_microbatches,
 )
+from vrl.engine.generation.protocols import PipelineChunkResult
+from vrl.engine.generation.registry import FamilyPipelineRegistry
+from vrl.engine.generation.types import GenerationRequest, OutputBatch
+from vrl.engine.generation.worker import GenerationIdFactory
 
 
 @dataclass(frozen=True, slots=True)

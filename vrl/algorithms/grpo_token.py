@@ -7,7 +7,7 @@ sequence-level advantages across the token dimension and supports a
 
 This is the algorithm half of the Janus-Pro RL closed loop. Pair with
 ``vrl.rollouts.collectors.janus_pro.JanusProCollector`` and
-``vrl.rollouts.evaluators.lm.token_logprob.TokenLogProbEvaluator``.
+``vrl.rollouts.evaluators.ar.token_logprob.TokenLogProbEvaluator``.
 
 Why subclass instead of fork?
     Advantage normalisation (``compute_advantages_from_tensors``) is

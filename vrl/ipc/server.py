@@ -10,7 +10,7 @@ import zmq
 import zmq.asyncio
 
 from vrl.engine.loop import EngineLoop
-from vrl.engine.types import RequestOutput, SchedulerStatus
+from vrl.engine.scheduler_types import RequestOutput, SchedulerStatus
 from vrl.ipc.artifacts import ArtifactStore
 from vrl.ipc.protocol import ArtifactRef, MsgType, decode_msg, encode_msg
 

@@ -9,7 +9,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any
 
-from vrl.engine.types import (
+from vrl.engine.scheduler_types import (
     ModelRunnerOutput,
     RequestOutput,
     SchedulerOutput,

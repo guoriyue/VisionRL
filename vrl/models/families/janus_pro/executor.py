@@ -40,6 +40,14 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
+from vrl.engine.generation.ar import ActiveSequence, ARTokenScheduler
+from vrl.engine.generation.batching import forward_batch_by_merging_prompts
+from vrl.engine.generation.microbatching import MicroBatchPlan
+from vrl.engine.generation.protocols import (
+    BatchedFamilyPipelineExecutor,
+    ChunkedFamilyPipelineExecutor,
+    PipelineChunkResult,
+)
 from vrl.engine.generation.types import (
     GenerationMetrics,
     GenerationRequest,
@@ -47,14 +55,6 @@ from vrl.engine.generation.types import (
     OutputBatch,
     WorkloadSignature,
 )
-from vrl.executors.ar import ActiveSequence, ARTokenScheduler
-from vrl.executors.base import (
-    BatchedFamilyPipelineExecutor,
-    ChunkedFamilyPipelineExecutor,
-    PipelineChunkResult,
-)
-from vrl.executors.batching import forward_batch_by_merging_prompts
-from vrl.executors.microbatching import MicroBatchPlan
 
 logger = logging.getLogger(__name__)
 
@@ -111,9 +111,8 @@ class JanusProPipelineExecutor(
     - ``uncond_input_ids``: ``[B, L_text]`` int64.
     - ``uncond_attention_mask``: ``[B, L_text]`` int64.
 
-    These keys mirror the pre-migration collector's ``ExperienceBatch``
-    fields exactly (see ``vrl/rollouts/collectors/janus_pro.py``) so
-    the trainer's ``replay_forward`` contract is preserved.
+    These keys map directly into ``JanusProCollector``'s ``ExperienceBatch``
+    packing so the trainer's ``replay_forward`` contract stays explicit.
     """
 
     family: str = "janus_pro"
@@ -163,16 +162,20 @@ class JanusProPipelineExecutor(
 
         # 1. Tokenise conditional + unconditional prompts.
         prompt_ids, prompt_mask = self._tokenize_prompts(
-            repeated_prompts, max_text_length=max_text_length,
+            repeated_prompts,
+            max_text_length=max_text_length,
         )
         uncond_ids, uncond_mask = self._tokenize_prompts(
-            [""] * len(repeated_prompts), max_text_length=max_text_length,
+            [""] * len(repeated_prompts),
+            max_text_length=max_text_length,
         )
-        pad_id = (
-            getattr(self.model.processor.tokenizer, "pad_token_id", None) or 0
-        )
+        pad_id = getattr(self.model.processor.tokenizer, "pad_token_id", None) or 0
         prompt_ids, prompt_mask, uncond_ids, uncond_mask = self._align_pair(
-            prompt_ids, prompt_mask, uncond_ids, uncond_mask, pad_id=pad_id,
+            prompt_ids,
+            prompt_mask,
+            uncond_ids,
+            uncond_mask,
+            pad_id=pad_id,
         )
 
         # 2. Embed both halves with the language model's input embedding.
@@ -207,7 +210,8 @@ class JanusProPipelineExecutor(
 
         # 4. VQ decode tokens → pixels in [-1, 1].
         images = self.model.decode_image_tokens(
-            token_ids, image_size=image_size,
+            token_ids,
+            image_size=image_size,
         )  # [B, 3, H, W]
 
         # 5. Token mask: every image-token position is meaningful (no
@@ -274,16 +278,20 @@ class JanusProPipelineExecutor(
 
         repeated_prompts = [chunk.prompt] * chunk.sample_count
         prompt_ids, prompt_mask = self._tokenize_prompts(
-            repeated_prompts, max_text_length=max_text_length,
+            repeated_prompts,
+            max_text_length=max_text_length,
         )
         uncond_ids, uncond_mask = self._tokenize_prompts(
-            [""] * chunk.sample_count, max_text_length=max_text_length,
+            [""] * chunk.sample_count,
+            max_text_length=max_text_length,
         )
-        pad_id = (
-            getattr(self.model.processor.tokenizer, "pad_token_id", None) or 0
-        )
+        pad_id = getattr(self.model.processor.tokenizer, "pad_token_id", None) or 0
         prompt_ids, prompt_mask, uncond_ids, uncond_mask = self._align_pair(
-            prompt_ids, prompt_mask, uncond_ids, uncond_mask, pad_id=pad_id,
+            prompt_ids,
+            prompt_mask,
+            uncond_ids,
+            uncond_mask,
+            pad_id=pad_id,
         )
 
         cond_embeds = self._embed(prompt_ids)
@@ -301,7 +309,8 @@ class JanusProPipelineExecutor(
             image_token_num=image_token_num,
         )
         images = self.model.decode_image_tokens(
-            token_ids, image_size=image_size,
+            token_ids,
+            image_size=image_size,
         )
         token_mask = torch.ones_like(token_log_probs)
         peak_mem_mb = _peak_memory_mb()
@@ -340,7 +349,9 @@ class JanusProPipelineExecutor(
         sample_specs_by_request: dict[str, list[GenerationSampleSpec]],
     ) -> dict[str, OutputBatch]:
         return forward_batch_by_merging_prompts(
-            self, requests, sample_specs_by_request,
+            self,
+            requests,
+            sample_specs_by_request,
         )
 
     # -- internals -----------------------------------------------------
@@ -363,8 +374,7 @@ class JanusProPipelineExecutor(
         missing = [name for name in required if not hasattr(self.model, name)]
         if missing:
             raise TypeError(
-                "use_ar_scheduler=True requires model step API methods: "
-                + ", ".join(missing)
+                "use_ar_scheduler=True requires model step API methods: " + ", ".join(missing)
             )
 
         if cond_embeds.shape[0] != len(sample_specs):
@@ -450,15 +460,24 @@ class JanusProPipelineExecutor(
             pad_id = getattr(tokenizer, "pad_token_id", None) or 0
             extra_len = max_text_length - ids.shape[1]
             ids = torch.cat(
-                [ids, torch.full(
-                    (ids.shape[0], extra_len), pad_id, dtype=ids.dtype,
-                )],
+                [
+                    ids,
+                    torch.full(
+                        (ids.shape[0], extra_len),
+                        pad_id,
+                        dtype=ids.dtype,
+                    ),
+                ],
                 dim=1,
             )
             mask = torch.cat(
-                [mask, torch.zeros(
-                    (mask.shape[0], extra_len), dtype=mask.dtype,
-                )],
+                [
+                    mask,
+                    torch.zeros(
+                        (mask.shape[0], extra_len),
+                        dtype=mask.dtype,
+                    ),
+                ],
                 dim=1,
             )
         return ids.to(device), mask.to(device)
@@ -475,19 +494,23 @@ class JanusProPipelineExecutor(
         L = max(a_ids.shape[1], b_ids.shape[1])
 
         def _pad(
-            ids: torch.Tensor, mask: torch.Tensor,
+            ids: torch.Tensor,
+            mask: torch.Tensor,
         ) -> tuple[torch.Tensor, torch.Tensor]:
             cur = ids.shape[1]
             if cur == L:
                 return ids, mask
             extra_len = L - cur
             pad_ids = torch.full(
-                (ids.shape[0], extra_len), pad_id,
-                dtype=ids.dtype, device=ids.device,
+                (ids.shape[0], extra_len),
+                pad_id,
+                dtype=ids.dtype,
+                device=ids.device,
             )
             pad_mask = torch.zeros(
                 (mask.shape[0], extra_len),
-                dtype=mask.dtype, device=mask.device,
+                dtype=mask.dtype,
+                device=mask.device,
             )
             return (
                 torch.cat([ids, pad_ids], dim=1),
@@ -569,16 +592,21 @@ def _ordered_ar_chunks(
         _require_rows("token_mask", chunk.token_mask, chunk.sample_count)
         _require_rows("prompt_input_ids", chunk.prompt_input_ids, chunk.sample_count)
         _require_rows(
-            "prompt_attention_mask", chunk.prompt_attention_mask, chunk.sample_count,
+            "prompt_attention_mask",
+            chunk.prompt_attention_mask,
+            chunk.sample_count,
         )
         _require_rows("uncond_input_ids", chunk.uncond_input_ids, chunk.sample_count)
         _require_rows(
-            "uncond_attention_mask", chunk.uncond_attention_mask, chunk.sample_count,
+            "uncond_attention_mask",
+            chunk.uncond_attention_mask,
+            chunk.sample_count,
         )
         actual.extend(
             (chunk.prompt_index, sample_index)
             for sample_index in range(
-                chunk.sample_start, chunk.sample_start + chunk.sample_count,
+                chunk.sample_start,
+                chunk.sample_start + chunk.sample_count,
             )
         )
     if actual != expected:
@@ -600,11 +628,7 @@ def _chunk_seed_offset(request: GenerationRequest, chunk: MicroBatchPlan) -> int
 
 
 def _max_peak_memory_mb(chunks: Sequence[JanusProARChunkResult]) -> float | None:
-    peaks = [
-        chunk.peak_memory_mb
-        for chunk in chunks
-        if chunk.peak_memory_mb is not None
-    ]
+    peaks = [chunk.peak_memory_mb for chunk in chunks if chunk.peak_memory_mb is not None]
     return max(peaks) if peaks else None
 
 
@@ -622,7 +646,8 @@ class JanusProChunkGatherer:
         ordered_chunks = _ordered_ar_chunks(request, sample_specs, chunks)
         token_ids = torch.cat([chunk.token_ids for chunk in ordered_chunks], dim=0)
         token_log_probs = torch.cat(
-            [chunk.token_log_probs for chunk in ordered_chunks], dim=0,
+            [chunk.token_log_probs for chunk in ordered_chunks],
+            dim=0,
         )
         output = torch.cat([chunk.output for chunk in ordered_chunks], dim=0)
         peak_mem_mb = _max_peak_memory_mb(ordered_chunks)
@@ -637,19 +662,24 @@ class JanusProChunkGatherer:
             "token_ids": token_ids,
             "token_log_probs": token_log_probs,
             "token_mask": torch.cat(
-                [chunk.token_mask for chunk in ordered_chunks], dim=0,
+                [chunk.token_mask for chunk in ordered_chunks],
+                dim=0,
             ),
             "prompt_input_ids": torch.cat(
-                [chunk.prompt_input_ids for chunk in ordered_chunks], dim=0,
+                [chunk.prompt_input_ids for chunk in ordered_chunks],
+                dim=0,
             ),
             "prompt_attention_mask": torch.cat(
-                [chunk.prompt_attention_mask for chunk in ordered_chunks], dim=0,
+                [chunk.prompt_attention_mask for chunk in ordered_chunks],
+                dim=0,
             ),
             "uncond_input_ids": torch.cat(
-                [chunk.uncond_input_ids for chunk in ordered_chunks], dim=0,
+                [chunk.uncond_input_ids for chunk in ordered_chunks],
+                dim=0,
             ),
             "uncond_attention_mask": torch.cat(
-                [chunk.uncond_attention_mask for chunk in ordered_chunks], dim=0,
+                [chunk.uncond_attention_mask for chunk in ordered_chunks],
+                dim=0,
             ),
             "context": dict(ordered_chunks[0].context),
         }
@@ -668,20 +698,6 @@ class JanusProChunkGatherer:
         )
 
 
-def build_janus_pro_executor_from_runtime_spec(runtime_spec: Any) -> JanusProPipelineExecutor:
-    """Build a Janus-Pro rollout executor inside a Ray worker."""
-
-    from vrl.distributed.ray.spec import RolloutRuntimeSpec
-    from vrl.models.families.janus_pro.policy import JanusProConfig, JanusProPolicy
-
-    spec = RolloutRuntimeSpec.from_value(runtime_spec)
-    config = dict(spec.model_config)
-    if "lora_target_modules" in config:
-        config["lora_target_modules"] = tuple(config["lora_target_modules"])
-    policy = JanusProPolicy(JanusProConfig(**config))
-    return JanusProPipelineExecutor(policy)
-
-
 # F is imported for potential future uses (entropy etc.) — keep silent
 # usage so linters don't strip the import; Janus' executor itself only
 # uses model.sample_image_tokens which already does softmax internally.
@@ -692,5 +708,4 @@ __all__ = [
     "JanusProARChunkResult",
     "JanusProChunkGatherer",
     "JanusProPipelineExecutor",
-    "build_janus_pro_executor_from_runtime_spec",
 ]

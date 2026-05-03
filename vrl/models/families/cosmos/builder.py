@@ -16,7 +16,7 @@ from vrl.models.runtime import RuntimeBuildSpec, RuntimeBundle
 logger = logging.getLogger(__name__)
 
 _ADAPTER_BY_BACKEND: dict[str, str] = {
-    "diffusers": "vrl.models.families.cosmos.predict2_policy:CosmosPredict2Policy",
+    "diffusers": "vrl.models.families.cosmos.policy:CosmosPredict2Policy",
 }
 
 

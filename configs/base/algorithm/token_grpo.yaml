@@ -5,6 +5,5 @@ defaults:
 
 algorithm:
   kind: token_grpo
-  adv_estimator: token_grpo     # legacy alias; loader prefers `kind`
   mask_key: token_mask          # SignalBatch.aux key for [B, L] float mask
   kl_estimator: k3              # k1 = logp-logp_ref signed; k3 = Schulman 2020 unbiased

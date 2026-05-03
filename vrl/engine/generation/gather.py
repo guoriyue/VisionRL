@@ -6,15 +6,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
+from vrl.engine.generation.protocols import ChunkedFamilyPipelineExecutor, PipelineChunkResult
 from vrl.engine.generation.types import (
     GenerationRequest,
     GenerationSampleSpec,
     OutputBatch,
 )
-from vrl.executors.base import ChunkedFamilyPipelineExecutor, PipelineChunkResult
 
 if TYPE_CHECKING:
-    from vrl.executors.diffusion import DiffusionChunkResult
+    from vrl.engine.generation.diffusion import DiffusionChunkResult
 
 
 @runtime_checkable
@@ -75,25 +75,17 @@ def gather_diffusion_chunks(
 ) -> OutputBatch:
     """Gather diffusion chunks using only request metadata and CPU payloads."""
 
-    from vrl.executors.diffusion import build_diffusion_output_batch
+    from vrl.engine.generation.diffusion import build_diffusion_output_batch
 
+    del model_family, respect_cfg_flag
     sampling = request.sampling
     num_steps = int(sampling["num_steps"])
-    guidance_scale = float(sampling["guidance_scale"])
-    cfg_enabled = guidance_scale > 1.0
-    if respect_cfg_flag:
-        cfg_enabled = bool(sampling.get("cfg", True)) and cfg_enabled
     return build_diffusion_output_batch(
         request=request,
         sample_specs=list(sample_specs),
         prompts=list(request.prompts),
         chunks=cast("list[DiffusionChunkResult]", list(chunks)),
         num_steps=num_steps,
-        fallback_context={
-            "guidance_scale": guidance_scale,
-            "cfg": cfg_enabled,
-            "model_family": model_family,
-        },
     )
 
 

@@ -153,10 +153,7 @@ class _StubPolicy:
         self,
         state: _StubSamplingState,
         step_idx: int,
-        *,
-        model: Any = None,
     ) -> dict[str, torch.Tensor]:
-        del model
         self.forward_calls += 1
         # Deterministic: noise_pred = sin(latents) * (step_idx + 1) * 0.01
         noise_pred = torch.sin(state.latents) * (step_idx + 1) * 0.01
@@ -282,6 +279,17 @@ def test_executor_forward_shapes_for_two_prompts_x_four_samples() -> None:
 
     # encode_prompt called once per prompt (not once per chunk).
     assert policy.encode_calls == ["a red cube", "a blue sphere"]
+
+
+def test_same_latent_requires_explicit_seed() -> None:
+    policy = _StubPolicy()
+    executor = SD3_5PipelineExecutor(policy, sample_batch_size=8)
+    request = _request(seed=None)
+    request.sampling["same_latent"] = True
+    specs = GenerationIdFactory().build_sample_specs(request)
+
+    with pytest.raises(ValueError, match="same_latent=True requires"):
+        executor.forward(request, specs)
 
 
 def test_executor_micro_batches_when_group_exceeds_sample_batch_size() -> None:

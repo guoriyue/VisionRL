@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # sde_step_with_logprob — CPS and noise_level (Gap 1)
 # ---------------------------------------------------------------------------
@@ -175,8 +177,8 @@ class TestFlowMatchingEvaluatorInit:
         assert evaluator.noise_level == 0.7
         assert evaluator.sde_type == "cps"
 
-    def test_evaluate_replays_through_collector_policy(self, monkeypatch) -> None:
-        """Diffusion trainers optimize the transformer while policy owns replay."""
+    def test_evaluate_replays_through_policy_model(self, monkeypatch) -> None:
+        """Diffusion evaluators require the model to own replay."""
         import types
 
         import torch
@@ -187,70 +189,10 @@ class TestFlowMatchingEvaluatorInit:
 
         class ReplayPolicy:
             def __init__(self) -> None:
-                self.models: list[object] = []
+                self.calls = 0
 
-            def replay_forward(self, batch, timestep_idx, *, model=None):
-                self.models.append(model)
-                return {
-                    "noise_pred": torch.zeros_like(
-                        batch.observations[:, timestep_idx],
-                    ),
-                }
-
-        def fake_sde_step_with_logprob(
-            scheduler, model_output, timestep, sample, **kwargs,
-        ):
-            del scheduler, timestep, kwargs
-            return SDEStepResult(
-                prev_sample=sample,
-                log_prob=torch.zeros(sample.shape[0]),
-                prev_sample_mean=model_output,
-                std_dev_t=torch.ones(sample.shape[0]),
-            )
-
-        monkeypatch.setattr(
-            fm.flow_matching_math,
-            "sde_step_with_logprob",
-            fake_sde_step_with_logprob,
-        )
-
-        policy = ReplayPolicy()
-        trainable_transformer = object()
-        batch = types.SimpleNamespace(
-            observations=torch.randn(2, 1, 4),
-            actions=torch.randn(2, 1, 4),
-            extras={"timesteps": torch.tensor([[0.8], [0.8]])},
-        )
-
-        evaluator = fm.FlowMatchingEvaluator(scheduler=None)
-        evaluator.evaluate(
-            collector=types.SimpleNamespace(model=policy),
-            model=trainable_transformer,
-            batch=batch,
-            timestep_idx=0,
-            signal_request=SignalRequest(need_ref=False),
-        )
-
-        assert policy.models == [trainable_transformer]
-
-    def test_evaluate_policy_model_does_not_override_with_itself(
-        self, monkeypatch,
-    ) -> None:
-        """When trainer model is the replay-owning policy, no override is passed."""
-        import types
-
-        import torch
-
-        import vrl.rollouts.evaluators.diffusion.flow_matching as fm
-        from vrl.algorithms.flow_matching import SDEStepResult
-        from vrl.rollouts.evaluators.types import SignalRequest
-
-        class ReplayPolicy:
-            def __init__(self) -> None:
-                self.models: list[object | None] = []
-
-            def replay_forward(self, batch, timestep_idx, *, model=None):
-                self.models.append(model)
+            def replay_forward(self, batch, timestep_idx):
+                self.calls += 1
                 return {
                     "noise_pred": torch.zeros_like(
                         batch.observations[:, timestep_idx],
@@ -283,14 +225,57 @@ class TestFlowMatchingEvaluatorInit:
 
         evaluator = fm.FlowMatchingEvaluator(scheduler=None)
         evaluator.evaluate(
-            collector=types.SimpleNamespace(model=policy),
             model=policy,
             batch=batch,
             timestep_idx=0,
             signal_request=SignalRequest(need_ref=False),
         )
 
-        assert policy.models == [None]
+        assert policy.calls == 1
+
+    def test_evaluate_fails_when_model_does_not_own_replay(
+        self, monkeypatch,
+    ) -> None:
+        """There is no collector.model or transformer-only compatibility path."""
+        import types
+
+        import torch
+
+        import vrl.rollouts.evaluators.diffusion.flow_matching as fm
+        from vrl.algorithms.flow_matching import SDEStepResult
+        from vrl.rollouts.evaluators.types import SignalRequest
+
+        def fake_sde_step_with_logprob(
+            scheduler, model_output, timestep, sample, **kwargs,
+        ):
+            del scheduler, timestep, kwargs
+            return SDEStepResult(
+                prev_sample=sample,
+                log_prob=torch.zeros(sample.shape[0]),
+                prev_sample_mean=model_output,
+                std_dev_t=torch.ones(sample.shape[0]),
+            )
+
+        monkeypatch.setattr(
+            fm.flow_matching_math,
+            "sde_step_with_logprob",
+            fake_sde_step_with_logprob,
+        )
+
+        batch = types.SimpleNamespace(
+            observations=torch.randn(2, 1, 4),
+            actions=torch.randn(2, 1, 4),
+            extras={"timesteps": torch.tensor([[0.8], [0.8]])},
+        )
+
+        evaluator = fm.FlowMatchingEvaluator(scheduler=None)
+        with pytest.raises(AttributeError, match="replay_forward"):
+            evaluator.evaluate(
+                model=object(),
+                batch=batch,
+                timestep_idx=0,
+                signal_request=SignalRequest(need_ref=False),
+            )
 
     def test_ref_replay_uses_trainable_disable_adapter(self, monkeypatch) -> None:
         """LoRA KL replay must disable the adapter on the trainable module."""
@@ -303,9 +288,10 @@ class TestFlowMatchingEvaluatorInit:
         from vrl.algorithms.flow_matching import SDEStepResult
         from vrl.rollouts.evaluators.types import SignalRequest
 
-        class TrainableTransformer:
+        class ReplayPolicy:
             def __init__(self) -> None:
                 self.disabled = False
+                self.disabled_states: list[bool] = []
 
             @contextlib.contextmanager
             def disable_adapter(self):
@@ -315,14 +301,9 @@ class TestFlowMatchingEvaluatorInit:
                 finally:
                     self.disabled = False
 
-        class ReplayPolicy:
-            def __init__(self, trainable: TrainableTransformer) -> None:
-                self.trainable = trainable
-                self.disabled_states: list[bool] = []
-
-            def replay_forward(self, batch, timestep_idx, *, model=None):
-                del timestep_idx, model
-                self.disabled_states.append(self.trainable.disabled)
+            def replay_forward(self, batch, timestep_idx):
+                del timestep_idx
+                self.disabled_states.append(self.disabled)
                 return {"noise_pred": torch.zeros_like(batch.observations[:, 0])}
 
         def fake_sde_step_with_logprob(
@@ -345,8 +326,7 @@ class TestFlowMatchingEvaluatorInit:
             fake_sde_step_with_logprob,
         )
 
-        trainable = TrainableTransformer()
-        policy = ReplayPolicy(trainable)
+        policy = ReplayPolicy()
         batch = types.SimpleNamespace(
             observations=torch.randn(2, 1, 4),
             actions=torch.randn(2, 1, 4),
@@ -355,11 +335,10 @@ class TestFlowMatchingEvaluatorInit:
 
         evaluator = fm.FlowMatchingEvaluator(scheduler=None)
         signals = evaluator.evaluate(
-            collector=types.SimpleNamespace(model=policy),
-            model=trainable,
+            model=policy,
             batch=batch,
             timestep_idx=0,
-            ref_model=trainable,
+            ref_model=policy,
             signal_request=SignalRequest(
                 need_ref=True,
                 need_kl_intermediates=True,
@@ -369,10 +348,10 @@ class TestFlowMatchingEvaluatorInit:
         assert policy.disabled_states == [False, True]
         assert signals.ref_log_prob is not None
 
-    def test_ref_replay_policy_model_does_not_override_with_itself(
+    def test_ref_replay_uses_ref_policy_directly(
         self, monkeypatch,
     ) -> None:
-        """LoRA KL replay uses policy.disable_adapter without self override."""
+        """Explicit reference policies must own their own replay."""
         import contextlib
         import types
 
@@ -383,9 +362,10 @@ class TestFlowMatchingEvaluatorInit:
         from vrl.rollouts.evaluators.types import SignalRequest
 
         class ReplayPolicy:
-            def __init__(self) -> None:
+            def __init__(self, name: str) -> None:
+                self.name = name
                 self.disabled = False
-                self.calls: list[tuple[bool, object | None]] = []
+                self.calls: list[tuple[str, bool]] = []
 
             @contextlib.contextmanager
             def disable_adapter(self):
@@ -395,8 +375,8 @@ class TestFlowMatchingEvaluatorInit:
                 finally:
                     self.disabled = False
 
-            def replay_forward(self, batch, timestep_idx, *, model=None):
-                self.calls.append((self.disabled, model))
+            def replay_forward(self, batch, timestep_idx):
+                self.calls.append((self.name, self.disabled))
                 return {
                     "noise_pred": torch.zeros_like(
                         batch.observations[:, timestep_idx],
@@ -423,7 +403,8 @@ class TestFlowMatchingEvaluatorInit:
             fake_sde_step_with_logprob,
         )
 
-        policy = ReplayPolicy()
+        policy = ReplayPolicy("policy")
+        ref_policy = ReplayPolicy("ref")
         batch = types.SimpleNamespace(
             observations=torch.randn(2, 1, 4),
             actions=torch.randn(2, 1, 4),
@@ -432,18 +413,18 @@ class TestFlowMatchingEvaluatorInit:
 
         evaluator = fm.FlowMatchingEvaluator(scheduler=None)
         signals = evaluator.evaluate(
-            collector=types.SimpleNamespace(model=policy),
             model=policy,
             batch=batch,
             timestep_idx=0,
-            ref_model=policy,
+            ref_model=ref_policy,
             signal_request=SignalRequest(
                 need_ref=True,
                 need_kl_intermediates=True,
             ),
         )
 
-        assert policy.calls == [(False, None), (True, None)]
+        assert policy.calls == [("policy", False)]
+        assert ref_policy.calls == [("ref", False)]
         assert signals.ref_log_prob is not None
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from vrl.executors.base import FamilyPipelineExecutor
+from vrl.engine.generation.protocols import FamilyPipelineExecutor
 
 
 @dataclass(frozen=True, slots=True)

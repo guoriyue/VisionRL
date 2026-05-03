@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from vrl.engine.types import RequestOutput
+from vrl.engine.scheduler_types import RequestOutput
 from vrl.ipc.protocol import ArtifactRef
 
 logger = logging.getLogger(__name__)

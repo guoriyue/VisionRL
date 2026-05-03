@@ -9,8 +9,8 @@ import torch
 
 from vrl.config.loader import load_config
 from vrl.distributed.ray import build_family_ray_rollout_runtime_inputs
+from vrl.engine.generation import ChunkedFamilyPipelineExecutor
 from vrl.engine.generation.gather import DiffusionChunkGatherer
-from vrl.executors import ChunkedFamilyPipelineExecutor
 from vrl.models.families.janus_pro.executor import JanusProChunkGatherer
 from vrl.models.families.nextstep_1.executor import NextStep1ChunkGatherer
 

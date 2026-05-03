@@ -11,8 +11,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from vrl.models.diffusion import DiffusionPolicy
-
 
 @dataclass
 class RuntimeBuildSpec:
@@ -42,14 +40,14 @@ class RuntimeBuildSpec:
 class RuntimeBundle:
     """Sole output of a family builder. Consumed by scripts / collectors / trainers.
 
-    ``backend_handle`` carries the raw backend object (e.g. diffusers pipeline)
-    and must be treated as builder-internal — scripts and trainers must not
-    reach into it. Use ``policy`` as both the rollout adapter and the
-    trainer-facing model. ``trainable_modules`` remains a compatibility,
-    debug, and export surface for older code that needs named inner modules.
+    ``backend_handle`` carries the raw backend object (e.g. diffusers pipeline
+    or AR upstream wrapper) and must be treated as builder-internal — scripts
+    and trainers must not reach into it. Use ``policy`` as both the rollout
+    adapter and the trainer-facing model. ``trainable_modules`` exposes named
+    trainable submodules for resource checks and state export.
     """
 
-    policy: DiffusionPolicy
+    policy: Any
     trainable_modules: dict[str, Any]
     scheduler: Any
     backend_kind: str

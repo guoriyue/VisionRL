@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from vrl.engine import ContinuousBatchPlanner, EngineLoop, Scheduler
-from vrl.engine.types import (
+from vrl.engine.scheduler_types import (
     ModelRunnerOutput,
     RequestOutput,
     SchedulerOutput,
@@ -89,7 +89,7 @@ async def test_engine_loop_abort():
         request = await asyncio.wait_for(
             engine.scheduler.get_result("req-1"), timeout=2.0
         )
-        from vrl.engine.types import SchedulerStatus
+        from vrl.engine.scheduler_types import SchedulerStatus
 
         assert request.status == SchedulerStatus.ABORTED
     finally:

@@ -1,7 +1,7 @@
 """Per SPRINT_config_yaml_unification.md Phase 6 + the patch SPRINT Phase 5:
 every experiment YAML must load via ``vrl.config.loader`` and expose the keys
-downstream drivers expect; ``build_algorithm_config`` must dispatch correctly;
-``algorithm.kind`` vs legacy ``adv_estimator`` conflicts must fail fast.
+downstream drivers expect; ``build_algorithm_config`` must dispatch only through
+``algorithm.kind``.
 """
 
 from __future__ import annotations
@@ -63,8 +63,8 @@ def test_experiment_yaml_loads(name: str) -> None:
     # model must have a path (required by every family driver).
     assert "path" in cfg.model, f"{name} missing model.path"
     assert "output_dir" in cfg.trainer, f"{name} missing trainer.output_dir"
-    # algorithm.kind is the canonical dispatch field; adv_estimator is legacy.
     assert "kind" in cfg.algorithm, f"{name} missing algorithm.kind"
+    assert "adv_estimator" not in cfg.algorithm, f"{name} still uses algorithm.adv_estimator"
 
 
 @pytest.mark.parametrize("name", _experiment_names())
@@ -108,10 +108,9 @@ def test_unified_train_entrypoint_dispatches_every_experiment(name: str) -> None
     assert resolve_train_target(cfg).import_path == _EXPECTED_TRAIN_TARGET[name]
 
 
-def test_kind_vs_adv_estimator_conflict_fails_fast() -> None:
-    """When kind and adv_estimator disagree, build_algorithm_config must raise."""
+def test_adv_estimator_is_not_supported() -> None:
     cfg = OmegaConf.create({"algorithm": {"kind": "grpo", "adv_estimator": "dpo"}})
-    with pytest.raises(ValueError, match="conflicts"):
+    with pytest.raises(ValueError, match="adv_estimator"):
         build_algorithm_config(cfg)
 
 
@@ -121,11 +120,10 @@ def test_kind_only_works_without_adv_estimator() -> None:
     assert type(out) is GRPOConfig
 
 
-def test_legacy_adv_estimator_only_works() -> None:
-    """Legacy YAML with only adv_estimator must still resolve to a typed config."""
+def test_adv_estimator_only_fails_fast() -> None:
     cfg = OmegaConf.create({"algorithm": {"adv_estimator": "token_grpo"}})
-    out = build_algorithm_config(cfg)
-    assert isinstance(out, TokenGRPOConfig)
+    with pytest.raises(ValueError, match="adv_estimator"):
+        build_algorithm_config(cfg)
 
 
 def test_unknown_kind_fails_fast() -> None:

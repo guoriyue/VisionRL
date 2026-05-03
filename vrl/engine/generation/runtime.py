@@ -12,7 +12,7 @@ from vrl.engine.generation.types import (
 from vrl.engine.generation.worker import GenerationWorker
 from vrl.engine.loop import EngineLoop
 from vrl.engine.protocols import BatchPlanner
-from vrl.engine.types import (
+from vrl.engine.scheduler_types import (
     ModelRunnerOutput,
     RequestOutput,
     SchedulerOutput,

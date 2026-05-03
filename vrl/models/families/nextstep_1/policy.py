@@ -585,8 +585,7 @@ class NextStep1Policy(nn.Module, AutoregressivePolicy):
         continuous tokens we go straight to log-probs since there is no
         codebook to softmax over.
 
-        ``timestep_idx`` accepted for protocol compatibility but ignored —
-        AR has no notion of "denoising step".
+        AR has no notion of "denoising step", so ``timestep_idx`` is ignored.
 
         Returns:
           ``{"log_probs": Tensor[B, L_img], "tokens": Tensor[B, L_img, D_token]}``.
@@ -645,10 +644,12 @@ class NextStep1Policy(nn.Module, AutoregressivePolicy):
     @contextlib.contextmanager
     def disable_adapter(self) -> Iterator[None]:
         """Run a forward pass with LoRA disabled (= reference policy)."""
-        if hasattr(self.language_model, "disable_adapter"):
-            with self.language_model.disable_adapter():
-                yield
-        else:
+        if not hasattr(self.language_model, "disable_adapter"):
+            raise RuntimeError(
+                "NextStep1Policy.disable_adapter() called but no PEFT adapter "
+                "is attached. Pass an explicit ref_model instead.",
+            )
+        with self.language_model.disable_adapter():
             yield
 
     # ------------------------------------------------------------------

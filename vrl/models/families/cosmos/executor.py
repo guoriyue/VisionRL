@@ -21,11 +21,10 @@ the runtime; per-call overrides may still flow through
 ``GenerationRequest.metadata['reference_image']`` and take precedence
 when present.
 
-Parity contract: same prompts + same seed + same SDE window ⇒ same
-log_probs/latents/timesteps/decoded videos as the pre-migration
-collector path. The seed-derivation rule mirrors the old code exactly:
-``gen.manual_seed(seed + chunk_offset)`` per micro-batch (or
-``hash(prompt) + chunk_offset`` when ``same_latent`` and no seed).
+Determinism contract: same prompts + same seed + same SDE window ⇒ same
+log_probs/latents/timesteps/decoded videos. Each micro-batch uses
+``gen.manual_seed(seed + chunk_offset)``. ``same_latent=True`` requires an
+explicit seed.
 """
 
 from __future__ import annotations
@@ -34,29 +33,29 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
-from vrl.engine.generation.gather import gather_diffusion_chunks
-from vrl.engine.generation.types import (
-    GenerationRequest,
-    GenerationSampleSpec,
-    OutputBatch,
-    WorkloadSignature,
-)
-from vrl.executors.base import (
-    BatchedFamilyPipelineExecutor,
-    ChunkedFamilyPipelineExecutor,
-)
-from vrl.executors.batching import forward_batch_by_merging_prompts
-from vrl.executors.diffusion import (
+from vrl.engine.generation.batching import forward_batch_by_merging_prompts
+from vrl.engine.generation.diffusion import (
     DiffusionChunkResult,
     DiffusionDenoiseConfig,
     repeat_tensor_batch,
     run_diffusion_denoise_chunk,
     select_sde_window,
 )
-from vrl.executors.microbatching import (
+from vrl.engine.generation.gather import gather_diffusion_chunks
+from vrl.engine.generation.microbatching import (
     MicroBatchPlan,
     plan_prompt_group_microbatches,
     run_microbatches_with_oom_retry,
+)
+from vrl.engine.generation.protocols import (
+    BatchedFamilyPipelineExecutor,
+    ChunkedFamilyPipelineExecutor,
+)
+from vrl.engine.generation.types import (
+    GenerationRequest,
+    GenerationSampleSpec,
+    OutputBatch,
+    WorkloadSignature,
 )
 
 logger = logging.getLogger(__name__)
@@ -329,7 +328,6 @@ class CosmosPipelineExecutor(
             request=request,
             encoded=chunk_encoded,
             config=DiffusionDenoiseConfig(
-                prompt=prompt,
                 sample_start=chunk_offset,
                 seed=seed,
                 same_latent=same_latent,

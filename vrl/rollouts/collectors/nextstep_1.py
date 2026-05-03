@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from vrl.rollouts.collectors.base import Collector
-from vrl.rollouts.types import ExperienceBatch
+from vrl.rollouts.experience import ExperienceBatch
 
 if TYPE_CHECKING:  # pragma: no cover
     from vrl.engine.generation import GenerationRuntime, OutputBatch
@@ -225,9 +225,8 @@ class NextStep1Collector(Collector):
     ) -> ExperienceBatch:
         """Translate an engine ``OutputBatch`` into a trainer ``ExperienceBatch``.
 
-        Inverse of the old inline construction: pull the AR artifacts
-        (``tokens``/``saved_noise``/``log_probs``) and prompt-side embeds
-        out of ``output.extra``, then run reward.
+        Pull AR artifacts (``tokens``/``saved_noise``/``log_probs``) and
+        prompt-side embeds out of ``output.extra``, then run reward.
         """
         extra = output.extra
         tokens = extra["tokens"]                       # [B, L_img, D_token]

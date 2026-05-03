@@ -237,20 +237,17 @@ class WanT2VDiffusersPolicy(DiffusionPolicy):
         self,
         state: WanT2VSamplingState,
         step_idx: int,
-        *,
-        model: Any = None,
     ) -> dict[str, Any]:
         """Wan T2V transformer forward + optional batched CFG.
 
-        ``model`` overrides the default transformer (used by the trainer to
-        forward through the LoRA-wrapped policy). Returns noise_pred plus
-        the un/conditional branches; the caller owns scheduler.step / SDE.
+        Returns noise_pred plus the un/conditional branches; the caller owns
+        scheduler.step / SDE.
 
         Timestep shape convention (mirrors SD3 adapter):
         - rollouts: ``state.timesteps`` is 1-D ``[T]``; we expand a scalar to ``[B]``.
         - eval/training: collector packs per-sample timestep as ``[B]``; expand is a no-op.
         """
-        m = self._resolve_step_model(model)
+        m = self.transformer
 
         t = state.timesteps[step_idx]
         bsz = state.latents.shape[0]

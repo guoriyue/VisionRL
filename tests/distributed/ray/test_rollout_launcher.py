@@ -20,13 +20,14 @@ from vrl.distributed.ray import (
     RolloutRuntimeSpec,
 )
 from vrl.engine.generation import (
+    ChunkedFamilyPipelineExecutor,
     GenerationRequest,
     OutputBatch,
+    PipelineChunkResult,
     WorkloadSignature,
     build_rollout_backend_from_cfg,
 )
-from vrl.executors import ChunkedFamilyPipelineExecutor, PipelineChunkResult
-from vrl.executors.microbatching import MicroBatchPlan
+from vrl.engine.generation.microbatching import MicroBatchPlan
 
 
 @dataclass(slots=True)
@@ -41,8 +42,10 @@ class _LauncherFakeExecutor(ChunkedFamilyPipelineExecutor):
     family = "fake"
     task = "t2i"
 
-    def __init__(self) -> None:
+    def __init__(self, policy: Any | None = None, **kwargs: Any) -> None:
         self.executor_instance_id = uuid.uuid4().hex
+        self.policy = policy
+        self.kwargs = dict(kwargs)
 
     def workload_signature(self, request: GenerationRequest) -> WorkloadSignature:
         return WorkloadSignature.from_request(request)
@@ -113,17 +116,8 @@ class _LauncherGatherer:
         )
 
 
-def make_launcher_fake_executor(
-    runtime_spec: RolloutRuntimeSpec,
-) -> _LauncherFakeExecutor:
-    assert runtime_spec.family == "fake"
-    assert runtime_spec.executor_kwargs == {"sample_batch_size": 2}
-    return _LauncherFakeExecutor()
-
-
 def make_launcher_runtime_bundle(build_spec: Any) -> Any:
-    assert str(build_spec.device) == "cuda"
-    assert build_spec.dtype is torch.bfloat16
+    assert build_spec.model_name_or_path == "fake-model"
     return SimpleNamespace(policy={"device": build_spec.device, "dtype": build_spec.dtype})
 
 
@@ -154,13 +148,17 @@ def _runtime_spec(*, policy_version: int | None = 3) -> RolloutRuntimeSpec:
     return RolloutRuntimeSpec(
         family="fake",
         task="t2i",
-        model_config={"model_name_or_path": "fake-model", "dtype": "float32"},
+        build_spec={
+            "model_name_or_path": "fake-model",
+            "device": "cpu",
+            "dtype": "float32",
+        },
         executor_kwargs={"sample_batch_size": 2},
         policy_version=policy_version,
-        executor_factory=(
-            "tests.distributed.ray.test_rollout_launcher:"
-            "make_launcher_fake_executor"
+        runtime_builder=(
+            "tests.distributed.ray.test_rollout_launcher:make_launcher_runtime_bundle"
         ),
+        executor_cls=("tests.distributed.ray.test_rollout_launcher:_LauncherFakeExecutor"),
     )
 
 
@@ -195,8 +193,7 @@ def test_ray_rollout_launcher_single_worker_smoke(ray_local) -> None:
         asyncio.run(runtime.shutdown())
 
     assert [
-        (row["prompt_index"], row["sample_start"], row["sample_count"])
-        for row in output.output
+        (row["prompt_index"], row["sample_start"], row["sample_count"]) for row in output.output
     ] == [(0, 0, 2), (0, 2, 2), (1, 0, 2), (1, 2, 2)]
     assert len({row["executor_instance_id"] for row in output.output}) == 1
 
@@ -252,7 +249,6 @@ def test_runtime_factory_launches_ray_runtime_when_spec_and_gatherer_are_provide
                     "num_workers": 1,
                     "gpus_per_worker": 0.0,
                     "cpus_per_worker": 1.0,
-                    "executor_factory": "legacy.factory:path",
                 },
             },
         },
@@ -265,8 +261,7 @@ def test_runtime_factory_launches_ray_runtime_when_spec_and_gatherer_are_provide
         asyncio.run(runtime.shutdown())
 
     assert [
-        (row["prompt_index"], row["sample_start"], row["sample_count"])
-        for row in output.output
+        (row["prompt_index"], row["sample_start"], row["sample_count"]) for row in output.output
     ] == [(0, 0, 2), (0, 2, 2), (1, 0, 2), (1, 2, 2)]
 
 
@@ -289,9 +284,11 @@ def test_ray_rollout_launcher_runtime_spec_rejects_live_objects() -> None:
                 "family": "fake",
                 "task": "t2i",
                 "model_config": {"weights": torch.zeros(1)},
-                "executor_factory": (
-                    "tests.distributed.ray.test_rollout_launcher:"
-                    "make_launcher_fake_executor"
+                "runtime_builder": (
+                    "tests.distributed.ray.test_rollout_launcher:make_launcher_runtime_bundle"
+                ),
+                "executor_cls": (
+                    "tests.distributed.ray.test_rollout_launcher:_LauncherFakeExecutor"
                 ),
             },
             _LauncherGatherer(),
@@ -311,12 +308,10 @@ def test_ray_rollout_worker_runtime_builder_normalizes_device_and_dtype() -> Non
                 "dtype": "bfloat16",
             },
             runtime_builder=(
-                "tests.distributed.ray.test_rollout_launcher:"
-                "make_launcher_runtime_bundle"
+                "tests.distributed.ray.test_rollout_launcher:make_launcher_runtime_bundle"
             ),
             executor_cls=(
-                "tests.distributed.ray.test_rollout_launcher:"
-                "LauncherExecutorFromPolicy"
+                "tests.distributed.ray.test_rollout_launcher:LauncherExecutorFromPolicy"
             ),
         ),
     )
@@ -329,7 +324,7 @@ def test_ray_rollout_worker_runtime_builder_normalizes_device_and_dtype() -> Non
 
 
 def test_ray_rollout_launcher_requires_ray(monkeypatch) -> None:
-    import vrl.distributed.ray.launcher as launcher_mod
+    import vrl.distributed.ray.rollout.launcher as launcher_mod
 
     def _missing_ray() -> Any:
         raise ImportError("Ray distributed rollout support requires `ray`.")

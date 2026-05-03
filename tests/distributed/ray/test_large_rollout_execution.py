@@ -6,6 +6,7 @@ import asyncio
 import pickle
 from collections.abc import Sequence
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -23,9 +24,14 @@ from vrl.distributed.ray import (
     RayWorkerHandle,
     RolloutRuntimeSpec,
 )
-from vrl.engine.generation import GenerationRequest, OutputBatch, WorkloadSignature
-from vrl.executors import ChunkedFamilyPipelineExecutor, PipelineChunkResult
-from vrl.executors.microbatching import MicroBatchPlan
+from vrl.engine.generation import (
+    ChunkedFamilyPipelineExecutor,
+    GenerationRequest,
+    OutputBatch,
+    PipelineChunkResult,
+    WorkloadSignature,
+)
+from vrl.engine.generation.microbatching import MicroBatchPlan
 
 
 @dataclass(slots=True)
@@ -39,6 +45,10 @@ class _TensorChunk(PipelineChunkResult):
 class _FakeChunkedExecutor(ChunkedFamilyPipelineExecutor):
     family = "fake"
     task = "t2i"
+
+    def __init__(self, policy: Any | None = None, **kwargs: Any) -> None:
+        self.policy = policy
+        self.kwargs = dict(kwargs)
 
     def workload_signature(self, request: GenerationRequest) -> WorkloadSignature:
         return WorkloadSignature.from_request(request)
@@ -93,8 +103,9 @@ class _FakePolicyWithTrainableState:
 
 
 class _FakeExecutorWithPolicy(_FakeChunkedExecutor):
-    def __init__(self) -> None:
-        self.model = _FakePolicyWithTrainableState()
+    def __init__(self, policy: Any | None = None, **kwargs: Any) -> None:
+        super().__init__(policy, **kwargs)
+        self.model = policy or _FakePolicyWithTrainableState()
 
 
 class _FakeChunkGatherer:
@@ -116,36 +127,35 @@ class _FakeChunkGatherer:
         )
 
 
-_FAKE_EXECUTOR_FACTORY = (
-    "tests.distributed.ray.test_large_rollout_execution:make_fake_chunked_executor"
+_FAKE_RUNTIME_BUILDER = (
+    "tests.distributed.ray.test_large_rollout_execution:make_fake_runtime_bundle"
 )
-_FAKE_POLICY_EXECUTOR_FACTORY = (
-    "tests.distributed.ray.test_large_rollout_execution:"
-    "make_fake_chunked_executor_with_policy"
+_FAKE_EXECUTOR_CLS = "tests.distributed.ray.test_large_rollout_execution:_FakeChunkedExecutor"
+_FAKE_POLICY_EXECUTOR_CLS = (
+    "tests.distributed.ray.test_large_rollout_execution:_FakeExecutorWithPolicy"
 )
 
 
-def make_fake_chunked_executor(runtime_spec: RolloutRuntimeSpec) -> _FakeChunkedExecutor:
-    assert runtime_spec.family == "fake"
-    assert runtime_spec.executor_kwargs == {"sample_batch_size": 2}
-    return _FakeChunkedExecutor()
-
-
-def make_fake_chunked_executor_with_policy(
-    runtime_spec: RolloutRuntimeSpec,
-) -> _FakeExecutorWithPolicy:
-    assert runtime_spec.family == "fake"
-    return _FakeExecutorWithPolicy()
+def make_fake_runtime_bundle(build_spec: Any) -> Any:
+    assert build_spec.model_name_or_path == "fake-model"
+    assert str(build_spec.device) == "cpu"
+    assert build_spec.dtype is torch.float32
+    return SimpleNamespace(policy=_FakePolicyWithTrainableState())
 
 
 def _runtime_spec(*, policy_version: int | None = 3) -> RolloutRuntimeSpec:
     return RolloutRuntimeSpec(
         family="fake",
         task="t2i",
-        model_config={"model_name_or_path": "fake-model", "dtype": "float32"},
+        build_spec={
+            "model_name_or_path": "fake-model",
+            "device": "cpu",
+            "dtype": "float32",
+        },
         executor_kwargs={"sample_batch_size": 2},
         policy_version=policy_version,
-        executor_factory=_FAKE_EXECUTOR_FACTORY,
+        runtime_builder=_FAKE_RUNTIME_BUILDER,
+        executor_cls=_FAKE_EXECUTOR_CLS,
     )
 
 
@@ -153,9 +163,14 @@ def _runtime_spec_with_policy(*, policy_version: int | None = 3) -> RolloutRunti
     return RolloutRuntimeSpec(
         family="fake",
         task="t2i",
-        model_config={"model_name_or_path": "fake-model", "dtype": "float32"},
+        build_spec={
+            "model_name_or_path": "fake-model",
+            "device": "cpu",
+            "dtype": "float32",
+        },
         policy_version=policy_version,
-        executor_factory=_FAKE_POLICY_EXECUTOR_FACTORY,
+        runtime_builder=_FAKE_RUNTIME_BUILDER,
+        executor_cls=_FAKE_POLICY_EXECUTOR_CLS,
     )
 
 
@@ -199,16 +214,12 @@ def _request(*, policy_version: int | None = 3) -> GenerationRequest:
     )
 
 
-def test_distributed_rollout_config_validation_and_legacy_mapping() -> None:
-    from vrl.distributed.ray import RayConfig
-
-    config = DistributedRolloutConfig.from_legacy(
-        RayConfig(
-            enable=True,
-            num_rollout_workers=2,
-            gpus_per_rollout_worker=0.0,
-            cpus_per_rollout_worker=1.0,
-        ),
+def test_distributed_rollout_config_validation() -> None:
+    config = DistributedRolloutConfig(
+        backend="ray",
+        num_workers=2,
+        gpus_per_worker=0.0,
+        cpus_per_worker=1.0,
     )
 
     assert config.backend == "ray"
@@ -254,6 +265,8 @@ def test_rollout_runtime_spec_rejects_live_object_keys(key: str) -> None:
             runtime_spec={
                 key: _FakeChunkedExecutor(),
                 "policy_version": 3,
+                "runtime_builder": _FAKE_RUNTIME_BUILDER,
+                "executor_cls": _FAKE_EXECUTOR_CLS,
             },
         )
 
@@ -264,7 +277,47 @@ def test_rollout_runtime_spec_rejects_live_tensor_payload() -> None:
             family="fake",
             task="t2i",
             model_config={"weights": torch.zeros(1)},
-            executor_factory=_FAKE_EXECUTOR_FACTORY,
+            runtime_builder=_FAKE_RUNTIME_BUILDER,
+            executor_cls=_FAKE_EXECUTOR_CLS,
+        )
+
+
+def test_rollout_runtime_spec_rejects_executor_factory_key() -> None:
+    with pytest.raises(ValueError, match=r"unsupported.*executor_factory"):
+        RolloutRuntimeSpec.from_dict(
+            {
+                "family": "fake",
+                "task": "t2i",
+                "executor_factory": "tests.fake:factory",
+                "runtime_builder": "tests.fake:build_runtime",
+                "executor_cls": "tests.fake:Executor",
+            },
+        )
+
+
+def test_rollout_runtime_spec_rejects_missing_builder_mode() -> None:
+    with pytest.raises(ValueError, match="runtime_builder and executor_cls"):
+        RolloutRuntimeSpec(family="fake", task="t2i")
+
+
+@pytest.mark.parametrize(
+    ("runtime_builder", "executor_cls", "match"),
+    [
+        (None, "tests.fake:Executor", "runtime_builder and executor_cls"),
+        ("tests.fake:build_runtime", None, "runtime_builder and executor_cls"),
+    ],
+)
+def test_rollout_runtime_spec_requires_complete_builder_pair(
+    runtime_builder: str | None,
+    executor_cls: str | None,
+    match: str,
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        RolloutRuntimeSpec(
+            family="fake",
+            task="t2i",
+            runtime_builder=runtime_builder,
+            executor_cls=executor_cls,
         )
 
 
@@ -320,6 +373,17 @@ def test_ray_rollout_worker_updates_policy_trainable_state(state: dict[str, Any]
     assert worker.current_policy_version() == 9
     assert isinstance(worker.executor, _FakeExecutorWithPolicy)
     assert worker.executor.model.loaded_states == [state]
+
+
+def test_ray_rollout_worker_requires_model_for_weight_sync() -> None:
+    worker = RayRolloutWorker(
+        worker_id="w0",
+        family="fake",
+        runtime_spec=_runtime_spec(policy_version=1),
+    )
+
+    with pytest.raises(RuntimeError, match="must expose model for weight sync"):
+        worker.update_weights({"transformer.weight": torch.ones(1)}, policy_version=9)
 
 
 def test_distributed_rollout_executor_gathers_direct_actor_results() -> None:

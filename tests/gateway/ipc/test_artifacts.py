@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from vrl.engine.types import RequestOutput
+from vrl.engine.scheduler_types import RequestOutput
 from vrl.ipc.artifacts import ArtifactStore
 
 

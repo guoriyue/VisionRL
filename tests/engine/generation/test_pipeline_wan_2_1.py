@@ -138,10 +138,7 @@ class _StubWanPolicy:
         self,
         state: _StubWanState,
         step_idx: int,
-        *,
-        model: Any = None,
     ) -> dict[str, torch.Tensor]:
-        del model
         self.forward_calls += 1
         noise_pred = torch.sin(state.latents) * (step_idx + 1) * 0.01
         return {

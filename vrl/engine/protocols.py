@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from vrl.engine.types import RequestOutput, SchedulerRequest
+from vrl.engine.scheduler_types import RequestOutput, SchedulerRequest
 
 # ---------------------------------------------------------------------------
 # Protocols

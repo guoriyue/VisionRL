@@ -15,7 +15,7 @@ class TestOnlineTrainerCeaRegressions:
 
         from vrl.algorithms.types import TrainStepMetrics
         from vrl.rollouts.evaluators.types import SignalBatch
-        from vrl.rollouts.types import ExperienceBatch
+        from vrl.rollouts.experience import ExperienceBatch
         from vrl.trainers.online import OnlineTrainer
         from vrl.trainers.types import DebugConfig, EMAConfig, OptimConfig, TrainerConfig
 
@@ -77,7 +77,6 @@ class TestOnlineTrainerCeaRegressions:
         class _Evaluator(Evaluator):
             def evaluate(
                 self,
-                collector,
                 model,
                 batch,
                 timestep_idx,
@@ -138,7 +137,7 @@ class TestOnlineTrainerCeaRegressions:
 
         from vrl.algorithms.types import TrainStepMetrics
         from vrl.rollouts.evaluators.types import SignalBatch
-        from vrl.rollouts.types import ExperienceBatch
+        from vrl.rollouts.experience import ExperienceBatch
         from vrl.trainers.data import PromptExample
         from vrl.trainers.online import OnlineTrainer
         from vrl.trainers.types import DebugConfig, EMAConfig, OptimConfig, TrainerConfig
@@ -189,7 +188,7 @@ class TestOnlineTrainerCeaRegressions:
                 )
 
         class _Evaluator(Evaluator):
-            def evaluate(self, collector, model, batch, timestep_idx, **kw):
+            def evaluate(self, model, batch, timestep_idx, **kw):
                 batch_size = batch.rewards.shape[0]
                 return SignalBatch(log_prob=model.weight.view(1).expand(batch_size))
 
@@ -239,7 +238,7 @@ class TestOnlineTrainerCeaRegressions:
 
         from vrl.algorithms.types import TrainStepMetrics
         from vrl.rollouts.evaluators.types import SignalBatch
-        from vrl.rollouts.types import ExperienceBatch
+        from vrl.rollouts.experience import ExperienceBatch
         from vrl.trainers.online import OnlineTrainer
         from vrl.trainers.types import DebugConfig, EMAConfig, OptimConfig, TrainerConfig
 
@@ -301,8 +300,8 @@ class TestOnlineTrainerCeaRegressions:
                 )
 
         class _Evaluator(Evaluator):
-            def evaluate(self, collector, model, batch, timestep_idx, **kw):
-                del collector, timestep_idx, kw
+            def evaluate(self, model, batch, timestep_idx, **kw):
+                del timestep_idx, kw
                 evaluate_batch_sizes.append(int(batch.rewards.shape[0]))
                 evaluate_group_ids.append(
                     [int(x) for x in batch.group_ids.detach().cpu().tolist()]

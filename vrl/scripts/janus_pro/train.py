@@ -88,7 +88,7 @@ async def _train_janus_pro(
         JanusProCollector,
         JanusProCollectorConfig,
     )
-    from vrl.rollouts.evaluators.lm import TokenLogProbEvaluator
+    from vrl.rollouts.evaluators.ar import TokenLogProbEvaluator
     from vrl.trainers.data import PromptExample, load_prompt_manifest
     from vrl.trainers.online import OnlineTrainer
     from vrl.trainers.weight_sync import build_runtime_weight_syncer

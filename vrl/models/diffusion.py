@@ -11,7 +11,7 @@ Inference primitives:
 
     encode_prompt(prompt, neg, **kw)        -> dict[str, Tensor]
     prepare_sampling(request, encoded, **kw) -> SamplingState        (per-family local)
-    forward_step(state, step_idx, *, model=None) -> dict[str, Tensor] (one fwd + CFG; no scheduler step)
+    forward_step(state, step_idx) -> dict[str, Tensor] (one fwd + CFG; no scheduler step)
     decode_latents(latents)                  -> Tensor
 
 Boundary helpers — make ``SamplingState`` opaque to the collector:
@@ -117,24 +117,17 @@ class DiffusionPolicy(nn.Module, ABC):
         self,
         state: Any,
         step_idx: int,
-        *,
-        model: Any = None,
     ) -> dict[str, Any]:
         """Run one transformer forward (with optional CFG batch concat).
 
-        ``model`` overrides the default transformer for legacy callers.
-        Policy-as-module training passes ``model=None`` or ``model=self`` so
-        the registered ``self.transformer`` is used. Returns at least
-        ``{"noise_pred": Tensor}``. NO scheduler step happens here — the
-        collector owns scheduler.step / SDE / log_prob.
+        Returns at least ``{"noise_pred": Tensor}``. NO scheduler step happens
+        here — the collector owns scheduler.step / SDE / log_prob.
         """
 
     def forward(
         self,
         state: Any,
         step_idx: int,
-        *,
-        model: Any | None = None,
     ) -> dict[str, Any]:
         """Run one trainable denoise transformer step.
 
@@ -142,11 +135,7 @@ class DiffusionPolicy(nn.Module, ABC):
         scheduler stepping, reward, and rollout artifact packing.
         """
 
-        return self.forward_step(
-            state,
-            step_idx,
-            model=self._resolve_step_model(model),
-        )
+        return self.forward_step(state, step_idx)
 
     @abstractmethod
     def decode_latents(self, latents: Any) -> Any:
@@ -196,12 +185,10 @@ class DiffusionPolicy(nn.Module, ABC):
         self,
         batch: Any,
         timestep_idx: int,
-        *,
-        model: Any | None = None,
     ) -> dict[str, Any]:
         """Train-time replay: rebuild SamplingState + run one transformer fwd.
 
-        Default impl: ``restore_eval_state`` -> ``forward_step(state, 0, model=...)``.
+        Default impl: ``restore_eval_state`` -> ``forward_step(state, 0)``.
 
         SD3 and Wan diffusers pack their eval-path timesteps as ``[1, B]`` and
         index with ``step_idx=0`` inside ``forward_step``, so the default's
@@ -218,15 +205,13 @@ class DiffusionPolicy(nn.Module, ABC):
             batch.observations[:, timestep_idx],
             timestep_idx,
         )
-        return self.forward(state, 0, model=model)
+        return self.forward(state, 0)
 
     # -- trainer-facing module helpers -------------------------------------
 
-    def _resolve_step_model(self, model: Any | None) -> Any:
-        """Resolve the transformer used for one replay/denoise step."""
+    def _require_transformer(self) -> Any:
+        """Return the registered trainable transformer."""
 
-        if model is not None and model is not self:
-            return model
         transformer = getattr(self, "transformer", None)
         if transformer is None:
             raise RuntimeError(
@@ -237,7 +222,7 @@ class DiffusionPolicy(nn.Module, ABC):
     def disable_adapter(self) -> contextlib.AbstractContextManager[None]:
         """Disable LoRA/adapters on the registered transformer, when available."""
 
-        transformer = self._resolve_step_model(None)
+        transformer = self._require_transformer()
         disable = getattr(transformer, "disable_adapter", None)
         if not callable(disable):
             raise RuntimeError(
@@ -246,34 +231,26 @@ class DiffusionPolicy(nn.Module, ABC):
         return disable()
 
     def load_trainable_state(self, state_dict: Mapping[str, Any]) -> Any:
-        """Load trainable transformer weights from policy or transformer keys.
+        """Load trainable transformer weights from policy-prefixed keys."""
 
-        Accepts both the new policy state dict format (``transformer.*`` keys)
-        and the legacy transformer-only format used before diffusion policies
-        became trainer-facing modules.
-        """
-
-        transformer = self._resolve_step_model(None)
+        transformer = self._require_transformer()
         state = dict(state_dict)
         if not state:
             raise ValueError("load_trainable_state received an empty state dict")
         prefix = "transformer."
-        if any(key.startswith(prefix) for key in state):
-            state = {
-                key[len(prefix):]: value
-                for key, value in state.items()
-                if key.startswith(prefix)
-            }
-        if not state:
-            raise ValueError("load_trainable_state found no transformer keys")
-        result = transformer.load_state_dict(state, strict=False)
-        unexpected = list(getattr(result, "unexpected_keys", ()))
-        if unexpected and len(unexpected) == len(state):
-            raise RuntimeError(
-                "load_trainable_state did not match any transformer keys: "
-                f"{unexpected}",
+        bad_keys = [key for key in state if not key.startswith(prefix)]
+        if bad_keys:
+            raise ValueError(
+                "load_trainable_state only accepts policy keys prefixed with "
+                f"{prefix!r}; got {bad_keys}",
             )
-        return result
+        state = {
+            key[len(prefix):]: value
+            for key, value in state.items()
+        }
+        if not state:
+            raise ValueError("load_trainable_state requires transformer.* keys")
+        return transformer.load_state_dict(state, strict=True)
 
     # -- backend ownership (called by builder, NOT by collectors) ----------
 

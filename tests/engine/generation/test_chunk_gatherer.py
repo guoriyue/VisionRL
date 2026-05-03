@@ -7,6 +7,7 @@ from typing import Any
 
 import torch
 
+from vrl.engine.generation.diffusion import DiffusionChunkResult
 from vrl.engine.generation.gather import (
     ChunkGatherer,
     DiffusionChunkGatherer,
@@ -15,7 +16,6 @@ from vrl.engine.generation.gather import (
 )
 from vrl.engine.generation.types import GenerationRequest, OutputBatch
 from vrl.engine.generation.worker import GenerationIdFactory
-from vrl.executors.diffusion import DiffusionChunkResult
 
 
 class _PureGatherer:
@@ -53,8 +53,13 @@ def test_diffusion_chunk_gatherer_gathers_without_model_object() -> None:
     request = _request(cfg=False)
     sample_specs = GenerationIdFactory().build_sample_specs(request)
     gatherer = DiffusionChunkGatherer(model_family="sd3_5")
+    context = {
+        "guidance_scale": 4.5,
+        "cfg": False,
+        "model_family": "sd3_5",
+    }
 
-    output = gatherer.gather_chunks(request, sample_specs, _diffusion_chunks())
+    output = gatherer.gather_chunks(request, sample_specs, _diffusion_chunks(context))
 
     assert output.output.device.type == "cpu"
     assert output.metrics is not None
@@ -63,11 +68,7 @@ def test_diffusion_chunk_gatherer_gathers_without_model_object() -> None:
     assert output.rollout_trajectory_data is not None
     denoising_env = output.rollout_trajectory_data.denoising_env
     assert denoising_env is not None
-    assert denoising_env.extra["context"] == {
-        "guidance_scale": 4.5,
-        "cfg": False,
-        "model_family": "sd3_5",
-    }
+    assert denoising_env.extra["context"] == context
 
 
 def test_diffusion_chunk_gatherer_can_ignore_cfg_sampling_flag() -> None:
@@ -77,17 +78,18 @@ def test_diffusion_chunk_gatherer_can_ignore_cfg_sampling_flag() -> None:
         model_family="cosmos",
         respect_cfg_flag=False,
     )
-
-    output = gatherer.gather_chunks(request, sample_specs, _diffusion_chunks())
-
-    assert output.rollout_trajectory_data is not None
-    denoising_env = output.rollout_trajectory_data.denoising_env
-    assert denoising_env is not None
-    assert denoising_env.extra["context"] == {
+    context = {
         "guidance_scale": 4.5,
         "cfg": True,
         "model_family": "cosmos",
     }
+
+    output = gatherer.gather_chunks(request, sample_specs, _diffusion_chunks(context))
+
+    assert output.rollout_trajectory_data is not None
+    denoising_env = output.rollout_trajectory_data.denoising_env
+    assert denoising_env is not None
+    assert denoising_env.extra["context"] == context
 
 
 def _request(
@@ -111,11 +113,11 @@ def _request(
     )
 
 
-def _diffusion_chunks() -> list[DiffusionChunkResult]:
-    return [_diffusion_chunk(1.0), _diffusion_chunk(2.0)]
+def _diffusion_chunks(context: dict[str, Any]) -> list[DiffusionChunkResult]:
+    return [_diffusion_chunk(1.0, context), _diffusion_chunk(2.0, context)]
 
 
-def _diffusion_chunk(value: float) -> DiffusionChunkResult:
+def _diffusion_chunk(value: float, context: dict[str, Any]) -> DiffusionChunkResult:
     return DiffusionChunkResult(
         observations=torch.full((1, 2, 1), value),
         actions=torch.full((1, 2, 1), value + 1),
@@ -124,5 +126,5 @@ def _diffusion_chunk(value: float) -> DiffusionChunkResult:
         kl=torch.full((1, 2), value + 3),
         video=torch.full((1, 3, 4, 4), value),
         training_extras={},
-        context={},
+        context=context,
     )

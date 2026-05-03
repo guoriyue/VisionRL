@@ -8,7 +8,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 from vrl.engine.scheduler import Scheduler
-from vrl.engine.types import (
+from vrl.engine.scheduler_types import (
     ModelRunnerOutput,
     RequestOutput,
     SchedulerOutput,

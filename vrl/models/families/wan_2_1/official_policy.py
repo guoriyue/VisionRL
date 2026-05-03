@@ -216,20 +216,15 @@ class WanT2VOfficialPolicy(DiffusionPolicy):
         return size_key
 
     def _resolve_checkpoint_dir(self, ckpt_dir: str | None, task_key: str) -> Path:
+        del task_key
         if ckpt_dir:
             return Path(ckpt_dir)
         if self.default_checkpoint_dir is not None:
             return self.default_checkpoint_dir
-        fallback_map = {
-            "t2v-A14B": self.repo_dir / "Wan2.2-T2V-A14B",
-        }
-        ckpt_path = fallback_map.get(task_key)
-        if ckpt_path is None or not ckpt_path.exists():
-            raise FileNotFoundError(
-                f"No Wan checkpoint directory configured for {task_key}. "
-                "Set ckpt_dir or the adapter default checkpoint path."
-            )
-        return ckpt_path
+        raise FileNotFoundError(
+            "No Wan checkpoint directory configured. Set request.ckpt_dir or "
+            "WanT2VOfficialPolicy.default_checkpoint_dir."
+        )
 
     def _validate_checkpoint_layout(
         self, task_key: str, checkpoint_dir: Path, config: Any,
@@ -502,26 +497,19 @@ class WanT2VOfficialPolicy(DiffusionPolicy):
         self,
         state: WanT2VOfficialSamplingState,
         step_idx: int,
-        *,
-        model: Any | None = None,
     ) -> dict[str, Any]:
         """Run one official Wan step without assuming a single transformer."""
 
-        return self.forward_step(state, step_idx, model=model)
+        return self.forward_step(state, step_idx)
 
     def forward_step(
         self,
         state: WanT2VOfficialSamplingState,
         step_idx: int,
-        *,
-        model: Any = None,
     ) -> dict[str, Any]:
         """One Wan transformer forward + CFG. NO scheduler step.
 
-        ``model`` overrides the boundary-selected expert (used by the
-        trainer to forward through a LoRA-wrapped policy attached to a
-        specific expert). When ``model`` is ``None`` the boundary rule
-        picks ``high_noise_model`` if ``t >= boundary`` else
+        The boundary rule picks ``high_noise_model`` if ``t >= boundary`` else
         ``low_noise_model``.
         """
         torch = self._torch
@@ -535,14 +523,11 @@ class WanT2VOfficialPolicy(DiffusionPolicy):
         t = state.timesteps[step_idx]
         timestep = torch.stack([t]).to(pipeline.device)
 
-        if model is None:
-            m = (
-                pipeline.high_noise_model
-                if t.item() >= state.boundary
-                else pipeline.low_noise_model
-            )
-        else:
-            m = model
+        m = (
+            pipeline.high_noise_model
+            if t.item() >= state.boundary
+            else pipeline.low_noise_model
+        )
 
         sample_guide_scale = (
             state.high_noise_guidance_scale

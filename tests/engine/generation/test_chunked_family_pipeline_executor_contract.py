@@ -6,17 +6,18 @@ from dataclasses import dataclass
 from typing import Any
 
 from vrl.engine.generation import (
+    ChunkedFamilyPipelineExecutor,
     FamilyPipelineRegistry,
     GenerationIdFactory,
     GenerationRequest,
     LocalRolloutWorkerPool,
     LocalWorkerSpec,
     OutputBatch,
+    PipelineChunkResult,
     WorkloadSignature,
 )
 from vrl.engine.generation.gather import ChunkGatherer, require_chunk_gatherer
-from vrl.executors import ChunkedFamilyPipelineExecutor, PipelineChunkResult
-from vrl.executors.microbatching import MicroBatchPlan
+from vrl.engine.generation.microbatching import MicroBatchPlan
 
 
 @dataclass(slots=True)

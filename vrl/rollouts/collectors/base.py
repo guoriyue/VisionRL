@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from vrl.rollouts.types import ExperienceBatch
+from vrl.rollouts.experience import ExperienceBatch
 
 
 @runtime_checkable

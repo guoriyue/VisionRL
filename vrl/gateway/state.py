@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, cast
 
 from fastapi import Request
 
-from vrl.config import EngineConfig
+from vrl.gateway.config import EngineConfig
 
 if TYPE_CHECKING:
     from fastapi import FastAPI

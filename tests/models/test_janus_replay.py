@@ -3,11 +3,10 @@
 Covers the real boundaries of the refactor:
   1. ``JanusProPolicy.replay_forward`` returns the documented dict schema.
   2. Logits remain grad-carrying when params are unfrozen.
-  3. ``JanusProCollector.forward_step`` is a thin shim that delegates
-     verbatim to ``model.replay_forward``.
+  3. ``JanusProCollector`` has no train-time replay method.
   4. ``JanusProPolicy`` explicitly inherits ``AutoregressivePolicy``.
   5. ``TokenLogProbEvaluator.evaluate`` calls ``model.replay_forward``
-     and NEVER routes through ``collector.forward_step`` any more.
+     without receiving a collector.
 
 Tests run on CPU in <1s — no real Janus weights are loaded.
 """
@@ -15,7 +14,7 @@ Tests run on CPU in <1s — no real Janus weights are loaded.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import torch
 import torch.nn as nn
@@ -30,9 +29,9 @@ from vrl.rollouts.collectors.janus_pro import (
     JanusProCollector,
     JanusProCollectorConfig,
 )
-from vrl.rollouts.evaluators.lm.token_logprob import TokenLogProbEvaluator
+from vrl.rollouts.evaluators.ar.token_logprob import TokenLogProbEvaluator
 from vrl.rollouts.evaluators.types import SignalRequest
-from vrl.rollouts.types import ExperienceBatch
+from vrl.rollouts.experience import ExperienceBatch
 
 HIDDEN = 32
 TEXT_VOCAB = 64
@@ -192,21 +191,17 @@ def test_janus_policy_inherits_ar_protocol() -> None:
 def test_evaluator_calls_model_replay() -> None:
     """Evaluator computes log_probs through ``model.replay_forward``.
 
-    The ``collector`` parameter is retained on the evaluator signature for
-    trainer-interface compatibility but its body never reads it. We pass a
-    bare MagicMock (no spec) and verify (a) ``model.replay_forward`` is
-    called, (b) the collector mock receives zero method calls.
+    Evaluators no longer accept collectors. Replay ownership is exclusively on
+    the model.
     """
     model = _build_stub_model()
     batch = _make_batch()
-    collector = MagicMock()  # plain mock — the evaluator must not touch it
 
     evaluator = TokenLogProbEvaluator()
     with patch.object(
         model, "replay_forward", wraps=model.replay_forward,
     ) as replay_spy:
         signals = evaluator.evaluate(
-            collector=collector,
             model=model,
             batch=batch,
             ref_model=None,
@@ -215,8 +210,6 @@ def test_evaluator_calls_model_replay() -> None:
 
     # Evaluator must compute log_prob via model.replay_forward.
     assert replay_spy.call_count >= 1
-    # Evaluator must NOT touch the collector at all.
-    assert collector.method_calls == []
     # Sanity: returned signal has the expected categorical shape.
     assert signals.dist_family == "categorical"
     assert signals.log_prob.shape == batch.actions.shape  # [B, L_img]

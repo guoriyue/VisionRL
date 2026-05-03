@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from vrl.rollouts.collectors.base import Collector
-from vrl.rollouts.types import ExperienceBatch
+from vrl.rollouts.experience import ExperienceBatch
 
 if TYPE_CHECKING:
     from vrl.engine.generation import GenerationRuntime, OutputBatch
@@ -290,10 +290,9 @@ class Wan_2_1Collector(Collector):
     ) -> ExperienceBatch:
         """Translate an engine ``OutputBatch`` into a trainer ``ExperienceBatch``.
 
-        Inverse of the old inline construction: pull rollout trajectory
-        tensors out of ``output.rollout_trajectory_data`` and the replay
-        embeds out of ``denoising_env.extra``, then run reward + KL
-        adjustment.
+        Pull rollout trajectory tensors out of
+        ``output.rollout_trajectory_data`` and replay embeds out of
+        ``denoising_env.extra``, then run reward + KL adjustment.
         """
         import torch
 

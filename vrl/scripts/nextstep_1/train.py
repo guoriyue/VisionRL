@@ -51,7 +51,7 @@ async def train_nextstep_1_ocr_grpo(
         NextStep1Collector,
         NextStep1CollectorConfig,
     )
-    from vrl.rollouts.evaluators.lm import ContinuousTokenLogProbEvaluator
+    from vrl.rollouts.evaluators.ar import ContinuousTokenLogProbEvaluator
     from vrl.trainers.data import load_prompt_manifest
     from vrl.trainers.online import OnlineTrainer
     from vrl.trainers.weight_sync import build_runtime_weight_syncer

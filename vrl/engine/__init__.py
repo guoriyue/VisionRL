@@ -7,7 +7,7 @@ from vrl.engine.protocols import (
     CacheManager,
 )
 from vrl.engine.scheduler import Scheduler
-from vrl.engine.types import (
+from vrl.engine.scheduler_types import (
     ModelRunnerOutput,
     RequestOutput,
     SchedulerOutput,

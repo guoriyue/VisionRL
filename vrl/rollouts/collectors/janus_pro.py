@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from vrl.rollouts.collectors.base import Collector
-from vrl.rollouts.types import ExperienceBatch
+from vrl.rollouts.experience import ExperienceBatch
 
 if TYPE_CHECKING:  # pragma: no cover
     from vrl.engine.generation import GenerationRuntime, OutputBatch

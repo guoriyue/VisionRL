@@ -16,12 +16,10 @@ This is the video twin of ``SD3_5PipelineExecutor``: same SDE math, same
 trajectory shape (``[B, T, ...]``), but the model produces 5D latents
 ``[B, C, T_v, H, W]`` and Wan's text encoder lacks a pooled CLIP embed.
 
-Parity contract: same prompts + same seed ⇒ same log_probs / latents /
-timesteps / decoded video as the pre-migration collector path. The
-seed-derivation rule mirrors the old code exactly:
-``gen.manual_seed(seed)`` per chunk (single-prompt parity). When the
-group is split across multiple micro-batch chunks the per-chunk seed
-falls back to ``hash(prompt)`` to match the legacy collector's behaviour.
+Determinism contract: same prompts + same seed ⇒ same log_probs / latents /
+timesteps / decoded video. Each micro-batch uses
+``gen.manual_seed(seed + chunk_offset)``. ``same_latent=True`` requires an
+explicit seed.
 """
 
 from __future__ import annotations
@@ -30,29 +28,29 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
-from vrl.engine.generation.gather import gather_diffusion_chunks
-from vrl.engine.generation.types import (
-    GenerationRequest,
-    GenerationSampleSpec,
-    OutputBatch,
-    WorkloadSignature,
-)
-from vrl.executors.base import (
-    BatchedFamilyPipelineExecutor,
-    ChunkedFamilyPipelineExecutor,
-)
-from vrl.executors.batching import forward_batch_by_merging_prompts
-from vrl.executors.diffusion import (
+from vrl.engine.generation.batching import forward_batch_by_merging_prompts
+from vrl.engine.generation.diffusion import (
     DiffusionChunkResult,
     DiffusionDenoiseConfig,
     repeat_tensor_batch,
     run_diffusion_denoise_chunk,
     select_sde_window,
 )
-from vrl.executors.microbatching import (
+from vrl.engine.generation.gather import gather_diffusion_chunks
+from vrl.engine.generation.microbatching import (
     MicroBatchPlan,
     plan_prompt_group_microbatches,
     run_microbatches_with_oom_retry,
+)
+from vrl.engine.generation.protocols import (
+    BatchedFamilyPipelineExecutor,
+    ChunkedFamilyPipelineExecutor,
+)
+from vrl.engine.generation.types import (
+    GenerationRequest,
+    GenerationSampleSpec,
+    OutputBatch,
+    WorkloadSignature,
 )
 
 logger = logging.getLogger(__name__)
@@ -309,7 +307,6 @@ class Wan_2_1PipelineExecutor(
             request=request,
             encoded=chunk_encoded,
             config=DiffusionDenoiseConfig(
-                prompt=prompt,
                 sample_start=chunk_offset,
                 seed=seed,
                 same_latent=same_latent,

@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from vrl.engine.generation import GenerationIdFactory, OutputBatch, RolloutBackend
-from vrl.rollouts.types import ExperienceBatch
+from vrl.rollouts.experience import ExperienceBatch
 
 
 class _FakeRuntime(RolloutBackend):

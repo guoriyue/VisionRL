@@ -19,7 +19,7 @@ algorithm:
 
 rollout:
   n: 4
-  rollout_batch_size: 1            # prompts_per_step in legacy script
+  rollout_batch_size: 1
   same_latent: false
 
 reward:

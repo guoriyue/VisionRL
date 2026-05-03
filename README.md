@@ -57,7 +57,7 @@ Token-level GRPO over an AR image generator. This is the line closest to
 
 - `vrl/algorithms/grpo_token.py` — `TokenGRPO` (token-level RL, distinct
   from diffusion step-level RL)
-- `vrl/rollouts/evaluators/lm/token_logprob.py` — token logprob
+- `vrl/rollouts/evaluators/ar/token_logprob.py` — token logprob
   evaluator
 - `vrl/rollouts/collectors/janus_pro.py` — Janus-Pro rollout collector
 - `vrl/models/families/janus_pro/model.py` — Janus-Pro model wrapper
@@ -201,7 +201,7 @@ the following commands all return non-empty output:
 ```bash
 # Bet A — AR image RL
 ls vrl/algorithms/grpo_token.py
-ls vrl/rollouts/evaluators/lm/token_logprob.py
+ls vrl/rollouts/evaluators/ar/token_logprob.py
 ls vrl/rollouts/collectors/janus_pro.py
 ls vrl/models/families/janus_pro/model.py
 ls vrl/scripts/train.py

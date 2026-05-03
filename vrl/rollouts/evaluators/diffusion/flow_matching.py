@@ -8,7 +8,7 @@ from typing import Any
 import vrl.algorithms.flow_matching as flow_matching_math
 from vrl.rollouts.evaluators.base import Evaluator
 from vrl.rollouts.evaluators.types import SignalBatch, SignalRequest
-from vrl.rollouts.types import ExperienceBatch
+from vrl.rollouts.experience import ExperienceBatch
 
 # ------------------------------------------------------------------
 # FlowMatchingEvaluator
@@ -33,7 +33,6 @@ class FlowMatchingEvaluator(Evaluator):
 
     def evaluate(
         self,
-        collector: Any,
         model: Any,
         batch: ExperienceBatch,
         timestep_idx: int,
@@ -42,10 +41,8 @@ class FlowMatchingEvaluator(Evaluator):
     ) -> SignalBatch:
         """Replay one diffusion step -> sde_step_with_logprob -> SignalBatch.
 
-        Replay forward ownership lives on the family policy adapter. During
-        the policy-as-module migration, ``model`` can be either the replay
-        owner itself (new path) or the trainable transformer (legacy path).
-        Only the legacy path should pass ``model`` as an override.
+        Replay forward ownership lives on the family policy adapter. ``model``
+        must be that policy and must expose ``replay_forward``.
 
         When ref_model is the same object as model (LoRA scenario),
         uses ``disable_adapter()`` to get base-model predictions —
@@ -62,15 +59,7 @@ class FlowMatchingEvaluator(Evaluator):
         observations = batch.observations[:, timestep_idx]  # x_t
         actions = batch.actions[:, timestep_idx]             # x_{t-1}
 
-        replay_owner = getattr(collector, "model", None)
-        if replay_owner is None or not hasattr(replay_owner, "replay_forward"):
-            replay_owner = model
-
-        # Forward pass through current trainable module; policy owns replay math.
-        model_override = None if model is replay_owner else model
-        fwd = replay_owner.replay_forward(
-            batch, timestep_idx, model=model_override,
-        )
+        fwd = model.replay_forward(batch, timestep_idx)
         noise_pred = fwd["noise_pred"]
 
         # SDE step with log-prob
@@ -102,15 +91,7 @@ class FlowMatchingEvaluator(Evaluator):
                 ctx = model.disable_adapter() if use_adapter_disable else contextlib.nullcontext()
 
                 with ctx:
-                    ref_replay_owner = (
-                        ref_model if hasattr(ref_model, "replay_forward") else replay_owner
-                    )
-                    ref_model_override = (
-                        None if ref_model is ref_replay_owner else ref_model
-                    )
-                    ref_fwd = ref_replay_owner.replay_forward(
-                        batch, timestep_idx, model=ref_model_override,
-                    )
+                    ref_fwd = ref_model.replay_forward(batch, timestep_idx)
                     ref_noise_pred = ref_fwd["noise_pred"]
 
                     ref_result = flow_matching_math.sde_step_with_logprob(

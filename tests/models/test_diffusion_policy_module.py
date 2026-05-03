@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 
 from vrl.models.diffusion import DiffusionPolicy, VideoGenerationRequest
-from vrl.models.families.cosmos.predict2_policy import CosmosPredict2Policy
+from vrl.models.families.cosmos.policy import CosmosPredict2Policy
 from vrl.models.families.sd3_5.policy import SD3_5Policy
 from vrl.models.families.wan_2_1.diffusers_policy import WanT2VDiffusersPolicy
 
@@ -70,11 +70,9 @@ class _PolicyStub(DiffusionPolicy):
         self,
         state: Any,
         step_idx: int,
-        *,
-        model: Any = None,
     ) -> dict[str, Any]:
         del state, step_idx
-        self.forward_models.append(model)
+        self.forward_models.append(self.transformer)
         return {"noise_pred": torch.ones(1)}
 
     def decode_latents(self, latents: Any) -> Any:
@@ -162,10 +160,9 @@ def test_concrete_diffusers_policies_keep_pipeline_transformer_in_sync(
 def test_forward_resolves_policy_self_to_registered_transformer() -> None:
     policy = _PolicyStub()
 
-    policy.forward(object(), 0, model=policy)
     policy.forward(object(), 0)
 
-    assert policy.forward_models == [policy.transformer, policy.transformer]
+    assert policy.forward_models == [policy.transformer]
 
 
 def test_replay_forward_uses_registered_transformer_for_policy_model() -> None:
@@ -176,7 +173,7 @@ def test_replay_forward_uses_registered_transformer_for_policy_model() -> None:
         context={},
     )
 
-    policy.replay_forward(batch, 0, model=policy)
+    policy.replay_forward(batch, 0)
 
     assert policy.forward_models == [policy.transformer]
 
@@ -190,18 +187,13 @@ def test_disable_adapter_forwards_to_transformer_context() -> None:
     assert policy.transformer.disabled is False
 
 
-@pytest.mark.parametrize("prefixed", [False, True])
-def test_load_trainable_state_accepts_legacy_and_policy_keys(prefixed: bool) -> None:
+def test_load_trainable_state_accepts_policy_keys() -> None:
     policy = _PolicyStub()
     replacement = {
         "weight": torch.full_like(policy.transformer.weight, 2.0),
         "bias": torch.full_like(policy.transformer.bias, 3.0),
     }
-    state = (
-        {f"transformer.{key}": value for key, value in replacement.items()}
-        if prefixed
-        else replacement
-    )
+    state = {f"transformer.{key}": value for key, value in replacement.items()}
 
     policy.load_trainable_state(state)
 
@@ -212,5 +204,5 @@ def test_load_trainable_state_accepts_legacy_and_policy_keys(prefixed: bool) -> 
 def test_load_trainable_state_rejects_all_unmatched_keys() -> None:
     policy = _PolicyStub()
 
-    with pytest.raises(RuntimeError, match="did not match any transformer keys"):
+    with pytest.raises(ValueError, match="policy keys prefixed"):
         policy.load_trainable_state({"unknown": torch.ones(1)})

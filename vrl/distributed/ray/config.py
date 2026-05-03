@@ -7,32 +7,6 @@ from typing import Any
 
 
 @dataclass(slots=True)
-class RayConfig:
-    """Resource configuration for Ray rollout workers.
-
-    P0 only owns rollout collector workers. Trainer ownership, weight sync, and
-    train/rollout GPU partitioning are intentionally left to the later Ray
-    training sprint.
-    """
-
-    enable: bool = False
-    num_rollout_workers: int = 1
-    gpus_per_rollout_worker: float = 1.0
-    cpus_per_rollout_worker: float = 1.0
-    placement_strategy: str = "PACK"
-
-    def __post_init__(self) -> None:
-        if self.num_rollout_workers < 1:
-            raise ValueError("num_rollout_workers must be >= 1")
-        if self.gpus_per_rollout_worker < 0:
-            raise ValueError("gpus_per_rollout_worker must be >= 0")
-        if self.cpus_per_rollout_worker <= 0:
-            raise ValueError("cpus_per_rollout_worker must be > 0")
-        if not self.placement_strategy:
-            raise ValueError("placement_strategy must be non-empty")
-
-
-@dataclass(slots=True)
 class DistributedRolloutConfig:
     """Resource configuration for distributed large rollout execution."""
 
@@ -62,24 +36,10 @@ class DistributedRolloutConfig:
             raise ValueError("sync_trainable_state must be 'disabled' or 'lora_only'")
 
     @classmethod
-    def from_legacy(cls, config: RayConfig) -> DistributedRolloutConfig:
-        """Map the old prompt-level collector config to the new rollout config."""
-
-        return cls(
-            backend="ray" if config.enable else "local",
-            num_workers=config.num_rollout_workers,
-            gpus_per_worker=config.gpus_per_rollout_worker,
-            cpus_per_worker=config.cpus_per_rollout_worker,
-            placement_strategy=config.placement_strategy,
-        )
-
-    @classmethod
     def from_cfg(cls, cfg: Any) -> DistributedRolloutConfig:
         """Build rollout config from a full training cfg or rollout cfg slice."""
         if isinstance(cfg, cls):
             return cfg
-        if isinstance(cfg, RayConfig):
-            return cls.from_legacy(cfg)
 
         direct_backend = _config_get(cfg, "backend", _MISSING)
         distributed = _config_get(cfg, "distributed", _MISSING)

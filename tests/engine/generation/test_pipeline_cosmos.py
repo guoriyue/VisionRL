@@ -153,10 +153,7 @@ class _StubCosmosPolicy:
         self,
         state: _StubCosmosState,
         step_idx: int,
-        *,
-        model: Any = None,
     ) -> dict[str, torch.Tensor]:
-        del model
         self.forward_calls += 1
         # Deterministic: noise_pred = sin(latents) * (step_idx + 1) * 0.01
         noise_pred = torch.sin(state.latents) * (step_idx + 1) * 0.01

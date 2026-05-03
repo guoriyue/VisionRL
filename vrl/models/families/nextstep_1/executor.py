@@ -24,10 +24,10 @@ Boundary:
                                               from sampling time
                                               (i.e. ``old_log_prob``).
 
-Parity contract: same prompts + same generator state ⇒ same
-``tokens``/``saved_noise``/``log_probs`` as the pre-migration collector
-path. The model's ``sample_image_tokens`` is a single black-box call,
-so parity reduces to "we call it once with the same arguments".
+Determinism contract: same prompts + same generator state ⇒ same
+``tokens``/``saved_noise``/``log_probs``. The model's
+``sample_image_tokens`` is a single black-box call, so determinism reduces
+to "we call it once with the same arguments".
 """
 
 from __future__ import annotations
@@ -39,6 +39,14 @@ from typing import Any
 
 import torch
 
+from vrl.engine.generation.ar import ActiveSequence, ARTokenScheduler
+from vrl.engine.generation.batching import forward_batch_by_merging_prompts
+from vrl.engine.generation.microbatching import MicroBatchPlan
+from vrl.engine.generation.protocols import (
+    BatchedFamilyPipelineExecutor,
+    ChunkedFamilyPipelineExecutor,
+    PipelineChunkResult,
+)
 from vrl.engine.generation.types import (
     GenerationMetrics,
     GenerationRequest,
@@ -47,14 +55,6 @@ from vrl.engine.generation.types import (
     RolloutTrajectoryData,
     WorkloadSignature,
 )
-from vrl.executors.ar import ActiveSequence, ARTokenScheduler
-from vrl.executors.base import (
-    BatchedFamilyPipelineExecutor,
-    ChunkedFamilyPipelineExecutor,
-    PipelineChunkResult,
-)
-from vrl.executors.batching import forward_batch_by_merging_prompts
-from vrl.executors.microbatching import MicroBatchPlan
 
 logger = logging.getLogger(__name__)
 
@@ -145,14 +145,20 @@ class NextStep1PipelineExecutor(
         repeated_prompts = [p for p in prompts for _ in range(samples_per_prompt)]
 
         prompt_ids, prompt_mask = self._tokenize_prompts(
-            repeated_prompts, max_text_length=max_text_length,
+            repeated_prompts,
+            max_text_length=max_text_length,
         )
         uncond_ids, uncond_mask = self._tokenize_prompts(
-            [""] * len(repeated_prompts), max_text_length=max_text_length,
+            [""] * len(repeated_prompts),
+            max_text_length=max_text_length,
         )
         pad_id = getattr(self.model.processor, "pad_token_id", None) or 0
         prompt_ids, prompt_mask, uncond_ids, uncond_mask = self._align_pair(
-            prompt_ids, prompt_mask, uncond_ids, uncond_mask, pad_id=pad_id,
+            prompt_ids,
+            prompt_mask,
+            uncond_ids,
+            uncond_mask,
+            pad_id=pad_id,
         )
 
         cond_embeds = self._embed(prompt_ids)
@@ -188,7 +194,10 @@ class NextStep1PipelineExecutor(
             )
         else:
             tokens, saved_noise, old_logprobs = self.model.sample_image_tokens(
-                cond_embeds, uncond_embeds, prompt_mask, uncond_mask,
+                cond_embeds,
+                uncond_embeds,
+                prompt_mask,
+                uncond_mask,
                 **sample_kwargs,
             )
         # tokens:        [B, L_img, D_token]
@@ -276,14 +285,20 @@ class NextStep1PipelineExecutor(
 
         repeated_prompts = [chunk.prompt] * chunk.sample_count
         prompt_ids, prompt_mask = self._tokenize_prompts(
-            repeated_prompts, max_text_length=max_text_length,
+            repeated_prompts,
+            max_text_length=max_text_length,
         )
         uncond_ids, uncond_mask = self._tokenize_prompts(
-            [""] * chunk.sample_count, max_text_length=max_text_length,
+            [""] * chunk.sample_count,
+            max_text_length=max_text_length,
         )
         pad_id = getattr(self.model.processor, "pad_token_id", None) or 0
         prompt_ids, prompt_mask, uncond_ids, uncond_mask = self._align_pair(
-            prompt_ids, prompt_mask, uncond_ids, uncond_mask, pad_id=pad_id,
+            prompt_ids,
+            prompt_mask,
+            uncond_ids,
+            uncond_mask,
+            pad_id=pad_id,
         )
 
         cond_embeds = self._embed(prompt_ids)
@@ -306,7 +321,10 @@ class NextStep1PipelineExecutor(
         # Distributed AR chunks stay at prompt/sample granularity. The
         # token-level scheduler remains executor-internal for direct execution.
         tokens, saved_noise, old_logprobs = self.model.sample_image_tokens(
-            cond_embeds, uncond_embeds, prompt_mask, uncond_mask,
+            cond_embeds,
+            uncond_embeds,
+            prompt_mask,
+            uncond_mask,
             **sample_kwargs,
         )
 
@@ -356,7 +374,9 @@ class NextStep1PipelineExecutor(
         sample_specs_by_request: dict[str, list[GenerationSampleSpec]],
     ) -> dict[str, OutputBatch]:
         return forward_batch_by_merging_prompts(
-            self, requests, sample_specs_by_request,
+            self,
+            requests,
+            sample_specs_by_request,
         )
 
     # -- internals -----------------------------------------------------
@@ -378,8 +398,7 @@ class NextStep1PipelineExecutor(
         missing = [name for name in required if not hasattr(self.model, name)]
         if missing:
             raise TypeError(
-                "use_ar_scheduler=True requires model step API methods: "
-                + ", ".join(missing)
+                "use_ar_scheduler=True requires model step API methods: " + ", ".join(missing)
             )
 
         if cond_embeds.shape[0] != len(sample_specs):
@@ -431,9 +450,7 @@ class NextStep1PipelineExecutor(
                 generator=sample_kwargs.get("generator"),
             )
             if "saved_noise" not in result.replay_extras:
-                raise ValueError(
-                    "NextStep step_ar must return replay_extras['saved_noise']"
-                )
+                raise ValueError("NextStep step_ar must return replay_extras['saved_noise']")
             for sequence in batch.sequences:
                 sequence.advance()
             scheduler.push_back_unfinished(batch)
@@ -488,17 +505,23 @@ class NextStep1PipelineExecutor(
         L = max(a_ids.shape[1], b_ids.shape[1])
 
         def _pad(
-            ids: torch.Tensor, mask: torch.Tensor,
+            ids: torch.Tensor,
+            mask: torch.Tensor,
         ) -> tuple[torch.Tensor, torch.Tensor]:
             cur = ids.shape[1]
             if cur == L:
                 return ids, mask
             extra_len = L - cur
             pad_ids = torch.full(
-                (ids.shape[0], extra_len), pad_id, dtype=ids.dtype, device=ids.device,
+                (ids.shape[0], extra_len),
+                pad_id,
+                dtype=ids.dtype,
+                device=ids.device,
             )
             pad_mask = torch.zeros(
-                (mask.shape[0], extra_len), dtype=mask.dtype, device=mask.device,
+                (mask.shape[0], extra_len),
+                dtype=mask.dtype,
+                device=mask.device,
             )
             return (
                 torch.cat([ids, pad_ids], dim=1),
@@ -569,16 +592,21 @@ def _ordered_ar_chunks(
         _require_rows("images_for_reward", chunk.images_for_reward, chunk.sample_count)
         _require_rows("prompt_input_ids", chunk.prompt_input_ids, chunk.sample_count)
         _require_rows(
-            "prompt_attention_mask", chunk.prompt_attention_mask, chunk.sample_count,
+            "prompt_attention_mask",
+            chunk.prompt_attention_mask,
+            chunk.sample_count,
         )
         _require_rows("uncond_input_ids", chunk.uncond_input_ids, chunk.sample_count)
         _require_rows(
-            "uncond_attention_mask", chunk.uncond_attention_mask, chunk.sample_count,
+            "uncond_attention_mask",
+            chunk.uncond_attention_mask,
+            chunk.sample_count,
         )
         actual.extend(
             (chunk.prompt_index, sample_index)
             for sample_index in range(
-                chunk.sample_start, chunk.sample_start + chunk.sample_count,
+                chunk.sample_start,
+                chunk.sample_start + chunk.sample_count,
             )
         )
     if actual != expected:
@@ -600,11 +628,7 @@ def _chunk_seed_offset(request: GenerationRequest, chunk: MicroBatchPlan) -> int
 
 
 def _max_peak_memory_mb(chunks: Sequence[NextStep1ARChunkResult]) -> float | None:
-    peaks = [
-        chunk.peak_memory_mb
-        for chunk in chunks
-        if chunk.peak_memory_mb is not None
-    ]
+    peaks = [chunk.peak_memory_mb for chunk in chunks if chunk.peak_memory_mb is not None]
     return max(peaks) if peaks else None
 
 
@@ -622,7 +646,8 @@ class NextStep1ChunkGatherer:
         ordered_chunks = _ordered_ar_chunks(request, sample_specs, chunks)
         tokens = torch.cat([chunk.tokens for chunk in ordered_chunks], dim=0)
         saved_noise = torch.cat(
-            [chunk.saved_noise for chunk in ordered_chunks], dim=0,
+            [chunk.saved_noise for chunk in ordered_chunks],
+            dim=0,
         )
         log_probs = torch.cat([chunk.log_probs for chunk in ordered_chunks], dim=0)
         output = torch.cat([chunk.output for chunk in ordered_chunks], dim=0)
@@ -644,19 +669,24 @@ class NextStep1ChunkGatherer:
             "saved_noise": saved_noise,
             "log_probs": log_probs,
             "images_for_reward": torch.cat(
-                [chunk.images_for_reward for chunk in ordered_chunks], dim=0,
+                [chunk.images_for_reward for chunk in ordered_chunks],
+                dim=0,
             ),
             "prompt_input_ids": torch.cat(
-                [chunk.prompt_input_ids for chunk in ordered_chunks], dim=0,
+                [chunk.prompt_input_ids for chunk in ordered_chunks],
+                dim=0,
             ),
             "prompt_attention_mask": torch.cat(
-                [chunk.prompt_attention_mask for chunk in ordered_chunks], dim=0,
+                [chunk.prompt_attention_mask for chunk in ordered_chunks],
+                dim=0,
             ),
             "uncond_input_ids": torch.cat(
-                [chunk.uncond_input_ids for chunk in ordered_chunks], dim=0,
+                [chunk.uncond_input_ids for chunk in ordered_chunks],
+                dim=0,
             ),
             "uncond_attention_mask": torch.cat(
-                [chunk.uncond_attention_mask for chunk in ordered_chunks], dim=0,
+                [chunk.uncond_attention_mask for chunk in ordered_chunks],
+                dim=0,
             ),
             "context": dict(ordered_chunks[0].context),
         }
@@ -675,28 +705,8 @@ class NextStep1ChunkGatherer:
         )
 
 
-def build_nextstep_1_executor_from_runtime_spec(
-    runtime_spec: Any,
-) -> NextStep1PipelineExecutor:
-    """Build a NextStep-1 rollout executor inside a Ray worker."""
-
-    from vrl.distributed.ray.spec import RolloutRuntimeSpec
-    from vrl.models.families.nextstep_1.policy import (
-        NextStep1Config,
-        NextStep1Policy,
-    )
-
-    spec = RolloutRuntimeSpec.from_value(runtime_spec)
-    config = dict(spec.model_config)
-    if "lora_target_modules" in config:
-        config["lora_target_modules"] = tuple(config["lora_target_modules"])
-    policy = NextStep1Policy(NextStep1Config(**config))
-    return NextStep1PipelineExecutor(policy)
-
-
 __all__ = [
     "NextStep1ARChunkResult",
     "NextStep1ChunkGatherer",
     "NextStep1PipelineExecutor",
-    "build_nextstep_1_executor_from_runtime_spec",
 ]

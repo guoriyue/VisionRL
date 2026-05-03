@@ -16,7 +16,7 @@ import torch.nn as nn
 
 from vrl.algorithms.base import Algorithm
 from vrl.algorithms.types import TrainStepMetrics
-from vrl.rollouts.types import ExperienceBatch
+from vrl.rollouts.experience import ExperienceBatch
 from vrl.trainers.base import Trainer
 from vrl.trainers.ema import EMAModuleWrapper
 from vrl.trainers.types import TrainerConfig, TrainState
@@ -460,7 +460,6 @@ class OnlineTrainer(Trainer):
             _dbg_old_lp = _dbg_batch.extras["log_probs"]
             with autocast_ctx:
                 _dbg_signals = self.evaluator.evaluate(
-                    self.collector,
                     self.model,
                     _dbg_batch,
                     0,
@@ -501,7 +500,6 @@ class OnlineTrainer(Trainer):
                 for j in train_indices:
                     with timer.time("evaluate"), autocast_ctx:
                         signals = self.evaluator.evaluate(
-                            self.collector,
                             self.model,
                             b,
                             j,

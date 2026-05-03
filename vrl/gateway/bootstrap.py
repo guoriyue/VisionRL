@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from vrl.config import EngineConfig
+from vrl.gateway.config import EngineConfig
 from vrl.gateway.state import GatewayRuntime
 
 logger = logging.getLogger("vrl")

@@ -49,7 +49,7 @@ def ar_split_rows(value: Any, batch_size: int) -> list[Any]:
 
     if batch_size < 1:
         raise ValueError("batch_size must be >= 1")
-    value = _legacy_cache(value)
+    value = _to_tuple_cache_if_needed(value)
     if _is_tensor(value):
         if value.shape[0] != batch_size:
             raise ValueError(
@@ -85,8 +85,8 @@ def ar_concat_rows(values: Sequence[Any]) -> Any:
 
     if not values:
         raise ValueError("values must be non-empty")
-    first = _legacy_cache(values[0])
-    rest = [_legacy_cache(value) for value in values[1:]]
+    first = _to_tuple_cache_if_needed(values[0])
+    rest = [_to_tuple_cache_if_needed(value) for value in values[1:]]
     values = [first, *rest]
     if _is_tensor(first):
         return torch.cat(list(values), dim=0)
@@ -110,7 +110,7 @@ def ar_concat_rows(values: Sequence[Any]) -> Any:
     return first
 
 
-def _legacy_cache(value: Any) -> Any:
+def _to_tuple_cache_if_needed(value: Any) -> Any:
     to_legacy_cache = getattr(value, "to_legacy_cache", None)
     if callable(to_legacy_cache):
         return to_legacy_cache()

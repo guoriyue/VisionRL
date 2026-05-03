@@ -9,6 +9,8 @@ import pytest
 
 from vrl.engine import ContinuousBatchPlanner, EngineLoop, Scheduler
 from vrl.engine.generation import (
+    BatchedFamilyPipelineExecutor,
+    FamilyPipelineExecutor,
     FamilyPipelineRegistry,
     GenerationBatchPlanner,
     GenerationIdFactory,
@@ -21,11 +23,10 @@ from vrl.engine.generation import (
     RolloutTrajectoryData,
     WorkloadSignature,
 )
-from vrl.engine.types import SchedulerOutput, SchedulerRequest
-from vrl.executors import BatchedFamilyPipelineExecutor, FamilyPipelineExecutor
-from vrl.executors.batching import (
+from vrl.engine.generation.batching import (
     forward_batch_by_merging_prompts,
 )
+from vrl.engine.scheduler_types import SchedulerOutput, SchedulerRequest
 
 
 class _FakeExecutor(BatchedFamilyPipelineExecutor):

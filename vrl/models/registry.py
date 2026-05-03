@@ -8,7 +8,7 @@ _REGISTRY: dict[str, str] = {
     "sd3_5-diffusers-t2i": "vrl.models.families.sd3_5.policy:SD3_5Policy",
     "wan-diffusers-t2v": "vrl.models.families.wan_2_1.diffusers_policy:WanT2VDiffusersPolicy",
     "wan-official-t2v": "vrl.models.families.wan_2_1.official_policy:WanT2VOfficialPolicy",
-    "cosmos-predict2": "vrl.models.families.cosmos.predict2_policy:CosmosPredict2Policy",
+    "cosmos-predict2": "vrl.models.families.cosmos.policy:CosmosPredict2Policy",
 }
 
 

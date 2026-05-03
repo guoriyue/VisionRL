@@ -57,7 +57,6 @@ def build_rollout_backend_from_cfg(
     driver_policy: Any | None = None,
     trainable_modules: Mapping[str, Any] | Iterable[Any] | None = None,
     runtime_spec: Any | None = None,
-    executor_factory: Callable[[Any, DistributedRolloutConfig], Any] | None = None,
     gatherer: Any | None = None,
 ) -> RolloutBackend:
     """Build or return the rollout backend selected by config.
@@ -80,47 +79,29 @@ def build_rollout_backend_from_cfg(
     if config.backend == "local":
         if local_runtime_builder is None:
             raise ValueError(
-                "local rollout backend requires local_runtime_builder when no "
-                "runtime is injected",
+                "local rollout backend requires local_runtime_builder when no runtime is injected",
             )
         return _require_rollout_backend(local_runtime_builder())
 
-    runtime_spec = runtime_spec if runtime_spec is not None else _cfg_path(
-        cfg,
-        "distributed.rollout.runtime_spec",
-        None,
+    runtime_spec = (
+        runtime_spec
+        if runtime_spec is not None
+        else _cfg_path(
+            cfg,
+            "distributed.rollout.runtime_spec",
+            None,
+        )
     )
     if runtime_spec is not None and gatherer is not None:
-        from vrl.distributed.ray.launcher import RayRolloutLauncher
+        from vrl.distributed.ray.rollout.launcher import RayRolloutLauncher
 
         return RayRolloutLauncher().launch(config, runtime_spec, gatherer)
 
-    executor_factory = (
-        executor_factory
-        if executor_factory is not None
-        else _cfg_path(cfg, "distributed.rollout.executor_factory", None)
+    raise ValueError(
+        "Ray rollout backend requires an injected runtime, or runtime_spec plus "
+        "gatherer so RayRolloutLauncher can construct workers through the "
+        "single runtime_builder+executor_cls path.",
     )
-    if runtime_spec is None or executor_factory is None:
-        raise ValueError(
-            "Ray rollout backend requires an injected runtime, or both "
-            "distributed.rollout.runtime_spec and "
-            "distributed.rollout.executor_factory, or runtime_spec plus "
-            "gatherer for RayRolloutLauncher.",
-        )
-    if not callable(executor_factory):
-        raise ValueError(
-            "distributed.rollout.executor_factory must be callable when no "
-            "gatherer is provided; use runtime_spec plus gatherer for "
-            "RayRolloutLauncher.",
-        )
-
-    built = executor_factory(runtime_spec, config)
-    if callable(getattr(built, "generate", None)):
-        return _require_rollout_backend(built)
-
-    from vrl.distributed.ray.runtime import RayDistributedRuntime
-
-    return RayDistributedRuntime(built)
 
 
 def _require_rollout_backend(runtime: Any) -> RolloutBackend:

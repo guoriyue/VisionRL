@@ -208,8 +208,6 @@ def validate_reward_config(cfg: DictConfig) -> None:
       - For every component with ``weight > 0`` that is model-backed, the
         corresponding ``reward.kwargs.<name>.<field>`` must be present.
       - ``reward.kwargs.<name>`` must be a mapping if present.
-      - The legacy ``reward.ocr_debug_dir`` key is tolerated for external
-        callers (the experiment-YAML audit forbids it separately).
     """
     if "reward" not in cfg:
         raise ValueError("config missing required field: reward")
@@ -333,6 +331,8 @@ _DPO_REQUIRED: tuple[str, ...] = (
     "trainer.max_train_steps",
     "trainer.checkpointing_steps",
     "trainer.log_interval",
+    "rollout.n",
+    "rollout.rollout_batch_size",
 )
 
 
@@ -408,48 +408,20 @@ def validate_training_config(cfg: DictConfig) -> None:
     else:  # pragma: no cover — _resolve_algorithm_kind already raises.
         raise AssertionError(f"unreachable: kind={kind}")
 
-_KIND_LEGACY_ALIASES = {
-    "grpo": "grpo",
-    "token_grpo": "token_grpo",
-    "diffusion_dpo": "diffusion_dpo",
-    "dpo": "diffusion_dpo",  # legacy adv_estimator
-}
-
 
 def _resolve_algorithm_kind(algo: DictConfig) -> str:
-    """Resolve ``algorithm.kind`` with legacy ``adv_estimator`` alias.
-
-    Conflict detection: if both fields are set and disagree (after legacy
-    alias normalisation) — fail fast. Per SPRINT_config_yaml_unification_patch
-    Phase 1.
-    """
+    """Resolve ``algorithm.kind`` as the only algorithm dispatch field."""
+    if "adv_estimator" in algo:
+        raise ValueError("algorithm.adv_estimator is no longer supported; use algorithm.kind")
     kind = algo.get("kind", None)
-    legacy = algo.get("adv_estimator", None)
-    if kind is None and legacy is None:
-        raise ValueError(
-            "algorithm config missing both `kind` and legacy `adv_estimator`",
-        )
     if kind is None:
-        normalised = _KIND_LEGACY_ALIASES.get(str(legacy))
-        if normalised is None:
-            raise ValueError(
-                f"unknown legacy algorithm.adv_estimator={legacy!r}; "
-                f"expected one of {sorted(_KIND_LEGACY_ALIASES)}",
-            )
-        return normalised
+        raise ValueError("algorithm.kind required")
     kind = str(kind)
     if kind not in {"grpo", "token_grpo", "diffusion_dpo"}:
         raise ValueError(
             f"unknown algorithm.kind={kind!r}; "
             f"expected grpo / token_grpo / diffusion_dpo",
         )
-    if legacy is not None:
-        normalised = _KIND_LEGACY_ALIASES.get(str(legacy))
-        if normalised != kind:
-            raise ValueError(
-                f"algorithm.kind={kind!r} conflicts with "
-                f"legacy adv_estimator={legacy!r}",
-            )
     return kind
 
 
@@ -458,10 +430,8 @@ def build_trainer_config(cfg: DictConfig):
 
     Per SPRINT patch 3 Phase 4: every actor/trainer/debug field must come
     from YAML — no Python-side experiment-default fallbacks allowed. The
-    only soft fallback is for the rollout group field that names ``n`` /
-    ``rollout_batch_size``: AR rollouts call it ``n_samples_per_prompt`` and
-    diffusion rollouts call it ``n``, so we check whichever the YAML
-    declares.
+    rollout group schema is family-specific: AR rollouts declare
+    ``n_samples_per_prompt`` and diffusion rollouts declare ``n``.
     """
     from vrl.trainers.types import (
         DebugConfig,
@@ -478,8 +448,8 @@ def build_trainer_config(cfg: DictConfig):
     debug_dict = require(cfg, "trainer.debug")
 
     # Rollout n / batch. AR uses `n_samples_per_prompt`, diffusion uses `n`.
-    # DPO is offline (no rollout section); fall back to the dataclass defaults
-    # so its build call still succeeds — these knobs don't drive DPO training.
+    # Offline trainers still declare explicit values so config slicing stays
+    # single-source and fail-fast.
     if _path_exists(cfg, "rollout.n_samples_per_prompt"):
         n_value = require(cfg, "rollout.n_samples_per_prompt")
         rollout_batch_size = require(cfg, "rollout.rollout_batch_size")
@@ -487,10 +457,10 @@ def build_trainer_config(cfg: DictConfig):
         n_value = require(cfg, "rollout.n")
         rollout_batch_size = require(cfg, "rollout.rollout_batch_size")
     else:
-        # No rollout block at all (DPO). Algorithm-specific validation has
-        # already enforced the DPO-required fields elsewhere.
-        n_value = 4
-        rollout_batch_size = 4
+        raise ValueError(
+            "config missing rollout group size: expected rollout.n or "
+            "rollout.n_samples_per_prompt",
+        )
 
     return TrainerConfig(
         optim=OptimConfig(**optim_dict),
@@ -516,7 +486,7 @@ def build_algorithm_config(cfg: DictConfig):
     """Dispatch on ``algorithm.kind`` and return the typed algorithm config.
 
     Returns ``GRPOConfig`` / ``TokenGRPOConfig`` / ``DiffusionDPOConfig``.
-    Unknown kind, missing section, or kind/adv_estimator conflict → fail fast.
+    Unknown kind or missing section → fail fast.
     """
     if "algorithm" not in cfg:
         raise ValueError("config missing `algorithm` section")
@@ -549,9 +519,7 @@ def build_reward_config(cfg: DictConfig) -> tuple[dict[str, float], dict[str, di
     - ``weights``: ``{name: float}`` for components with weight > 0.
     - ``kwargs``: ``{name: {kwarg: value}}`` forwarded to reward constructors.
 
-    Back-compat: ``reward.ocr_debug_dir`` is auto-injected into
-    ``kwargs["ocr"]["debug_dir"]`` IFF ``kwargs.ocr.debug_dir`` is not already
-    set. If both are set with different values → fail fast.
+    Reward-specific options must live under ``reward.kwargs.<component>``.
     """
     # Fail-fast on shape before slicing; this keeps the contract that the
     # active experiment YAML is the single source of truth for reward
@@ -566,19 +534,6 @@ def build_reward_config(cfg: DictConfig) -> tuple[dict[str, float], dict[str, di
     kwargs: dict[str, dict] = (
         OmegaConf.to_container(raw_kwargs, resolve=True) or {} if raw_kwargs else {}
     )
-
-    # Legacy: reward.ocr_debug_dir
-    legacy_ocr_dir = reward.get("ocr_debug_dir", "") if "ocr_debug_dir" in reward else ""
-    if legacy_ocr_dir:
-        ocr_kwargs = kwargs.setdefault("ocr", {})
-        existing = ocr_kwargs.get("debug_dir")
-        if existing and existing != legacy_ocr_dir:
-            raise ValueError(
-                f"reward.ocr_debug_dir={legacy_ocr_dir!r} conflicts with "
-                f"reward.kwargs.ocr.debug_dir={existing!r}",
-            )
-        if not existing:
-            ocr_kwargs["debug_dir"] = legacy_ocr_dir
 
     return weights, kwargs
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from vrl.config import EngineConfig, load_config
 from vrl.gateway.bootstrap import build_gateway_lifespan, create_gateway_runtime
+from vrl.gateway.config import EngineConfig, load_config
 from vrl.gateway.routes import register_routes
 from vrl.gateway.state import bind_gateway_runtime
 

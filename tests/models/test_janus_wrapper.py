@@ -58,6 +58,11 @@ class _StubLM(nn.Module):
 
 
 class _StubVQ(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.quantize = nn.Module()
+        self.quantize.embedding = nn.Embedding(64, 8)
+
     def decode_code(self, ids: torch.Tensor, shape: list[int]) -> torch.Tensor:
         B, _, h, w = shape
         return torch.zeros(B, 3, h * 16, w * 16)
@@ -199,7 +204,7 @@ class _ConfigStubVQ(nn.Module):
         self.last_shape: list[int] | None = None
         if config_attrs is not None:
             self.config = SimpleNamespace(**config_attrs)
-        # else: no .config attribute at all — exercises the fallback branch
+        # else: no .config attribute at all — exercises the missing-config branch
 
     def decode_code(self, ids: torch.Tensor, shape: list[int]) -> torch.Tensor:
         self.last_shape = list(shape)
@@ -232,39 +237,24 @@ class TestVQLatentChannels:
         m.decode_image_tokens(torch.zeros(1, 4, dtype=torch.long))
         assert vq.last_shape == [1, 5, 2, 2]
 
-    def test_z_channels_intentionally_skipped(self) -> None:
+    def test_z_channels_intentionally_rejected(self) -> None:
         """Janus-Pro-1B has config.z_channels=256 but codebook dim=8.
         z_channels is encoder-hidden-dim and MUST NOT be used as shape[1]."""
         vq = _ConfigStubVQ({"z_channels": 256})  # trap value — must be ignored
         m = _build_with_vq(vq)
-        m.decode_image_tokens(torch.zeros(1, 4, dtype=torch.long))
-        # Falls through to the 8-dim constant, NOT 256.
-        assert vq.last_shape == [1, 8, 2, 2]
+        with pytest.raises(RuntimeError, match="vq_latent_channels"):
+            m.decode_image_tokens(torch.zeros(1, 4, dtype=torch.long))
 
-    def test_embed_dim_autodetect(self) -> None:
-        """Config ``embed_dim`` is the fallback when live probe misses."""
-        vq = _ConfigStubVQ({"embed_dim": 12})
-        m = _build_with_vq(vq)
-        m.decode_image_tokens(torch.zeros(1, 4, dtype=torch.long))
-        assert vq.last_shape == [1, 12, 2, 2]
-
-    def test_latent_channels_attr(self) -> None:
-        vq = _ConfigStubVQ({"latent_channels": 6})
-        m = _build_with_vq(vq)
-        m.decode_image_tokens(torch.zeros(1, 4, dtype=torch.long))
-        assert vq.last_shape == [1, 6, 2, 2]
-
-    def test_fallback_to_8(self) -> None:
-        """No config, no quantizer probe — last-resort hard-coded default."""
+    def test_no_probe_requires_explicit_override(self) -> None:
         vq = _ConfigStubVQ(None)
         m = _build_with_vq(vq)
-        m.decode_image_tokens(torch.zeros(1, 4, dtype=torch.long))
-        assert vq.last_shape == [1, 8, 2, 2]
+        with pytest.raises(RuntimeError, match="vq_latent_channels"):
+            m.decode_image_tokens(torch.zeros(1, 4, dtype=torch.long))
 
-    def test_garbage_config_raises(self) -> None:
-        vq = _ConfigStubVQ({"embed_dim": "twelve"})  # str — invalid
+    def test_config_embed_dim_is_not_used(self) -> None:
+        vq = _ConfigStubVQ({"embed_dim": 12})
         m = _build_with_vq(vq)
-        with pytest.raises(RuntimeError, match="embed_dim"):
+        with pytest.raises(RuntimeError, match="vq_latent_channels"):
             m.decode_image_tokens(torch.zeros(1, 4, dtype=torch.long))
 
     def test_negative_override_raises(self) -> None:

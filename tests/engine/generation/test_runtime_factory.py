@@ -129,7 +129,8 @@ def test_ray_backend_runtime_spec_without_gatherer_fails_clearly() -> None:
             runtime_spec={
                 "family": "fake",
                 "task": "t2i",
-                "executor_factory": "tests.fake:factory",
+                "runtime_builder": "tests.fake:build_runtime",
+                "executor_cls": "tests.fake:Executor",
             },
             driver_policy=_CpuPolicy(),
         )

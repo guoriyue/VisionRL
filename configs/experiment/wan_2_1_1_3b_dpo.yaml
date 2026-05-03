@@ -12,6 +12,10 @@ defaults:
 sampling:
   num_frames: 1
 
+rollout:
+  n: 1
+  rollout_batch_size: 1
+
 # DPO-specific trainer overrides — paper-default schedule for SDXL scaled to Wan.
 trainer:
   output_dir: outputs/wan_1_3b_dpo

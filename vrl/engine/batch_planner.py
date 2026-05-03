@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from vrl.engine.protocols import BatchPlanner
-from vrl.engine.types import SchedulerRequest
+from vrl.engine.scheduler_types import SchedulerRequest
 
 
 class ContinuousBatchPlanner(BatchPlanner):

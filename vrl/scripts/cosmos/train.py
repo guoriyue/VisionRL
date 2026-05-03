@@ -244,7 +244,7 @@ async def train_cosmos_predict2_grpo(
 
         metrics = await trainer.step(prompt_batch)
 
-        # Epoch-0 on-policy sanity check (preserved from legacy script)
+        # Epoch-0 on-policy sanity check.
         if epoch == 0 and gate_enable:
             logger.info(
                 "Epoch 0 sanity check: approx_kl=%.6f clip_fraction=%.4f",

@@ -21,7 +21,7 @@ from vrl.models.families.janus_pro.policy import (
     JanusProPolicy,
 )
 from vrl.rollouts.collectors.janus_pro import JanusProCollector, JanusProCollectorConfig
-from vrl.rollouts.evaluators.lm import TokenLogProbEvaluator
+from vrl.rollouts.evaluators.ar import TokenLogProbEvaluator
 from vrl.rollouts.evaluators.types import SignalRequest
 
 HIDDEN = 32
@@ -52,6 +52,11 @@ class _StubLM(nn.Module):
 
 
 class _StubVQ(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.quantize = nn.Module()
+        self.quantize.embedding = nn.Embedding(64, 8)
+
     def decode_code(self, ids: torch.Tensor, shape: list[int]) -> torch.Tensor:
         B, _, h, w = shape
         # Image-content varies with token ids, so reward fns can differentiate.
@@ -211,8 +216,8 @@ class TestRewardRouting:
         batch = asyncio.run(collector.collect(["x"]))
         assert batch.rewards.shape == (2,)
 
-    def test_per_rollout_fallback(self) -> None:
-        """Rewards without ``score_batch`` fall through to per-rollout score."""
+    def test_per_rollout_score_path(self) -> None:
+        """Rewards without ``score_batch`` use per-rollout scoring."""
         collector = _build_collector_with_reward(_ConstReward())
         batch = asyncio.run(collector.collect(["x"]))
         assert batch.rewards.shape == (2,)
@@ -228,7 +233,6 @@ class TestEvaluate:
         batch = asyncio.run(stub_collector.collect(["x", "y"]))
         evaluator = TokenLogProbEvaluator()
         signals = evaluator.evaluate(
-            collector=stub_collector,
             model=stub_collector.model,
             batch=batch,
             ref_model=None,
@@ -254,7 +258,6 @@ class TestEvaluate:
         evaluator = TokenLogProbEvaluator()
         with pytest.raises(RuntimeError, match="ref_model"):
             evaluator.evaluate(
-                collector=stub_collector,
                 model=stub_collector.model,
                 batch=batch,
                 ref_model=None,
@@ -272,7 +275,6 @@ class TestEvaluate:
         batch = asyncio.run(stub_collector.collect(["x"]))
         evaluator = TokenLogProbEvaluator()
         signals = evaluator.evaluate(
-            collector=stub_collector,
             model=stub_collector.model,
             batch=batch,
             ref_model=ref,
@@ -310,7 +312,7 @@ class TestEndToEnd:
             batch.rewards, batch.group_ids,
         )
         signals = evaluator.evaluate(
-            collector=stub_collector, model=model, batch=batch,
+            model=model, batch=batch,
             ref_model=None,
             signal_request=SignalRequest(need_ref=False),
         )

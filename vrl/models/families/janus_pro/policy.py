@@ -228,8 +228,8 @@ class JanusProPolicy(nn.Module, AutoregressivePolicy):
 
         Cannot key off ``hasattr(m, "base_model")`` alone: HF
         ``PreTrainedModel`` exposes ``base_model`` as a property returning
-        ``self`` even when there's no PEFT wrap, and that shim has no ``.model``
-        attr → AttributeError. Only peel when the PEFT inner path exists.
+        ``self`` even when there's no PEFT wrap, and that object has no
+        ``.model`` attr. Only peel when the PEFT inner path exists.
         """
         m = self.mmgpt
         inner = getattr(m, "base_model", None)
@@ -446,8 +446,7 @@ class JanusProPolicy(nn.Module, AutoregressivePolicy):
         logits over the image vocab so the evaluator can gather log-probs
         of the sampled tokens under the *current* policy.
 
-        AR has no notion of "denoising step" — ``timestep_idx`` is accepted
-        for protocol compatibility but ignored.
+        AR has no notion of "denoising step", so ``timestep_idx`` is ignored.
 
         See ``vrl/models/ar.py::AutoregressivePolicy`` for the shared AR
         replay protocol; see ``SPRINT_ar_support.md`` §5 for why Janus and
@@ -768,13 +767,9 @@ class JanusProPolicy(nn.Module, AutoregressivePolicy):
         hidden) but the quantizer codebook is 8-dim — using 256 produces a
         silent reshape explosion.
 
-        Order of precedence:
-          1. Explicit override (``config.vq_latent_channels``).
-          2. Live introspection: ``vq_model.quantize.embedding.weight.shape[-1]``
-             — the only authoritative source.
-          3. Legacy config fallbacks (``embed_dim``, ``latent_channels``) —
-             ``z_channels`` is explicitly skipped because it misleads.
-          4. Janus-Pro-1B constant (8) with a debug log.
+        Resolution is intentionally strict: use the explicit override or the
+        live quantizer embedding shape. If neither is available, fail instead
+        of guessing a checkpoint-specific constant.
         """
         override = self.config.vq_latent_channels
         if override is not None:
@@ -793,25 +788,11 @@ class JanusProPolicy(nn.Module, AutoregressivePolicy):
             if w.ndim == 2 and w.shape[-1] > 0:
                 return int(w.shape[-1])
 
-        vq_cfg = getattr(self.vq_model, "config", None)
-        # z_channels is encoder-hidden-dim on Janus VQModel, NOT codebook dim.
-        # Skip it intentionally.
-        for attr in ("embed_dim", "latent_channels"):
-            if vq_cfg is not None and hasattr(vq_cfg, attr):
-                val = getattr(vq_cfg, attr)
-                if not isinstance(val, int) or val <= 0:
-                    raise RuntimeError(
-                        f"vq_model.config.{attr} = {val!r} is not a positive "
-                        "int — cannot use as latent-channel count."
-                    )
-                return val
-
-        logger.debug(
-            "Could not auto-detect vq latent channels from vq_model.config; "
-            "falling back to 8 (Janus-Pro-1B default). Set "
-            "JanusProConfig.vq_latent_channels to silence this."
+        raise RuntimeError(
+            "Could not resolve Janus VQ latent channels. Set "
+            "JanusProConfig.vq_latent_channels or provide a VQ model with "
+            "quantize.embedding.weight."
         )
-        return 8
 
 
 # ---------------------------------------------------------------------------

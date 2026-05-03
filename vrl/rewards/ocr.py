@@ -10,15 +10,12 @@ flow_grpo reference: ``flow_grpo/ocr.py::OcrScorer_video_or_image``.
 
 from __future__ import annotations
 
-import logging
 import re
 from pathlib import Path
 from typing import Any
 
 from vrl.algorithms.types import Rollout
 from vrl.rewards.base import RewardFunction
-
-logger = logging.getLogger(__name__)
 
 
 def _safe_filename_fragment(text: str, max_len: int = 24) -> str:
@@ -87,11 +84,6 @@ class OCRReward(RewardFunction):
         self._engine: Any = None
         self._debug_dir = Path(debug_dir) if debug_dir else None
         self._debug_counter = 0
-        # Track PaddleOCR frame-level failures. First failure is surfaced
-        # via logger.warning with traceback so systemic breakage (e.g. CUDA
-        # OOM in paddle, missing model) doesn't silently return reward=0
-        # for every frame. Subsequent failures drop to DEBUG to avoid spam.
-        self._engine_failure_count = 0
         if self._debug_dir is not None:
             self._debug_dir.mkdir(parents=True, exist_ok=True)
 
@@ -143,9 +135,9 @@ class OCRReward(RewardFunction):
                 # [C, H, W] single image
                 frames = [raw.permute(1, 2, 0).cpu().numpy()]
             else:
-                # Fallback — flatten to first axis frames
-                video = raw.cpu().numpy()
-                frames = list(video[:: self.frame_interval])
+                raise ValueError(
+                    f"OCRReward expected image/video tensor with 3 or 4 dims, got {raw.ndim}",
+                )
         else:
             # Assume PIL or numpy already; single image path
             frames = [np.asarray(output)]
@@ -160,32 +152,16 @@ class OCRReward(RewardFunction):
         best_ocr_text: str = ""
 
         for frame in frames:
-            try:
-                result = self._engine.ocr(frame, cls=False)
-                if result and result[0]:
-                    text_raw = "".join(
-                        res[1][0] if res[1][1] > 0 else "" for res in result[0]
-                    )
-                else:
-                    text_raw = ""
-                text = _normalize_ocr_text(text_raw)
-                dist = distance(text, target_text)
-                dist = min(dist, target_len)
-            except Exception:
-                # Surface first failure with traceback; subsequent failures
-                # drop to DEBUG so a systemic issue is obvious but a noisy
-                # frame doesn't flood logs.
-                if self._engine_failure_count == 0:
-                    logger.warning(
-                        "OCR engine failed on frame (reward=0 fallback). "
-                        "If this repeats, check paddleocr init / CUDA state.",
-                        exc_info=True,
-                    )
-                else:
-                    logger.debug("OCR engine failed on frame", exc_info=True)
-                self._engine_failure_count += 1
+            result = self._engine.ocr(frame, cls=False)
+            if result and result[0]:
+                text_raw = "".join(
+                    res[1][0] if res[1][1] > 0 else "" for res in result[0]
+                )
+            else:
                 text_raw = ""
-                dist = target_len
+            text = _normalize_ocr_text(text_raw)
+            dist = distance(text, target_text)
+            dist = min(dist, target_len)
 
             reward = 1.0 - dist / target_len
             if reward > 0:
