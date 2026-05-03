@@ -8,7 +8,6 @@ from typing import Any
 from vrl.distributed.ray.rollout.spec import RolloutRuntimeSpec
 from vrl.engine.generation.microbatching import MicroBatchPlan
 from vrl.engine.generation.protocols import PipelineChunkResult
-from vrl.ipc.protocol import ArtifactRef
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +27,7 @@ class RayChunkResult:
     request_id: str
     worker_id: str
     chunk: MicroBatchPlan
-    output: PipelineChunkResult | ArtifactRef | None
+    output: PipelineChunkResult | None
     metrics: dict[str, Any] = field(default_factory=dict)
     policy_version: int | None = None
     error: str | None = None

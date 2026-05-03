@@ -62,6 +62,7 @@ def test_experiment_yaml_loads(name: str) -> None:
 
     # model must have a path (required by every family driver).
     assert "path" in cfg.model, f"{name} missing model.path"
+    assert "entrypoint" in cfg.trainer, f"{name} missing trainer.entrypoint"
     assert "output_dir" in cfg.trainer, f"{name} missing trainer.output_dir"
     assert "kind" in cfg.algorithm, f"{name} missing algorithm.kind"
     assert "adv_estimator" not in cfg.algorithm, f"{name} still uses algorithm.adv_estimator"
@@ -101,11 +102,43 @@ def test_no_experiment_named_training_wrappers() -> None:
 
 
 @pytest.mark.parametrize("name", _experiment_names())
-def test_unified_train_entrypoint_dispatches_every_experiment(name: str) -> None:
-    from vrl.scripts.train import resolve_train_target
+def test_unified_train_entrypoint_reads_yaml_entrypoint(name: str) -> None:
+    from vrl.scripts.train import _import_callable, resolve_train_target
 
     cfg = load_config(f"experiment/{name}")
-    assert resolve_train_target(cfg).import_path == _EXPECTED_TRAIN_TARGET[name]
+    target = resolve_train_target(cfg)
+    assert target.import_path == _EXPECTED_TRAIN_TARGET[name]
+    assert cfg.trainer.entrypoint == _EXPECTED_TRAIN_TARGET[name]
+    assert callable(_import_callable(target.import_path))
+
+
+def test_unified_train_entrypoint_requires_yaml_entrypoint() -> None:
+    from vrl.scripts.train import resolve_train_target
+
+    cfg = OmegaConf.create({"trainer": {}})
+    with pytest.raises(ValueError, match=r"trainer\.entrypoint"):
+        resolve_train_target(cfg)
+
+
+def test_unified_train_entrypoint_rejects_empty_yaml_entrypoint() -> None:
+    from vrl.scripts.train import resolve_train_target
+
+    cfg = OmegaConf.create({"trainer": {"entrypoint": ""}})
+    with pytest.raises(ValueError, match="non-empty"):
+        resolve_train_target(cfg)
+
+
+def test_train_cli_has_no_family_kind_dispatch_registry() -> None:
+    text = (REPO_ROOT / "vrl" / "scripts" / "train.py").read_text()
+    forbidden = [
+        "family ==",
+        "kind ==",
+        "reward.components",
+        "algorithm.kind",
+        "model.family",
+    ]
+    offenders = [snippet for snippet in forbidden if snippet in text]
+    assert not offenders, "train.py still contains hardcoded dispatch snippets: " + ", ".join(offenders)
 
 
 def test_adv_estimator_is_not_supported() -> None:

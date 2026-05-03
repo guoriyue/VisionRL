@@ -18,6 +18,7 @@ rollout:
 
 # DPO-specific trainer overrides — paper-default schedule for SDXL scaled to Wan.
 trainer:
+  entrypoint: vrl.scripts.wan_2_1.train_dpo:train_wan_2_1_dpo
   output_dir: outputs/wan_1_3b_dpo
   max_train_steps: 2000
   checkpointing_steps: 500

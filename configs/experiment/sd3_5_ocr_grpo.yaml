@@ -20,6 +20,7 @@ data:
   manifest: datasets/ocr/train.txt
 
 trainer:
+  entrypoint: vrl.scripts.sd3_5.train:train_sd3_5_grpo
   output_dir: outputs/sd3_5_ocr_grpo
   debug:
     first_step: true

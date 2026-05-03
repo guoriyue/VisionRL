@@ -67,7 +67,8 @@ class _StubTokenizer:
         del return_tensors, truncation
         seqs = [
             torch.tensor(
-                [ord(c) % TEXT_VOCAB for c in s[:max_length]], dtype=torch.long,
+                [ord(c) % TEXT_VOCAB for c in s[:max_length]],
+                dtype=torch.long,
             )
             for s in formatted
         ]
@@ -100,9 +101,13 @@ class _StubPolicy:
     def __post_init__(self) -> None:
         self._processor = _StubProcessor()
         self._embed = nn.Embedding(TEXT_VOCAB, HIDDEN)
-        self._lm = type("_LM", (), {
-            "get_input_embeddings": lambda _self=self: self._embed,
-        })()
+        self._lm = type(
+            "_LM",
+            (),
+            {
+                "get_input_embeddings": lambda _self=self: self._embed,
+            },
+        )()
 
     @property
     def processor(self) -> _StubProcessor:
@@ -208,14 +213,16 @@ def test_executor_direct_matches_worker_executed_bitwise() -> None:
     assert out_via_worker.error is None
     assert torch.equal(out_direct.output, out_via_worker.output)
     assert torch.equal(
-        out_direct.extra["token_ids"], out_via_worker.extra["token_ids"],
+        out_direct.extra["token_ids"],
+        out_via_worker.extra["token_ids"],
     )
     assert torch.equal(
         out_direct.extra["token_log_probs"],
         out_via_worker.extra["token_log_probs"],
     )
     assert torch.equal(
-        out_direct.extra["token_mask"], out_via_worker.extra["token_mask"],
+        out_direct.extra["token_mask"],
+        out_via_worker.extra["token_mask"],
     )
     assert torch.equal(
         out_direct.extra["prompt_input_ids"],
@@ -247,7 +254,8 @@ async def test_executor_direct_matches_runtime_engine_loop_bitwise() -> None:
     runtime = GenerationRuntime(engine_loop)
     try:
         out_runtime = await asyncio.wait_for(
-            runtime.generate(_build_request()), timeout=5.0,
+            runtime.generate(_build_request()),
+            timeout=5.0,
         )
     finally:
         await runtime.shutdown()
@@ -255,7 +263,8 @@ async def test_executor_direct_matches_runtime_engine_loop_bitwise() -> None:
     assert out_runtime.error is None
     assert torch.equal(out_direct.output, out_runtime.output)
     assert torch.equal(
-        out_direct.extra["token_ids"], out_runtime.extra["token_ids"],
+        out_direct.extra["token_ids"],
+        out_runtime.extra["token_ids"],
     )
     assert torch.equal(
         out_direct.extra["token_log_probs"],
@@ -275,9 +284,9 @@ async def test_collector_collect_twice_same_seed_bitwise() -> None:
     Parity is bitwise on every tensor field. The reward fn is also
     deterministic (prompt-keyed) so rewards match.
     """
-    from vrl.rollouts.collectors.janus_pro import (
-        JanusProCollector,
+    from vrl.rollouts.collectors import (
         JanusProCollectorConfig,
+        build_rollout_collector,
     )
 
     cfg = JanusProCollectorConfig(
@@ -290,8 +299,18 @@ async def test_collector_collect_twice_same_seed_bitwise() -> None:
         max_text_length=8,
     )
 
-    collector_a = JanusProCollector(_StubPolicy(image_token_num=4), _ConstantReward(), cfg)
-    collector_b = JanusProCollector(_StubPolicy(image_token_num=4), _ConstantReward(), cfg)
+    collector_a = build_rollout_collector(
+        "janus_pro",
+        model=_StubPolicy(image_token_num=4),
+        reward_fn=_ConstantReward(),
+        config=cfg,
+    )
+    collector_b = build_rollout_collector(
+        "janus_pro",
+        model=_StubPolicy(image_token_num=4),
+        reward_fn=_ConstantReward(),
+        config=cfg,
+    )
 
     try:
         batch_a = await collector_a.collect(["a red cube"], group_size=4, seed=42)
@@ -307,7 +326,8 @@ async def test_collector_collect_twice_same_seed_bitwise() -> None:
     assert torch.equal(batch_a.group_ids, batch_b.group_ids)
     assert torch.equal(batch_a.extras["log_probs"], batch_b.extras["log_probs"])
     assert torch.equal(
-        batch_a.extras["token_mask"], batch_b.extras["token_mask"],
+        batch_a.extras["token_mask"],
+        batch_b.extras["token_mask"],
     )
     assert torch.equal(
         batch_a.extras["prompt_attention_mask"],
@@ -345,9 +365,9 @@ async def test_collector_experience_batch_shape() -> None:
     - ``extras["prompt_attention_mask"].shape == (B, L_text)``
     - ``videos.shape == (B, 3, 1, H, W)``
     """
-    from vrl.rollouts.collectors.janus_pro import (
-        JanusProCollector,
+    from vrl.rollouts.collectors import (
         JanusProCollectorConfig,
+        build_rollout_collector,
     )
 
     cfg = JanusProCollectorConfig(
@@ -356,7 +376,12 @@ async def test_collector_experience_batch_shape() -> None:
         image_size=64,
         max_text_length=8,
     )
-    collector = JanusProCollector(_StubPolicy(image_token_num=4), _ConstantReward(), cfg)
+    collector = build_rollout_collector(
+        "janus_pro",
+        model=_StubPolicy(image_token_num=4),
+        reward_fn=_ConstantReward(),
+        config=cfg,
+    )
     try:
         batch = await collector.collect(["a red cube"], group_size=4, seed=11)
     finally:
@@ -386,9 +411,9 @@ async def test_collector_experience_batch_shape() -> None:
 @pytest.mark.asyncio
 async def test_collector_multi_prompt_group_ids() -> None:
     """Multi-prompt collect: group_ids are prompt-major [0,0,...,1,1,...]."""
-    from vrl.rollouts.collectors.janus_pro import (
-        JanusProCollector,
+    from vrl.rollouts.collectors import (
         JanusProCollectorConfig,
+        build_rollout_collector,
     )
 
     cfg = JanusProCollectorConfig(
@@ -397,7 +422,12 @@ async def test_collector_multi_prompt_group_ids() -> None:
         image_size=64,
         max_text_length=8,
     )
-    collector = JanusProCollector(_StubPolicy(image_token_num=4), _ConstantReward(), cfg)
+    collector = build_rollout_collector(
+        "janus_pro",
+        model=_StubPolicy(image_token_num=4),
+        reward_fn=_ConstantReward(),
+        config=cfg,
+    )
     try:
         batch = await collector.collect(["a", "b"])
     finally:

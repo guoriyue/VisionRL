@@ -8,6 +8,12 @@ import pytest
 import torch
 
 from vrl.engine.generation import GenerationIdFactory, OutputBatch, RolloutBackend
+from vrl.rollouts.collectors import (
+    CosmosPredict2CollectorConfig,
+    SD3_5CollectorConfig,
+    Wan_2_1CollectorConfig,
+    build_rollout_collector,
+)
 from vrl.rollouts.experience import ExperienceBatch
 
 
@@ -50,40 +56,25 @@ async def _fake_to_batch(*args: Any, **kwargs: Any) -> ExperienceBatch:
 
 
 @pytest.mark.parametrize(
-    ("collector_cls", "config_cls"),
+    ("family", "config_cls"),
     [
-        pytest.param(
-            pytest.importorskip("vrl.rollouts.collectors.sd3_5").SD3_5Collector,
-            pytest.importorskip("vrl.rollouts.collectors.sd3_5").SD3_5CollectorConfig,
-            id="sd3_5",
-        ),
-        pytest.param(
-            pytest.importorskip("vrl.rollouts.collectors.wan_2_1").Wan_2_1Collector,
-            pytest.importorskip("vrl.rollouts.collectors.wan_2_1").Wan_2_1CollectorConfig,
-            id="wan_2_1",
-        ),
-        pytest.param(
-            pytest.importorskip(
-                "vrl.rollouts.collectors.cosmos_predict2",
-            ).CosmosPredict2Collector,
-            pytest.importorskip(
-                "vrl.rollouts.collectors.cosmos_predict2",
-            ).CosmosPredict2CollectorConfig,
-            id="cosmos",
-        ),
+        pytest.param("sd3_5", SD3_5CollectorConfig, id="sd3_5"),
+        pytest.param("wan_2_1", Wan_2_1CollectorConfig, id="wan_2_1"),
+        pytest.param("cosmos", CosmosPredict2CollectorConfig, id="cosmos"),
     ],
 )
 def test_diffusion_collector_uses_injected_runtime_without_model(
-    collector_cls: Any,
+    family: str,
     config_cls: Any,
 ) -> None:
     import asyncio
 
     runtime = _FakeRuntime()
-    collector = collector_cls(
-        None,
-        object(),
-        config_cls(),
+    collector = build_rollout_collector(
+        family,
+        model=None,
+        reward_fn=object(),
+        config=config_cls(),
         runtime=runtime,
     )
     collector._output_batch_to_experience_batch = _fake_to_batch

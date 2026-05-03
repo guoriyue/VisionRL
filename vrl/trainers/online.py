@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # Optimizer factory
 # ---------------------------------------------------------------------------
 
+
 def _create_optimizer(
     parameters: Any,
     config: TrainerConfig,
@@ -58,6 +59,7 @@ def _create_optimizer(
 # ---------------------------------------------------------------------------
 # Phase profiler
 # ---------------------------------------------------------------------------
+
 
 class PhaseTimer:
     """Accumulating phase timer with optional CUDA sync.
@@ -96,6 +98,7 @@ class PhaseTimer:
 # ---------------------------------------------------------------------------
 # Autocast helper
 # ---------------------------------------------------------------------------
+
 
 def _get_autocast(config: TrainerConfig, device: torch.device) -> Any:
     """Return a bf16 autocast context manager (or no-op when disabled)."""
@@ -150,10 +153,7 @@ def _split_batch_by_group(batch: ExperienceBatch) -> list[ExperienceBatch]:
             ordered_ids.append(gid)
     if len(ordered_ids) <= 1:
         return [batch]
-    return [
-        _apply_sample_mask(batch, group_ids == group_id)
-        for group_id in ordered_ids
-    ]
+    return [_apply_sample_mask(batch, group_ids == group_id) for group_id in ordered_ids]
 
 
 def _remap_group_ids_(batch: ExperienceBatch, global_prompt_indices: list[int]) -> None:
@@ -170,6 +170,7 @@ def _remap_group_ids_(batch: ExperienceBatch, global_prompt_indices: list[int]) 
 # ---------------------------------------------------------------------------
 # OnlineTrainer
 # ---------------------------------------------------------------------------
+
 
 class OnlineTrainer(Trainer):
     """Orchestrates the CEA online RL loop.
@@ -252,21 +253,17 @@ class OnlineTrainer(Trainer):
         grad_norm: Any = 0.0
         if self.accelerator is not None:
             if self.accelerator.sync_gradients and cfg.max_norm > 0:
-                grad_norm = self.accelerator.clip_grad_norm_(
-                    self.model.parameters(), cfg.max_norm
-                )
+                grad_norm = self.accelerator.clip_grad_norm_(self.model.parameters(), cfg.max_norm)
         else:
             if cfg.max_norm > 0:
-                grad_norm = nn.utils.clip_grad_norm_(
-                    self.model.parameters(), cfg.max_norm
-                )
+                grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), cfg.max_norm)
             else:
                 # no clip — compute norm manually for diagnostic
                 sq_sum = 0.0
                 for p in self.model.parameters():
                     if p.grad is not None:
                         sq_sum += float(p.grad.detach().pow(2).sum().item())
-                grad_norm = sq_sum ** 0.5
+                grad_norm = sq_sum**0.5
         optimizer.step()
         optimizer.zero_grad()
         return float(grad_norm)
@@ -358,21 +355,20 @@ class OnlineTrainer(Trainer):
 
             if self.stat_tracker is not None:
                 adv_np = self.stat_tracker.update(all_prompts_flat, all_rewards)
-                tracker_group_size, tracker_trained_prompt_num = (
-                    self.stat_tracker.get_stats()
-                )
+                tracker_group_size, tracker_trained_prompt_num = self.stat_tracker.get_stats()
                 self.stat_tracker.clear()
                 advantages_all = torch.as_tensor(
-                    adv_np, dtype=torch.float32, device=all_rewards.device,
+                    adv_np,
+                    dtype=torch.float32,
+                    device=all_rewards.device,
                 )
                 adv_clip_max = getattr(self.algorithm.config, "adv_clip_max", None)
                 if adv_clip_max is not None:
-                    advantages_all = torch.clamp(
-                        advantages_all, -adv_clip_max, adv_clip_max
-                    )
+                    advantages_all = torch.clamp(advantages_all, -adv_clip_max, adv_clip_max)
             else:
                 advantages_all = self.algorithm.compute_advantages_from_tensors(
-                    all_rewards, all_group_ids,
+                    all_rewards,
+                    all_group_ids,
                 )
 
         # Advantage diagnostics on the full (pre-filter) advantages.
@@ -382,13 +378,12 @@ class OnlineTrainer(Trainer):
         _clip_max = getattr(self.algorithm.config, "adv_clip_max", None)
         adv_saturation = (
             float((_adv_abs >= _clip_max - 1e-6).sum().item()) / _total
-            if _clip_max is not None else 0.0
+            if _clip_max is not None
+            else 0.0
         )
 
         pre_filter_reward_mean = all_rewards.mean().item()
-        pre_filter_reward_std = (
-            all_rewards.std().item() if all_rewards.numel() > 1 else 0.0
-        )
+        pre_filter_reward_std = all_rewards.std().item() if all_rewards.numel() > 1 else 0.0
         pre_filter_adv_mean = advantages_all.mean().item()
 
         # Split advantages back per-batch for the gradient-accumulation loop.
@@ -431,11 +426,17 @@ class OnlineTrainer(Trainer):
             reward_mean = pre_filter_reward_mean
             reward_std = pre_filter_reward_std
             return TrainStepMetrics(
-                loss=0.0, policy_loss=0.0, kl_penalty=0.0,
-                reward_mean=reward_mean, reward_std=reward_std,
+                loss=0.0,
+                policy_loss=0.0,
+                kl_penalty=0.0,
+                reward_mean=reward_mean,
+                reward_std=reward_std,
                 advantage_mean=pre_filter_adv_mean,
-                clip_fraction=0.0, approx_kl=0.0, grad_norm=0.0,
-                adv_saturation=adv_saturation, adv_zero_rate=adv_zero_rate,
+                clip_fraction=0.0,
+                approx_kl=0.0,
+                grad_norm=0.0,
+                adv_saturation=adv_saturation,
+                adv_zero_rate=adv_zero_rate,
                 phase_times=dict(timer.times),
             )
 
@@ -473,12 +474,15 @@ class OnlineTrainer(Trainer):
             logger.info(
                 "DEBUG first-step log-prob diff: mean=%.6f max=%.6f | "
                 "old_lp[0]=%.6f fresh_lp[0]=%.6f",
-                _diff.mean().item(), _diff.max().item(),
-                _old_lp_first.item(), _fresh_lp_first.item(),
+                _diff.mean().item(),
+                _diff.max().item(),
+                _old_lp_first.item(),
+                _fresh_lp_first.item(),
             )
 
         if cfg.debug.grad_split:
             import sys
+
             _msg = (
                 f"\n[GRAD-SPLIT TRACER] about to enter inner loop: "
                 f"step={self.state.step} ppo_epochs={cfg.ppo_epochs} "
@@ -522,12 +526,11 @@ class OnlineTrainer(Trainer):
                     # backward we actually reach, to verify the KL term is
                     # not drowning the policy gradient. Stamps a class flag
                     # to ensure single-shot.
-                    _grad_split_fired = getattr(
-                        OnlineTrainer, "_grad_split_already_fired", False
-                    )
+                    _grad_split_fired = getattr(OnlineTrainer, "_grad_split_already_fired", False)
                     if cfg.debug.grad_split and not _grad_split_fired:
                         OnlineTrainer._grad_split_already_fired = True  # type: ignore[attr-defined]
                         import sys
+
                         _enter = f"\n[GRAD-SPLIT] entering diagnostic block (step={self.state.step}, j={j})\n"
                         print(_enter, file=sys.stderr, flush=True)
                         print(_enter, flush=True)
@@ -548,14 +551,22 @@ class OnlineTrainer(Trainer):
                                     p_t, params, retain_graph=True, allow_unused=True
                                 )
                                 p_norm = (
-                                    sum((g.detach() ** 2).sum().item() for g in p_grads if g is not None)
+                                    sum(
+                                        (g.detach() ** 2).sum().item()
+                                        for g in p_grads
+                                        if g is not None
+                                    )
                                 ) ** 0.5
                             if k_t is not None and k_t.requires_grad:
                                 k_grads = torch.autograd.grad(
                                     k_t, params, retain_graph=True, allow_unused=True
                                 )
                                 k_norm = (
-                                    sum((g.detach() ** 2).sum().item() for g in k_grads if g is not None)
+                                    sum(
+                                        (g.detach() ** 2).sum().item()
+                                        for g in k_grads
+                                        if g is not None
+                                    )
                                 ) ** 0.5
                             ratio = p_norm / k_norm if k_norm and k_norm > 0 else float("inf")
                             _result = (
@@ -567,6 +578,7 @@ class OnlineTrainer(Trainer):
                                 f"kl_term={k_t.item() if k_t is not None else float('nan'):.4e}\n"
                             )
                             import sys
+
                             print(_result, file=sys.stderr, flush=True)
                             print(_result, flush=True)
                             logger.info(_result.strip())
@@ -611,32 +623,36 @@ class OnlineTrainer(Trainer):
         phase_times = dict(timer.times)
         if cfg.profile:
             try:
-                from vrl.rollouts.collectors import wan_2_1
-                phase_times.update(wan_2_1._LAST_COLLECT_PHASES)
+                from vrl.rollouts.collectors import LAST_COLLECT_PHASES
+
+                phase_times.update(LAST_COLLECT_PHASES)
             except Exception:
                 pass
         if cfg.profile and phase_times:
-            total = sum(
-                v for k, v in phase_times.items() if not k.startswith("collect.")
-            )
+            total = sum(v for k, v in phase_times.items() if not k.startswith("collect."))
             parts = " | ".join(
-                f"{k}={v:.3f}s ({100*v/total:.1f}%)" for k, v in phase_times.items()
+                f"{k}={v:.3f}s ({100 * v / total:.1f}%)" for k, v in phase_times.items()
             )
-            logger.info("phase_times[step=%d] total=%.3fs | %s",
-                        self.state.step, total, parts)
+            logger.info("phase_times[step=%d] total=%.3fs | %s", self.state.step, total, parts)
             try:
                 import json
                 import os
+
                 _evt_path = os.path.join(cfg.output_dir, "phase_events.jsonl")
                 os.makedirs(cfg.output_dir, exist_ok=True)
                 with open(_evt_path, "a") as _f:
                     for _n, _s, _e in timer.events:
-                        _f.write(json.dumps({
-                            "step": self.state.step,
-                            "phase": _n,
-                            "start": _s,
-                            "end": _e,
-                        }) + "\n")
+                        _f.write(
+                            json.dumps(
+                                {
+                                    "step": self.state.step,
+                                    "phase": _n,
+                                    "start": _s,
+                                    "end": _e,
+                                }
+                            )
+                            + "\n"
+                        )
                 timer.events.clear()
             except Exception:
                 pass

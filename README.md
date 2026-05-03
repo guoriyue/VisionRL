@@ -6,12 +6,12 @@
 > compute regime of each family, instead of pretending one scheduler
 > story fits all.
 
-`visual-rl` (package import name: `vrl`, console entry point: `vrl-serve`)
-is a research codebase for reinforcement-learning-style post-training of
-visual generative models. It treats AR token generators, flow / diffusion
-samplers, and video world models as three distinct compute regimes, and
-provides shared trainer / collector / evaluator abstractions across them
-without forcing a single scheduler narrative on top.
+`visual-rl` (package import name: `vrl`) is a research codebase for
+reinforcement-learning-style post-training of visual generative models. It
+treats AR token generators, flow / diffusion samplers, and video world models
+as three distinct compute regimes, and provides shared trainer / collector /
+evaluator abstractions across them without forcing a single scheduler
+narrative on top.
 
 The repo was previously named `wm-infra` → `vision-rl` → `visual-rl`.
 
@@ -26,9 +26,9 @@ What this codebase actually is, today:
   (Cosmos Predict 1 / 2 / 2.5).
 - A **clean trainer / collector / evaluator boundary** so the same GRPO /
   DPO loop can drive token-level RL and step-level RL from one codebase.
-- An **engine skeleton** (`vrl/engine/`) — scheduler, batch planner, IPC,
-  artifact store, FastAPI gateway — staged for AR continuous batching
-  and multi-GPU rollout/train separation.
+- An **engine skeleton** (`vrl/engine/`) — scheduler, batch planner, and
+  generation runtime — staged for AR continuous batching and multi-GPU
+  rollout/train separation.
 
 What this codebase is **not** trying to be:
 
@@ -86,7 +86,7 @@ as a research thrust, not a polished product:
   — single GRPO recipe
 - `tests/models/test_cosmos_predict2_step.py`,
   `tests/rollouts/test_cosmos_predict2_collector.py`,
-  `tests/e2e/test_serving_cosmos.py`
+  `tests/engine/generation/test_cosmos_executor_parity.py`
 
 The intent is to push visual RL from image / video aesthetics toward
 world-model control. The honest current state: skeleton + one recipe.
@@ -100,12 +100,10 @@ number, not painted across the whole codebase:
 - AR continuous batching (Janus-Pro token generation) — engine
   skeleton at `vrl/engine/batch_planner.py`
   (`ContinuousBatchPlanner`, currently a FIFO baseline, not a moat).
-- Multi-GPU rollout / train physical separation — IPC plumbing at
-  `vrl/ipc/` (`server.py`, `client.py`, `artifacts.py`,
-  `protocol.py`).
-- Request-level scheduling and FastAPI serving — `vrl/engine/`
-  (`loop.py`, `scheduler.py`, `batch_planner.py`),
-  `vrl/gateway/` (FastAPI app, routes), console script `vrl-serve`.
+- Multi-GPU rollout / train physical separation — Ray rollout placement
+  and actor runtime under `vrl/distributed/ray/`.
+- Request-level scheduling — `vrl/engine/` (`loop.py`, `scheduler.py`,
+  `batch_planner.py`).
 
 Until these are backed by a measured benchmark, the engine is a
 **thesis asset**, not a marketing asset.
@@ -125,7 +123,6 @@ vrl/
 │                      diffusion/flow_matching
 ├── models/families/   janus_pro, nextstep_1, sd3_5, wan_2_1, cosmos
 ├── engine/            loop, scheduler, batch planner, generation runtime
-├── gateway/           FastAPI app, bootstrap, routes (vrl-serve)
 └── scripts/           per-family training entry points
 configs/               base, model, sampling, experiment
 tests/                 algorithms, rollouts, models, e2e
@@ -148,7 +145,7 @@ delta is:
 | Diffusion algorithm checklist     | broader      | GRPO + DPO baseline                  |
 | AR image generation RL            | not in scope | first-class (Janus-Pro, NextStep)    |
 | World model / Video2World RL      | not in scope | early-stage (Cosmos Predict 2)       |
-| Engine / serving / multi-GPU infra| not in scope | skeleton, benchmark-gated as it ships|
+| Engine / multi-GPU rollout infra  | not in scope | skeleton, benchmark-gated as it ships|
 
 If you want the most diffusion SKUs and the most algorithm parity, use
 Flow-Factory. If you want AR visual RL or world-model RL with a shared
@@ -169,6 +166,10 @@ pip install -e ".[dev]"      # pytest, ruff, httpx
 
 ## Run
 
+Training entrypoints are declared in each experiment YAML under
+`trainer.entrypoint`; `vrl.scripts.train` only loads YAML and imports that
+callable.
+
 ```bash
 # AR image RL (Janus-Pro, OCR reward)
 python -m vrl.scripts.train --config experiment/janus_pro_1b_ocr_grpo
@@ -183,12 +184,7 @@ python -m vrl.scripts.train --config experiment/cosmos_predict2_2b_grpo
 python -m vrl.scripts.train --config experiment/sd3_5_ocr_grpo
 python -m vrl.scripts.train --config experiment/wan_2_1_1_3b_grpo
 
-# Serving gateway
-vrl-serve
 ```
-
-End-to-end serving tests are gated on real model weights via
-`WM_RUN_REAL_MODEL_TESTS=1`.
 
 ---
 
@@ -215,13 +211,12 @@ ls vrl/models/families/cosmos/predict2.py
 ls vrl/rollouts/collectors/cosmos_predict2.py
 ls vrl/scripts/cosmos/train.py
 ls configs/experiment/cosmos_predict2_2b_grpo.yaml
-ls tests/e2e/test_serving_cosmos.py
+ls tests/engine/generation/test_cosmos_executor_parity.py
 
 # Bet C — Engine skeleton (benchmark-gated)
 ls vrl/engine/protocols.py
 ls vrl/engine/loop.py
 ls vrl/engine/batch_planner.py
-ls vrl/ipc/server.py
 grep -nE "^class ContinuousBatchPlanner" vrl/engine/batch_planner.py
 
 # Diffusion baseline coverage
@@ -229,7 +224,7 @@ ls vrl/models/families/sd3_5 vrl/models/families/wan_2_1
 ls vrl/algorithms/grpo.py vrl/algorithms/dpo.py vrl/algorithms/flow_matching.py
 
 # Console entry point
-grep -nE "vrl-serve" pyproject.toml
+grep -nE "vrl-train" pyproject.toml
 ```
 
 If any of these stop returning, the README is wrong and should be

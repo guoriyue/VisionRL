@@ -286,6 +286,7 @@ _COMMON_REQUIRED_FIELDS: tuple[str, ...] = (
     "actor.ema.enable",
     "actor.ema.decay",
     "actor.ema.update_interval",
+    "trainer.entrypoint",
     "trainer.total_epochs",
     "trainer.save_freq",
     "trainer.log_freq",
@@ -376,6 +377,9 @@ def validate_training_config(cfg: DictConfig) -> None:
     # 1. Common required fields.
     for path in _COMMON_REQUIRED_FIELDS:
         _require_path_present(cfg, path)
+    entrypoint = require(cfg, "trainer.entrypoint")
+    if not isinstance(entrypoint, str) or not entrypoint.strip():
+        raise ValueError("trainer.entrypoint must be a non-empty import path")
 
     # 2. Optional reward block.
     if "reward" in cfg:

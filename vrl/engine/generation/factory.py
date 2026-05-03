@@ -104,12 +104,76 @@ def build_rollout_backend_from_cfg(
     )
 
 
+def build_local_generation_runtime(
+    *,
+    model: Any,
+    family: str,
+    task: str,
+    cfg: Any,
+    executor_kwargs: Mapping[str, Any] | None = None,
+) -> RolloutBackend:
+    """Build the local in-process GenerationRuntime for one family executor."""
+    if model is None:
+        raise RuntimeError(
+            "local generation runtime requires a live model; inject a runtime "
+            "for distributed rollout",
+        )
+
+    from vrl.engine import EngineLoop, Scheduler
+    from vrl.engine.generation.registry import FamilyPipelineRegistry
+    from vrl.engine.generation.runtime import (
+        GenerationBatchPlanner,
+        GenerationModelRunner,
+        GenerationRuntime,
+    )
+    from vrl.engine.generation.worker import GenerationWorker
+
+    executor_cls = _executor_cls_for(family, task)
+    registry = FamilyPipelineRegistry()
+    registry.register(executor_cls(model, **dict(executor_kwargs or {})))
+    worker = GenerationWorker(registry)
+    runner = GenerationModelRunner(worker, execute_in_thread=False)
+    engine_loop = EngineLoop(
+        scheduler=Scheduler(
+            batch_planner=GenerationBatchPlanner(
+                max_batch_size=int(_cfg_get(cfg, "max_batch_requests", 1)),
+            ),
+        ),
+        model_runner=runner,
+    )
+    return GenerationRuntime(engine_loop)
+
+
 def _require_rollout_backend(runtime: Any) -> RolloutBackend:
     if not callable(getattr(runtime, "generate", None)):
         raise TypeError(
             "rollout runtime must implement async generate(request) -> OutputBatch",
         )
     return runtime
+
+
+def _executor_cls_for(family: str, task: str) -> type:
+    if family == "sd3_5" and task == "t2i":
+        from vrl.models.families.sd3_5.executor import SD3_5PipelineExecutor
+
+        return SD3_5PipelineExecutor
+    if family == "wan_2_1" and task == "t2v":
+        from vrl.models.families.wan_2_1.executor import Wan_2_1PipelineExecutor
+
+        return Wan_2_1PipelineExecutor
+    if family == "cosmos" and task == "v2w":
+        from vrl.models.families.cosmos.executor import CosmosPipelineExecutor
+
+        return CosmosPipelineExecutor
+    if family == "janus_pro" and task == "ar_t2i":
+        from vrl.models.families.janus_pro.executor import JanusProPipelineExecutor
+
+        return JanusProPipelineExecutor
+    if family == "nextstep_1" and task == "ar_t2i":
+        from vrl.models.families.nextstep_1.executor import NextStep1PipelineExecutor
+
+        return NextStep1PipelineExecutor
+    raise NotImplementedError(f"no local generation executor for {family}/{task}")
 
 
 def _driver_rollout_policy_on_cuda(
@@ -212,6 +276,7 @@ def _cfg_get(node: Any, key: str, default: Any) -> Any:
 
 __all__ = [
     "DRIVER_CUDA_OWNERSHIP_ERROR",
+    "build_local_generation_runtime",
     "build_rollout_backend_from_cfg",
     "validate_rollout_backend_config",
 ]

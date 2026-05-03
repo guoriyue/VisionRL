@@ -25,4 +25,5 @@ data:
   manifest: datasets/janus/prompts.txt
 
 trainer:
+  entrypoint: vrl.scripts.janus_pro.train:train_janus_pro_grpo
   output_dir: outputs/janus_pro_1b_grpo

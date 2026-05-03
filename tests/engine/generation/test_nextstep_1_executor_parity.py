@@ -211,14 +211,17 @@ def test_executor_direct_matches_worker_routed_bitwise() -> None:
     assert out_via_worker.error is None
     assert torch.equal(out_direct.output, out_via_worker.output)
     assert torch.equal(
-        out_direct.extra["tokens"], out_via_worker.extra["tokens"],
+        out_direct.extra["tokens"],
+        out_via_worker.extra["tokens"],
     )
     # saved_noise round-tripping bitwise IS the determinism contract.
     assert torch.equal(
-        out_direct.extra["saved_noise"], out_via_worker.extra["saved_noise"],
+        out_direct.extra["saved_noise"],
+        out_via_worker.extra["saved_noise"],
     )
     assert torch.equal(
-        out_direct.extra["log_probs"], out_via_worker.extra["log_probs"],
+        out_direct.extra["log_probs"],
+        out_via_worker.extra["log_probs"],
     )
     assert torch.equal(
         out_direct.rollout_trajectory_data.rollout_log_probs,
@@ -255,7 +258,8 @@ async def test_executor_direct_matches_runtime_engine_loop_bitwise() -> None:
     runtime = GenerationRuntime(engine_loop)
     try:
         out_runtime = await asyncio.wait_for(
-            runtime.generate(_build_request()), timeout=5.0,
+            runtime.generate(_build_request()),
+            timeout=5.0,
         )
     finally:
         await runtime.shutdown()
@@ -263,13 +267,16 @@ async def test_executor_direct_matches_runtime_engine_loop_bitwise() -> None:
     assert out_runtime.error is None
     assert torch.equal(out_direct.output, out_runtime.output)
     assert torch.equal(
-        out_direct.extra["tokens"], out_runtime.extra["tokens"],
+        out_direct.extra["tokens"],
+        out_runtime.extra["tokens"],
     )
     assert torch.equal(
-        out_direct.extra["saved_noise"], out_runtime.extra["saved_noise"],
+        out_direct.extra["saved_noise"],
+        out_runtime.extra["saved_noise"],
     )
     assert torch.equal(
-        out_direct.extra["log_probs"], out_runtime.extra["log_probs"],
+        out_direct.extra["log_probs"],
+        out_runtime.extra["log_probs"],
     )
 
 
@@ -285,9 +292,9 @@ async def test_collector_collect_twice_same_seed_bitwise() -> None:
     Parity is bitwise on every tensor field. The reward fn is
     deterministic, so the rewards also match.
     """
-    from vrl.rollouts.collectors.nextstep_1 import (
-        NextStep1Collector,
+    from vrl.rollouts.collectors import (
         NextStep1CollectorConfig,
+        build_rollout_collector,
     )
 
     cfg = NextStep1CollectorConfig(
@@ -301,8 +308,18 @@ async def test_collector_collect_twice_same_seed_bitwise() -> None:
         max_text_length=16,
     )
 
-    collector_a = NextStep1Collector(_StubPolicy(), _ConstantReward(), cfg)
-    collector_b = NextStep1Collector(_StubPolicy(), _ConstantReward(), cfg)
+    collector_a = build_rollout_collector(
+        "nextstep_1",
+        model=_StubPolicy(),
+        reward_fn=_ConstantReward(),
+        config=cfg,
+    )
+    collector_b = build_rollout_collector(
+        "nextstep_1",
+        model=_StubPolicy(),
+        reward_fn=_ConstantReward(),
+        config=cfg,
+    )
 
     try:
         batch_a = await collector_a.collect(["a red cube"], group_size=4, seed=42)
@@ -319,20 +336,24 @@ async def test_collector_collect_twice_same_seed_bitwise() -> None:
     # saved_noise determinism — the contract NextStep1Policy.replay_forward
     # depends on. If this regresses, RL training silently uses fresh noise.
     assert torch.equal(
-        batch_a.extras["saved_noise"], batch_b.extras["saved_noise"],
+        batch_a.extras["saved_noise"],
+        batch_b.extras["saved_noise"],
     )
     assert torch.equal(
-        batch_a.extras["log_probs"], batch_b.extras["log_probs"],
+        batch_a.extras["log_probs"],
+        batch_b.extras["log_probs"],
     )
     assert torch.equal(
-        batch_a.extras["token_mask"], batch_b.extras["token_mask"],
+        batch_a.extras["token_mask"],
+        batch_b.extras["token_mask"],
     )
     assert torch.equal(
         batch_a.extras["prompt_attention_mask"],
         batch_b.extras["prompt_attention_mask"],
     )
     assert torch.equal(
-        batch_a.extras["uncond_input_ids"], batch_b.extras["uncond_input_ids"],
+        batch_a.extras["uncond_input_ids"],
+        batch_b.extras["uncond_input_ids"],
     )
     assert torch.equal(
         batch_a.extras["uncond_attention_mask"],
@@ -358,9 +379,9 @@ async def test_collector_experience_batch_shape() -> None:
       - extras["log_probs"].shape == (B, 1, L)  (CEA singleton time dim)
       - observations.shape == (B, 1, L_text)    (CEA singleton time dim)
     """
-    from vrl.rollouts.collectors.nextstep_1 import (
-        NextStep1Collector,
+    from vrl.rollouts.collectors import (
         NextStep1CollectorConfig,
+        build_rollout_collector,
     )
 
     cfg = NextStep1CollectorConfig(
@@ -374,16 +395,21 @@ async def test_collector_experience_batch_shape() -> None:
         max_text_length=16,
     )
     policy = _StubPolicy()
-    collector = NextStep1Collector(policy, _ConstantReward(), cfg)
+    collector = build_rollout_collector(
+        "nextstep_1",
+        model=policy,
+        reward_fn=_ConstantReward(),
+        config=cfg,
+    )
     try:
         batch = await collector.collect(["a red cube"], group_size=4, seed=11)
     finally:
         await collector.shutdown()
 
     B = 4
-    L = cfg.image_token_num            # 8 image tokens
-    D = policy.token_dim               # 4
-    L_text = cfg.max_text_length       # 16
+    L = cfg.image_token_num  # 8 image tokens
+    D = policy.token_dim  # 4
+    L_text = cfg.max_text_length  # 16
 
     # actions: continuous tokens [B, L, D]
     assert batch.actions.shape == (B, L, D)

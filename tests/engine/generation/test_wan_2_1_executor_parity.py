@@ -153,7 +153,9 @@ class _StubWan2Policy:
         rgb = latents[:, :3] if C >= 3 else latents.repeat(1, 3, 1, 1, 1)[:, :3]
         rgb_flat = rgb.reshape(B * T_v, 3, H, W)
         up = torch.nn.functional.interpolate(
-            rgb_flat, scale_factor=8, mode="nearest",
+            rgb_flat,
+            scale_factor=8,
+            mode="nearest",
         )
         return up.reshape(B, T_v, 3, H * 8, W * 8).permute(0, 2, 1, 3, 4)
 
@@ -272,7 +274,8 @@ async def test_executor_direct_matches_runtime_engine_loop_bitwise() -> None:
     runtime = GenerationRuntime(engine_loop)
     try:
         out_runtime = await asyncio.wait_for(
-            runtime.generate(_build_request()), timeout=5.0,
+            runtime.generate(_build_request()),
+            timeout=5.0,
         )
     finally:
         await runtime.shutdown()
@@ -301,9 +304,9 @@ async def test_collector_collect_twice_same_seed_bitwise() -> None:
     Parity is bitwise on every tensor field. The reward fn is also
     deterministic so the kl-adjusted rewards match.
     """
-    from vrl.rollouts.collectors.wan_2_1 import (
-        Wan_2_1Collector,
+    from vrl.rollouts.collectors import (
         Wan_2_1CollectorConfig,
+        build_rollout_collector,
     )
 
     cfg = Wan_2_1CollectorConfig(
@@ -317,15 +320,29 @@ async def test_collector_collect_twice_same_seed_bitwise() -> None:
         kl_reward=0.0,
     )
 
-    collector_a = Wan_2_1Collector(_StubWan2Policy(), _ConstantReward(), cfg)
-    collector_b = Wan_2_1Collector(_StubWan2Policy(), _ConstantReward(), cfg)
+    collector_a = build_rollout_collector(
+        "wan_2_1",
+        model=_StubWan2Policy(),
+        reward_fn=_ConstantReward(),
+        config=cfg,
+    )
+    collector_b = build_rollout_collector(
+        "wan_2_1",
+        model=_StubWan2Policy(),
+        reward_fn=_ConstantReward(),
+        config=cfg,
+    )
 
     try:
         batch_a = await collector_a.collect(
-            ["a red cube spinning"], group_size=4, seed=42,
+            ["a red cube spinning"],
+            group_size=4,
+            seed=42,
         )
         batch_b = await collector_b.collect(
-            ["a red cube spinning"], group_size=4, seed=42,
+            ["a red cube spinning"],
+            group_size=4,
+            seed=42,
         )
     finally:
         await collector_a.shutdown()
@@ -347,9 +364,9 @@ async def test_collector_collect_twice_same_seed_bitwise() -> None:
 @pytest.mark.asyncio
 async def test_collector_experience_batch_shape() -> None:
     """ExperienceBatch from collector has the trainer-expected fields and shapes."""
-    from vrl.rollouts.collectors.wan_2_1 import (
-        Wan_2_1Collector,
+    from vrl.rollouts.collectors import (
         Wan_2_1CollectorConfig,
+        build_rollout_collector,
     )
 
     cfg = Wan_2_1CollectorConfig(
@@ -360,10 +377,17 @@ async def test_collector_experience_batch_shape() -> None:
         num_frames=9,
         sample_batch_size=8,
     )
-    collector = Wan_2_1Collector(_StubWan2Policy(), _ConstantReward(), cfg)
+    collector = build_rollout_collector(
+        "wan_2_1",
+        model=_StubWan2Policy(),
+        reward_fn=_ConstantReward(),
+        config=cfg,
+    )
     try:
         batch = await collector.collect(
-            ["a red cube spinning"], group_size=4, seed=11,
+            ["a red cube spinning"],
+            group_size=4,
+            seed=11,
         )
     finally:
         await collector.shutdown()

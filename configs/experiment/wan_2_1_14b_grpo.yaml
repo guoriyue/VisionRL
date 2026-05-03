@@ -18,4 +18,5 @@ data:
   manifest: datasets/wan/prompts.txt
 
 trainer:
+  entrypoint: vrl.scripts.wan_2_1.train:train_wan_2_1_grpo
   output_dir: outputs/wan_14b_grpo

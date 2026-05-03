@@ -21,6 +21,7 @@ data:
   manifest: datasets/ocr/train.txt
 
 trainer:
+  entrypoint: vrl.scripts.janus_pro.train:train_janus_pro_ocr_grpo
   output_dir: outputs/janus_pro_1b_ocr_grpo
   debug:
     first_step: true

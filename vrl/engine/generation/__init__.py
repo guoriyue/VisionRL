@@ -3,6 +3,7 @@
 from vrl.engine.generation.batching import forward_batch_by_merging_prompts
 from vrl.engine.generation.factory import (
     DRIVER_CUDA_OWNERSHIP_ERROR,
+    build_local_generation_runtime,
     build_rollout_backend_from_cfg,
     validate_rollout_backend_config,
 )
@@ -67,6 +68,7 @@ __all__ = [
     "RolloutDitTrajectory",
     "RolloutTrajectoryData",
     "WorkloadSignature",
+    "build_local_generation_runtime",
     "build_rollout_backend_from_cfg",
     "forward_batch_by_merging_prompts",
     "gather_pipeline_chunks",

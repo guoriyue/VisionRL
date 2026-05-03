@@ -1,8 +1,8 @@
 """Unified YAML-driven training entry point.
 
-The experiment name belongs in ``configs/experiment/*.yaml``. This module is
-the only CLI layer: it loads one YAML config, resolves the model family and
-algorithm kind, then dispatches to the family implementation module.
+The experiment name and implementation entrypoint belong in
+``configs/experiment/*.yaml``. This module is only the CLI/import layer: it
+loads one YAML config, imports ``trainer.entrypoint``, then runs it.
 """
 
 from __future__ import annotations
@@ -25,41 +25,23 @@ class TrainTarget:
     import_path: str
 
 
-def _positive_reward(cfg: DictConfig, name: str) -> bool:
-    reward = cfg.get("reward")
-    if reward is None or "components" not in reward:
-        return False
-    return float(reward.components.get(name, 0.0)) > 0.0
-
-
 def resolve_train_target(cfg: DictConfig) -> TrainTarget:
-    """Resolve a merged YAML config to the concrete family trainer."""
+    """Resolve a merged YAML config to its declared training callable."""
 
-    family = str(cfg.model.family)
-    kind = str(cfg.algorithm.kind)
-
-    if family == "cosmos" and kind == "grpo":
-        return TrainTarget("vrl.scripts.cosmos.train:train_cosmos_predict2_grpo")
-    if family == "sd3_5" and kind == "grpo":
-        return TrainTarget("vrl.scripts.sd3_5.train:train_sd3_5_grpo")
-    if family == "wan" and kind == "grpo":
-        return TrainTarget("vrl.scripts.wan_2_1.train:train_wan_2_1_grpo")
-    if family == "wan" and kind == "diffusion_dpo":
-        return TrainTarget("vrl.scripts.wan_2_1.train_dpo:train_wan_2_1_dpo")
-    if family == "nextstep_1" and kind == "token_grpo":
-        return TrainTarget("vrl.scripts.nextstep_1.train:train_nextstep_1_ocr_grpo")
-    if family == "janus_pro" and kind == "token_grpo":
-        if _positive_reward(cfg, "ocr"):
-            return TrainTarget("vrl.scripts.janus_pro.train:train_janus_pro_ocr_grpo")
-        return TrainTarget("vrl.scripts.janus_pro.train:train_janus_pro_grpo")
-
-    raise ValueError(
-        f"unsupported training config: model.family={family!r}, "
-        f"algorithm.kind={kind!r}",
-    )
+    try:
+        import_path = cfg.trainer.entrypoint
+    except Exception as exc:
+        raise ValueError("config missing required field: trainer.entrypoint") from exc
+    if not isinstance(import_path, str) or not import_path.strip():
+        raise ValueError("trainer.entrypoint must be a non-empty import path")
+    return TrainTarget(import_path.strip())
 
 
 def _import_callable(import_path: str) -> Any:
+    if ":" not in import_path:
+        raise ValueError(
+            "trainer.entrypoint must use 'module:function' import path syntax",
+        )
     module_name, attr_name = import_path.split(":", 1)
     module = importlib.import_module(module_name)
     return getattr(module, attr_name)

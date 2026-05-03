@@ -21,6 +21,7 @@ data:
   eval_manifest: ""
 
 trainer:
+  entrypoint: vrl.scripts.wan_2_1.train:train_wan_2_1_grpo
   output_dir: outputs/wan_1_3b_ocr_grpo
   debug:
     first_step: true

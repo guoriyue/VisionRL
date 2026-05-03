@@ -25,9 +25,9 @@ from vrl.models.families.janus_pro.policy import (
     JanusProConfig,
     JanusProPolicy,
 )
-from vrl.rollouts.collectors.janus_pro import (
-    JanusProCollector,
+from vrl.rollouts.collectors import (
     JanusProCollectorConfig,
+    build_rollout_collector,
 )
 from vrl.rollouts.evaluators.ar.token_logprob import TokenLogProbEvaluator
 from vrl.rollouts.evaluators.types import SignalRequest
@@ -164,7 +164,8 @@ def test_janus_collector_has_no_forward_step() -> None:
     Train-time replay ownership lives on ``model.replay_forward`` and the
     evaluator calls the model directly. Collectors expose only ``collect()``.
     """
-    collector = JanusProCollector(
+    collector = build_rollout_collector(
+        "janus_pro",
         model=_build_stub_model(),
         reward_fn=None,
         config=JanusProCollectorConfig(image_token_num=4, image_size=64),
@@ -199,7 +200,9 @@ def test_evaluator_calls_model_replay() -> None:
 
     evaluator = TokenLogProbEvaluator()
     with patch.object(
-        model, "replay_forward", wraps=model.replay_forward,
+        model,
+        "replay_forward",
+        wraps=model.replay_forward,
     ) as replay_spy:
         signals = evaluator.evaluate(
             model=model,

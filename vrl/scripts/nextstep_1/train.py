@@ -47,9 +47,9 @@ async def train_nextstep_1_ocr_grpo(
     from vrl.engine.generation import build_rollout_backend_from_cfg
     from vrl.models.families.nextstep_1 import NextStep1Config, NextStep1Policy
     from vrl.rewards.ocr import OCRReward
-    from vrl.rollouts.collectors.nextstep_1 import (
-        NextStep1Collector,
+    from vrl.rollouts.collectors import (
         NextStep1CollectorConfig,
+        build_rollout_collector,
     )
     from vrl.rollouts.evaluators.ar import ContinuousTokenLogProbEvaluator
     from vrl.trainers.data import load_prompt_manifest
@@ -70,25 +70,27 @@ async def train_nextstep_1_ocr_grpo(
     torch.manual_seed(trainer_config.seed)
 
     logger.info("Loading NextStep-1 from %s ...", model_cfg.path)
-    model = NextStep1Policy(NextStep1Config(
-        model_path=model_cfg.path,
-        vae_path=model_cfg.vae_path,
-        dtype=str(require(cfg, "model.dtype")),
-        use_lora=use_lora,
-        lora_rank=int(require(cfg, "model.lora.rank")),
-        lora_alpha=int(require(cfg, "model.lora.alpha")),
-        lora_dropout=float(require(cfg, "model.lora.dropout")),
-        lora_target_modules=lora_targets_tuple,
-        lora_init=str(require(cfg, "model.lora.init")),
-        cfg_scale=float(sampling.cfg_scale),
-        num_flow_steps=int(sampling.num_flow_steps),
-        noise_level=float(sampling.noise_level),
-        image_token_num=int(sampling.image_token_num),
-        image_size=int(sampling.image_size),
-        freeze_vae=bool(require(cfg, "model.freeze_vae")),
-        freeze_image_head=bool(require(cfg, "model.freeze_image_head")),
-        gradient_checkpointing=bool(trainer_config.gradient_checkpointing),
-    ))
+    model = NextStep1Policy(
+        NextStep1Config(
+            model_path=model_cfg.path,
+            vae_path=model_cfg.vae_path,
+            dtype=str(require(cfg, "model.dtype")),
+            use_lora=use_lora,
+            lora_rank=int(require(cfg, "model.lora.rank")),
+            lora_alpha=int(require(cfg, "model.lora.alpha")),
+            lora_dropout=float(require(cfg, "model.lora.dropout")),
+            lora_target_modules=lora_targets_tuple,
+            lora_init=str(require(cfg, "model.lora.init")),
+            cfg_scale=float(sampling.cfg_scale),
+            num_flow_steps=int(sampling.num_flow_steps),
+            noise_level=float(sampling.noise_level),
+            image_token_num=int(sampling.image_token_num),
+            image_size=int(sampling.image_size),
+            freeze_vae=bool(require(cfg, "model.freeze_vae")),
+            freeze_image_head=bool(require(cfg, "model.freeze_image_head")),
+            gradient_checkpointing=bool(trainer_config.gradient_checkpointing),
+        )
+    )
     logger.info("Trainable params: %.2f M", model.trainable_param_count() / 1e6)
 
     # ------------------------------------------------------------------
@@ -97,8 +99,7 @@ async def train_nextstep_1_ocr_grpo(
     reward_weights, reward_kwargs = built["reward"]
     if float(reward_weights.get("ocr", 0.0)) <= 0.0:
         raise ValueError(
-            "nextstep_1_ocr_grpo requires reward.components.ocr > 0; "
-            f"got {reward_weights}",
+            f"nextstep_1_ocr_grpo requires reward.components.ocr > 0; got {reward_weights}",
         )
     debug_dir = reward_kwargs.get("ocr", {}).get("debug_dir") or None
     reward = OCRReward(debug_dir=debug_dir)
@@ -118,7 +119,12 @@ async def train_nextstep_1_ocr_grpo(
         rescale_to_unit=bool(require(cfg, "rollout.rescale_to_unit")),
         max_text_length=int(require(cfg, "rollout.max_text_length")),
     )
-    collector = NextStep1Collector(model=model, reward_fn=reward, config=collector_config)
+    collector = build_rollout_collector(
+        "nextstep_1",
+        model=model,
+        reward_fn=reward,
+        config=collector_config,
+    )
     rollout_backend_config = DistributedRolloutConfig.from_cfg(cfg)
     ray_rollout_inputs = build_family_ray_rollout_runtime_inputs(
         cfg,
@@ -130,9 +136,7 @@ async def train_nextstep_1_ocr_grpo(
         runtime=rollout_runtime,
         local_runtime_builder=collector._build_runtime,
         driver_policy=None if rollout_backend_config.backend == "ray" else model,
-        runtime_spec=(
-            ray_rollout_inputs.runtime_spec if ray_rollout_inputs is not None else None
-        ),
+        runtime_spec=(ray_rollout_inputs.runtime_spec if ray_rollout_inputs is not None else None),
         gatherer=ray_rollout_inputs.gatherer if ray_rollout_inputs is not None else None,
     )
 
@@ -141,8 +145,7 @@ async def train_nextstep_1_ocr_grpo(
     algorithm_config = built["algorithm"]
     if not isinstance(algorithm_config, TokenGRPOConfig):
         raise TypeError(
-            f"NextStep expects algorithm.kind=token_grpo, "
-            f"got {type(algorithm_config).__name__}",
+            f"NextStep expects algorithm.kind=token_grpo, got {type(algorithm_config).__name__}",
         )
     algorithm = TokenGRPO(algorithm_config)
 
@@ -168,7 +171,9 @@ async def train_nextstep_1_ocr_grpo(
         raise FileNotFoundError(f"Manifest not found: {manifest_path}")
     examples = load_prompt_manifest(manifest_path)
     logger.info(
-        "Loaded %d OCR prompt examples from %s", len(examples), manifest_path,
+        "Loaded %d OCR prompt examples from %s",
+        len(examples),
+        manifest_path,
     )
 
     output_dir = Path(trainer_config.output_dir)
@@ -181,37 +186,51 @@ async def train_nextstep_1_ocr_grpo(
     csv_path = output_dir / "metrics.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow([
-            "step", "loss", "reward_mean", "reward_std",
-            "approx_kl", "clip_fraction", "target_text", "prompt",
-        ])
+        writer.writerow(
+            [
+                "step",
+                "loss",
+                "reward_mean",
+                "reward_std",
+                "approx_kl",
+                "clip_fraction",
+                "target_text",
+                "prompt",
+            ]
+        )
 
         for step in range(1, trainer_config.total_epochs + 1):
-            idx = torch.randperm(len(examples), generator=rng)[
-                :rollout_batch_size
-            ].tolist()
+            idx = torch.randperm(len(examples), generator=rng)[:rollout_batch_size].tolist()
             batch_examples = [examples[i] for i in idx]
 
             metrics = await trainer.step(batch_examples)
 
             if step % trainer_config.log_freq == 0:
-                writer.writerow([
-                    step, metrics.loss, metrics.reward_mean, metrics.reward_std,
-                    metrics.approx_kl, metrics.clip_fraction,
-                    batch_examples[0].target_text, batch_examples[0].prompt[:60],
-                ])
+                writer.writerow(
+                    [
+                        step,
+                        metrics.loss,
+                        metrics.reward_mean,
+                        metrics.reward_std,
+                        metrics.approx_kl,
+                        metrics.clip_fraction,
+                        batch_examples[0].target_text,
+                        batch_examples[0].prompt[:60],
+                    ]
+                )
                 f.flush()
                 logger.info(
                     "step=%d target=%r reward=%.3f+/-%.3f loss=%.4f clip=%.2f kl=%.4f",
-                    step, batch_examples[0].target_text,
-                    metrics.reward_mean, metrics.reward_std,
-                    metrics.loss, metrics.clip_fraction, metrics.approx_kl,
+                    step,
+                    batch_examples[0].target_text,
+                    metrics.reward_mean,
+                    metrics.reward_std,
+                    metrics.loss,
+                    metrics.clip_fraction,
+                    metrics.approx_kl,
                 )
 
-            if (
-                trainer_config.save_freq > 0
-                and step % trainer_config.save_freq == 0
-            ):
+            if trainer_config.save_freq > 0 and step % trainer_config.save_freq == 0:
                 ckpt = output_dir / f"checkpoint-{step}"
                 ckpt.mkdir(parents=True, exist_ok=True)
                 if use_lora:

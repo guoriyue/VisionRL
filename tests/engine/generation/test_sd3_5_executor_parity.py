@@ -123,7 +123,11 @@ class _StubPolicy:
         seed = request.seed if request.seed is not None else 0
         gen = torch.Generator().manual_seed(int(seed))
         latents = torch.randn(
-            bsz, self.latent_channels, H, W, generator=gen,
+            bsz,
+            self.latent_channels,
+            H,
+            W,
+            generator=gen,
         )
         return _StubSamplingState(
             latents=latents,
@@ -154,7 +158,9 @@ class _StubPolicy:
         _B, C, _H, _W = latents.shape
         rgb = latents[:, :3] if C >= 3 else latents.repeat(1, 3, 1, 1)[:, :3]
         return torch.nn.functional.interpolate(
-            rgb, scale_factor=8, mode="nearest",
+            rgb,
+            scale_factor=8,
+            mode="nearest",
         )
 
     def export_batch_context(self, state: _StubSamplingState) -> dict[str, Any]:
@@ -274,7 +280,8 @@ async def test_executor_direct_matches_runtime_engine_loop_bitwise() -> None:
     runtime = GenerationRuntime(engine_loop)
     try:
         out_runtime = await asyncio.wait_for(
-            runtime.generate(_build_request()), timeout=5.0,
+            runtime.generate(_build_request()),
+            timeout=5.0,
         )
     finally:
         await runtime.shutdown()
@@ -303,9 +310,9 @@ async def test_collector_collect_twice_same_seed_bitwise() -> None:
     Parity is bitwise on every tensor field. The reward fn is also
     deterministic so the kl-adjusted rewards match.
     """
-    from vrl.rollouts.collectors.sd3_5 import (
-        SD3_5Collector,
+    from vrl.rollouts.collectors import (
         SD3_5CollectorConfig,
+        build_rollout_collector,
     )
 
     cfg = SD3_5CollectorConfig(
@@ -319,8 +326,18 @@ async def test_collector_collect_twice_same_seed_bitwise() -> None:
         kl_reward=0.0,
     )
 
-    collector_a = SD3_5Collector(_StubPolicy(), _ConstantReward(), cfg)
-    collector_b = SD3_5Collector(_StubPolicy(), _ConstantReward(), cfg)
+    collector_a = build_rollout_collector(
+        "sd3_5",
+        model=_StubPolicy(),
+        reward_fn=_ConstantReward(),
+        config=cfg,
+    )
+    collector_b = build_rollout_collector(
+        "sd3_5",
+        model=_StubPolicy(),
+        reward_fn=_ConstantReward(),
+        config=cfg,
+    )
 
     try:
         batch_a = await collector_a.collect(["a red cube"], group_size=4, seed=42)
@@ -345,9 +362,9 @@ async def test_collector_collect_twice_same_seed_bitwise() -> None:
 @pytest.mark.asyncio
 async def test_collector_experience_batch_shape() -> None:
     """ExperienceBatch from collector has the trainer-expected fields and shapes."""
-    from vrl.rollouts.collectors.sd3_5 import (
-        SD3_5Collector,
+    from vrl.rollouts.collectors import (
         SD3_5CollectorConfig,
+        build_rollout_collector,
     )
 
     cfg = SD3_5CollectorConfig(
@@ -357,7 +374,12 @@ async def test_collector_experience_batch_shape() -> None:
         width=32,
         sample_batch_size=8,
     )
-    collector = SD3_5Collector(_StubPolicy(), _ConstantReward(), cfg)
+    collector = build_rollout_collector(
+        "sd3_5",
+        model=_StubPolicy(),
+        reward_fn=_ConstantReward(),
+        config=cfg,
+    )
     try:
         batch = await collector.collect(["a red cube"], group_size=4, seed=11)
     finally:

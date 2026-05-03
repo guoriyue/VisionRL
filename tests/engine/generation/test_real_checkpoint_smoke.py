@@ -56,7 +56,7 @@ async def test_real_sd3_5_checkpoint_smoke() -> None:
 
     from vrl.models.families.sd3_5.builder import build_sd3_5_runtime_bundle
     from vrl.models.runtime import RuntimeBuildSpec
-    from vrl.rollouts.collectors.sd3_5 import SD3_5Collector, SD3_5CollectorConfig
+    from vrl.rollouts.collectors import SD3_5CollectorConfig, build_rollout_collector
 
     spec = RuntimeBuildSpec(
         model_name_or_path=path,
@@ -68,10 +68,11 @@ async def test_real_sd3_5_checkpoint_smoke() -> None:
         scheduler_config={"num_steps": 2},
     )
     bundle = build_sd3_5_runtime_bundle(spec)
-    collector = SD3_5Collector(
-        bundle.policy,
-        _ZeroReward(),
-        SD3_5CollectorConfig(
+    collector = build_rollout_collector(
+        "sd3_5",
+        model=bundle.policy,
+        reward_fn=_ZeroReward(),
+        config=SD3_5CollectorConfig(
             num_steps=2,
             height=512,
             width=512,
@@ -95,9 +96,9 @@ async def test_real_wan_2_1_checkpoint_smoke() -> None:
 
     from vrl.models.families.wan_2_1.builder import build_wan_2_1_runtime_bundle
     from vrl.models.runtime import RuntimeBuildSpec
-    from vrl.rollouts.collectors.wan_2_1 import (
-        Wan_2_1Collector,
+    from vrl.rollouts.collectors import (
         Wan_2_1CollectorConfig,
+        build_rollout_collector,
     )
 
     spec = RuntimeBuildSpec(
@@ -110,10 +111,11 @@ async def test_real_wan_2_1_checkpoint_smoke() -> None:
         scheduler_config={"num_steps": 2},
     )
     bundle = build_wan_2_1_runtime_bundle(spec)
-    collector = Wan_2_1Collector(
-        bundle.policy,
-        _ZeroReward(),
-        Wan_2_1CollectorConfig(
+    collector = build_rollout_collector(
+        "wan_2_1",
+        model=bundle.policy,
+        reward_fn=_ZeroReward(),
+        config=Wan_2_1CollectorConfig(
             num_steps=2,
             height=240,
             width=416,
@@ -137,9 +139,9 @@ async def test_real_janus_pro_checkpoint_smoke() -> None:
     _require_cuda()
 
     from vrl.models.families.janus_pro.policy import JanusProConfig, JanusProPolicy
-    from vrl.rollouts.collectors.janus_pro import (
-        JanusProCollector,
+    from vrl.rollouts.collectors import (
         JanusProCollectorConfig,
+        build_rollout_collector,
     )
 
     policy = JanusProPolicy(
@@ -149,10 +151,11 @@ async def test_real_janus_pro_checkpoint_smoke() -> None:
             device="cuda",
         ),
     )
-    collector = JanusProCollector(
-        policy,
-        _ZeroReward(),
-        JanusProCollectorConfig(n_samples_per_prompt=1),
+    collector = build_rollout_collector(
+        "janus_pro",
+        model=policy,
+        reward_fn=_ZeroReward(),
+        config=JanusProCollectorConfig(n_samples_per_prompt=1),
     )
     try:
         batch = await collector.collect(["a red square"], group_size=1, seed=7)
@@ -174,9 +177,9 @@ async def test_real_nextstep_1_checkpoint_smoke() -> None:
         NextStep1Config,
         NextStep1Policy,
     )
-    from vrl.rollouts.collectors.nextstep_1 import (
-        NextStep1Collector,
+    from vrl.rollouts.collectors import (
         NextStep1CollectorConfig,
+        build_rollout_collector,
     )
 
     policy = NextStep1Policy(
@@ -187,10 +190,11 @@ async def test_real_nextstep_1_checkpoint_smoke() -> None:
             device="cuda",
         ),
     )
-    collector = NextStep1Collector(
-        policy,
-        _ZeroReward(),
-        NextStep1CollectorConfig(n_samples_per_prompt=1),
+    collector = build_rollout_collector(
+        "nextstep_1",
+        model=policy,
+        reward_fn=_ZeroReward(),
+        config=NextStep1CollectorConfig(n_samples_per_prompt=1),
     )
     try:
         batch = await collector.collect(["a red square"], group_size=1, seed=7)

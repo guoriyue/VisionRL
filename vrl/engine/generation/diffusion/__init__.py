@@ -9,10 +9,20 @@ from vrl.engine.generation.diffusion.denoise import (
     run_diffusion_denoise_chunk,
     select_sde_window,
 )
+from vrl.engine.generation.diffusion.executor_base import DiffusionPipelineExecutorBase
+from vrl.engine.generation.diffusion.spec import (
+    BaseDiffusionGenerationSpec,
+    DiffusionGenerationSpec,
+    SDEDiffusionSpec,
+)
 
 __all__ = [
+    "BaseDiffusionGenerationSpec",
     "DiffusionChunkResult",
     "DiffusionDenoiseConfig",
+    "DiffusionGenerationSpec",
+    "DiffusionPipelineExecutorBase",
+    "SDEDiffusionSpec",
     "build_diffusion_output_batch",
     "peak_memory_mb",
     "repeat_tensor_batch",

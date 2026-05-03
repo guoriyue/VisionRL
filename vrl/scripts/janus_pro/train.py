@@ -84,9 +84,9 @@ async def _train_janus_pro(
     )
     from vrl.engine.generation import build_rollout_backend_from_cfg
     from vrl.models.families.janus_pro import JanusProConfig, JanusProPolicy
-    from vrl.rollouts.collectors.janus_pro import (
-        JanusProCollector,
+    from vrl.rollouts.collectors import (
         JanusProCollectorConfig,
+        build_rollout_collector,
     )
     from vrl.rollouts.evaluators.ar import TokenLogProbEvaluator
     from vrl.trainers.data import PromptExample, load_prompt_manifest
@@ -109,20 +109,22 @@ async def _train_janus_pro(
     model_cfg = cfg.model
     use_lora = bool(require(cfg, "model.use_lora"))
     logger.info("Loading Janus-Pro from %s ...", model_cfg.path)
-    policy = JanusProPolicy(JanusProConfig(
-        model_path=str(model_cfg.path),
-        dtype=str(require(cfg, "model.dtype")),
-        use_lora=use_lora,
-        lora_rank=int(require(cfg, "model.lora.rank")),
-        lora_alpha=int(require(cfg, "model.lora.alpha")),
-        lora_dropout=float(require(cfg, "model.lora.dropout")),
-        lora_target_modules=tuple(require(cfg, "model.lora.target_modules")),
-        lora_init=str(require(cfg, "model.lora.init")),
-        cfg_weight=float(cfg.sampling.cfg_weight),
-        temperature=float(cfg.sampling.temperature),
-        image_token_num=int(cfg.sampling.image_token_num),
-        device=str(device),
-    ))
+    policy = JanusProPolicy(
+        JanusProConfig(
+            model_path=str(model_cfg.path),
+            dtype=str(require(cfg, "model.dtype")),
+            use_lora=use_lora,
+            lora_rank=int(require(cfg, "model.lora.rank")),
+            lora_alpha=int(require(cfg, "model.lora.alpha")),
+            lora_dropout=float(require(cfg, "model.lora.dropout")),
+            lora_target_modules=tuple(require(cfg, "model.lora.target_modules")),
+            lora_init=str(require(cfg, "model.lora.init")),
+            cfg_weight=float(cfg.sampling.cfg_weight),
+            temperature=float(cfg.sampling.temperature),
+            image_token_num=int(cfg.sampling.image_token_num),
+            device=str(device),
+        )
+    )
     logger.info("Trainable params: %.2f M", policy.trainable_param_count() / 1e6)
 
     # 2. Reward ----------------------------------------------------------
@@ -130,14 +132,19 @@ async def _train_janus_pro(
     if not reward_weights:
         raise ValueError("At least one reward component must have weight > 0.")
     from vrl.rewards.multi import MultiReward
+
     reward_fn = MultiReward.from_dict(
-        reward_weights, device=str(device), reward_kwargs=reward_kwargs,
+        reward_weights,
+        device=str(device),
+        reward_kwargs=reward_kwargs,
     )
     logger.info("Reward mix: %s", reward_weights)
 
     # 3. Collector + evaluator + algorithm -------------------------------
-    collector = JanusProCollector(
-        model=policy, reward_fn=reward_fn,
+    collector = build_rollout_collector(
+        "janus_pro",
+        model=policy,
+        reward_fn=reward_fn,
         config=JanusProCollectorConfig(
             n_samples_per_prompt=trainer_config.n,
             cfg_weight=float(cfg.sampling.cfg_weight),
@@ -159,9 +166,7 @@ async def _train_janus_pro(
         runtime=rollout_runtime,
         local_runtime_builder=collector._build_runtime,
         driver_policy=None if rollout_backend_config.backend == "ray" else policy,
-        runtime_spec=(
-            ray_rollout_inputs.runtime_spec if ray_rollout_inputs is not None else None
-        ),
+        runtime_spec=(ray_rollout_inputs.runtime_spec if ray_rollout_inputs is not None else None),
         gatherer=ray_rollout_inputs.gatherer if ray_rollout_inputs is not None else None,
     )
     evaluator = TokenLogProbEvaluator()
@@ -198,7 +203,9 @@ async def _train_janus_pro(
     logger.info(
         "Starting Janus-Pro GRPO (%s) — %d epochs, %d examples, n=%d",
         "ocr" if ocr_mode else "general",
-        trainer_config.total_epochs, len(examples), trainer_config.n,
+        trainer_config.total_epochs,
+        len(examples),
+        trainer_config.n,
     )
 
     output_dir = Path(trainer_config.output_dir)
@@ -210,10 +217,22 @@ async def _train_janus_pro(
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(
-            ["epoch", "loss", "policy_loss", "kl_penalty",
-             "reward_mean", "reward_std", "approx_kl", "clip_fraction",
-             "advantage_mean", "grad_norm", "adv_saturation",
-             "adv_zero_rate", "group_size", "trained_prompt_num"]
+            [
+                "epoch",
+                "loss",
+                "policy_loss",
+                "kl_penalty",
+                "reward_mean",
+                "reward_std",
+                "approx_kl",
+                "clip_fraction",
+                "advantage_mean",
+                "grad_norm",
+                "adv_saturation",
+                "adv_zero_rate",
+                "group_size",
+                "trained_prompt_num",
+            ]
             + [f"r_{n}" for n in component_names]
         )
 
@@ -229,33 +248,46 @@ async def _train_janus_pro(
                 last = getattr(reward_fn, "last_components", {}) or {}
                 component_means = {
                     n: (sum(last.get(n, [])) / len(last.get(n, [])))
-                       if last.get(n) else float("nan")
+                    if last.get(n)
+                    else float("nan")
                     for n in component_names
                 }
-                component_str = " ".join(
-                    f"{n}={component_means[n]:.3f}" for n in component_names
-                )
+                component_str = " ".join(f"{n}={component_means[n]:.3f}" for n in component_names)
                 logger.info(
                     "Epoch %d | loss=%.4f kl=%.4f reward=%.4f+/-%.4f "
                     "clip_frac=%.3f approx_kl=%.4f | %s",
-                    epoch, metrics.loss, metrics.kl_penalty,
-                    metrics.reward_mean, metrics.reward_std,
-                    metrics.clip_fraction, metrics.approx_kl,
+                    epoch,
+                    metrics.loss,
+                    metrics.kl_penalty,
+                    metrics.reward_mean,
+                    metrics.reward_std,
+                    metrics.clip_fraction,
+                    metrics.approx_kl,
                     component_str,
                 )
-                writer.writerow([
-                    epoch, metrics.loss, metrics.policy_loss, metrics.kl_penalty,
-                    metrics.reward_mean, metrics.reward_std,
-                    metrics.approx_kl, metrics.clip_fraction,
-                    metrics.advantage_mean, metrics.grad_norm,
-                    metrics.adv_saturation, metrics.adv_zero_rate,
-                    metrics.group_size, metrics.trained_prompt_num,
-                    *(component_means[n] for n in component_names),
-                ])
+                writer.writerow(
+                    [
+                        epoch,
+                        metrics.loss,
+                        metrics.policy_loss,
+                        metrics.kl_penalty,
+                        metrics.reward_mean,
+                        metrics.reward_std,
+                        metrics.approx_kl,
+                        metrics.clip_fraction,
+                        metrics.advantage_mean,
+                        metrics.grad_norm,
+                        metrics.adv_saturation,
+                        metrics.adv_zero_rate,
+                        metrics.group_size,
+                        metrics.trained_prompt_num,
+                        *(component_means[n] for n in component_names),
+                    ]
+                )
                 f.flush()
 
             if trainer_config.save_freq > 0 and (epoch + 1) % trainer_config.save_freq == 0:
-                ckpt_path = output_dir / f"checkpoint-{epoch+1}"
+                ckpt_path = output_dir / f"checkpoint-{epoch + 1}"
                 ckpt_path.mkdir(parents=True, exist_ok=True)
                 if use_lora:
                     policy.language_model.save_pretrained(ckpt_path / "lora_weights")

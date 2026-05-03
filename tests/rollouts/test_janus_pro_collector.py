@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import torch
@@ -20,7 +21,7 @@ from vrl.models.families.janus_pro.policy import (
     JanusProConfig,
     JanusProPolicy,
 )
-from vrl.rollouts.collectors.janus_pro import JanusProCollector, JanusProCollectorConfig
+from vrl.rollouts.collectors import JanusProCollectorConfig, build_rollout_collector
 from vrl.rollouts.evaluators.ar import TokenLogProbEvaluator
 from vrl.rollouts.evaluators.types import SignalRequest
 
@@ -43,8 +44,14 @@ class _StubLM(nn.Module):
     def get_input_embeddings(self) -> nn.Embedding:
         return self.embed
 
-    def forward(self, inputs_embeds=None, attention_mask=None,
-                use_cache=False, past_key_values=None, output_hidden_states=False):
+    def forward(
+        self,
+        inputs_embeds=None,
+        attention_mask=None,
+        use_cache=False,
+        past_key_values=None,
+        output_hidden_states=False,
+    ):
         return SimpleNamespace(
             last_hidden_state=inputs_embeds,
             past_key_values=past_key_values,
@@ -81,14 +88,18 @@ class _StubProcessor:
     """Minimal stand-in for VLChatProcessor — just exposes a tokenizer."""
 
     class _Tokenizer:
-        def __call__(self, formatted: list[str], return_tensors: str = "pt",
-                     padding: bool = True, truncation: bool = True,
-                     max_length: int = 256) -> dict[str, torch.Tensor]:
+        def __call__(
+            self,
+            formatted: list[str],
+            return_tensors: str = "pt",
+            padding: bool = True,
+            truncation: bool = True,
+            max_length: int = 256,
+        ) -> dict[str, torch.Tensor]:
             # Each character → token id (mod TEXT_VOCAB), all sequences padded
             # to the longest in the batch.
             seqs = [
-                torch.tensor([ord(c) % TEXT_VOCAB for c in s[: max_length]],
-                             dtype=torch.long)
+                torch.tensor([ord(c) % TEXT_VOCAB for c in s[:max_length]], dtype=torch.long)
                 for s in formatted
             ]
             L = max(s.numel() for s in seqs)
@@ -114,18 +125,18 @@ class _BatchReward:
     """Reward exposing score_batch — exercises the batched-fast-path."""
 
     async def score_batch(self, rollouts) -> list[float]:
-        return [float(r.trajectory.output.flatten().mean().item())
-                for r in rollouts]
+        return [float(r.trajectory.output.flatten().mean().item()) for r in rollouts]
 
     async def score(self, rollout) -> float:
         return float(rollout.trajectory.output.flatten().mean().item())
 
 
 @pytest.fixture
-def stub_collector() -> JanusProCollector:
+def stub_collector():
     cfg = JanusProConfig(use_lora=False)
     model = JanusProPolicy(config=cfg, mmgpt=_StubMMGPT(), processor=_StubProcessor())
-    return JanusProCollector(
+    return build_rollout_collector(
+        "janus_pro",
         model=model,
         reward_fn=_ConstReward(),
         config=JanusProCollectorConfig(
@@ -143,23 +154,26 @@ def stub_collector() -> JanusProCollector:
 
 
 class TestCollect:
-    def test_returns_well_formed_batch(self, stub_collector: JanusProCollector) -> None:
+    def test_returns_well_formed_batch(self, stub_collector: Any) -> None:
         prompts = ["a cat", "a dog"]
         batch = asyncio.run(stub_collector.collect(prompts))
 
         # 2 prompts x 2 samples = 4 rollouts
-        assert batch.actions.shape == (4, 4)        # [B, L_img]
+        assert batch.actions.shape == (4, 4)  # [B, L_img]
         assert batch.rewards.shape == (4,)
         assert batch.group_ids.tolist() == [0, 0, 1, 1]
         assert batch.dones.shape == (4,)
         assert batch.dones.all()
         assert len(batch.prompts) == 4
 
-    def test_extras_present(self, stub_collector: JanusProCollector) -> None:
+    def test_extras_present(self, stub_collector: Any) -> None:
         batch = asyncio.run(stub_collector.collect(["x", "y"]))
         for key in (
-            "log_probs", "prompt_attention_mask",
-            "uncond_input_ids", "uncond_attention_mask", "token_mask",
+            "log_probs",
+            "prompt_attention_mask",
+            "uncond_input_ids",
+            "uncond_attention_mask",
+            "token_mask",
         ):
             assert key in batch.extras, f"missing {key}"
         # log_probs is [B, T=1, L_img] so OnlineTrainer._step_cea's
@@ -168,7 +182,8 @@ class TestCollect:
         assert batch.extras["token_mask"].shape == (4, 4)
 
     def test_observations_have_timestep_dim(
-        self, stub_collector: JanusProCollector,
+        self,
+        stub_collector: Any,
     ) -> None:
         """OnlineTrainer reads ``num_timesteps = batch.observations.shape[1]``;
         AR has a single effective step so shape must be [B, 1, L_text]."""
@@ -178,14 +193,15 @@ class TestCollect:
         assert batch.observations.shape[1] == 1
 
     def test_group_size_overrides_n_samples(
-        self, stub_collector: JanusProCollector,
+        self,
+        stub_collector: Any,
     ) -> None:
         """OnlineTrainer passes ``group_size=`` and must override
         the collector's n_samples_per_prompt default."""
         batch = asyncio.run(stub_collector.collect(["x"], group_size=3))
         assert batch.actions.shape[0] == 3
 
-    def test_videos_have_T_dim(self, stub_collector: JanusProCollector) -> None:
+    def test_videos_have_T_dim(self, stub_collector: Any) -> None:
         """Reward layer convention: videos = [B, 3, T, H, W] with T=1 for images."""
         batch = asyncio.run(stub_collector.collect(["x"]))
         assert batch.videos.dim() == 5
@@ -197,14 +213,18 @@ class TestCollect:
 # ---------------------------------------------------------------------------
 
 
-def _build_collector_with_reward(reward: object) -> JanusProCollector:
+def _build_collector_with_reward(reward: object):
     cfg = JanusProConfig(use_lora=False)
     model = JanusProPolicy(config=cfg, mmgpt=_StubMMGPT(), processor=_StubProcessor())
-    return JanusProCollector(
-        model=model, reward_fn=reward,
+    return build_rollout_collector(
+        "janus_pro",
+        model=model,
+        reward_fn=reward,
         config=JanusProCollectorConfig(
-            n_samples_per_prompt=2, cfg_weight=2.0,
-            image_token_num=4, image_size=64,
+            n_samples_per_prompt=2,
+            cfg_weight=2.0,
+            image_token_num=4,
+            image_size=64,
         ),
     )
 
@@ -229,7 +249,7 @@ class TestRewardRouting:
 
 
 class TestEvaluate:
-    def test_logprob_shape(self, stub_collector: JanusProCollector) -> None:
+    def test_logprob_shape(self, stub_collector: Any) -> None:
         batch = asyncio.run(stub_collector.collect(["x", "y"]))
         evaluator = TokenLogProbEvaluator()
         signals = evaluator.evaluate(
@@ -245,7 +265,8 @@ class TestEvaluate:
         assert signals.aux.get("token_mask") is not None
 
     def test_need_ref_without_lora_or_ref_model_raises(
-        self, stub_collector: JanusProCollector,
+        self,
+        stub_collector: Any,
     ) -> None:
         """Silent-failure red-line: must raise, NOT silently set ref_lp = lp.
 
@@ -265,7 +286,8 @@ class TestEvaluate:
             )
 
     def test_need_ref_with_explicit_ref_model_works(
-        self, stub_collector: JanusProCollector,
+        self,
+        stub_collector: Any,
     ) -> None:
         """When the caller hands in a real ref_model, evaluate runs fine."""
         # Build a second JanusProPolicy as the frozen ref policy.
@@ -290,7 +312,7 @@ class TestEvaluate:
 
 
 class TestEndToEnd:
-    def test_loss_backprops(self, stub_collector: JanusProCollector) -> None:
+    def test_loss_backprops(self, stub_collector: Any) -> None:
         """Full collect → evaluate → loss → backward path runs without errors."""
         # Re-build with LoRA-free trainable head so we have grads.
         cfg = JanusProConfig(use_lora=False)
@@ -309,16 +331,20 @@ class TestEndToEnd:
         algorithm = TokenGRPO(TokenGRPOConfig(init_kl_coef=0.0, eps_clip=0.5))
 
         advantages = algorithm.compute_advantages_from_tensors(
-            batch.rewards, batch.group_ids,
+            batch.rewards,
+            batch.group_ids,
         )
         signals = evaluator.evaluate(
-            model=model, batch=batch,
+            model=model,
+            batch=batch,
             ref_model=None,
             signal_request=SignalRequest(need_ref=False),
         )
         # OnlineTrainer slices [:, 0] before passing; replicate that here.
         loss, _metrics = algorithm.compute_signal_loss(
-            signals, advantages, batch.extras["log_probs"][:, 0],
+            signals,
+            advantages,
+            batch.extras["log_probs"][:, 0],
         )
 
         # Loss is a finite scalar with grad
@@ -331,7 +357,8 @@ class TestEndToEnd:
         assert torch.isfinite(grad).all()
 
     def test_advantages_shape_and_zero_within_group(
-        self, stub_collector: JanusProCollector,
+        self,
+        stub_collector: Any,
     ) -> None:
         batch = asyncio.run(stub_collector.collect(["a", "b"]))
         algo = TokenGRPO(TokenGRPOConfig(global_std=False))

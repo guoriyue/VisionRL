@@ -39,9 +39,9 @@ async def train_cosmos_predict2_grpo(
     )
     from vrl.engine.generation import build_rollout_backend_from_cfg
     from vrl.rewards.multi import MultiReward
-    from vrl.rollouts.collectors.cosmos_predict2 import (
-        CosmosPredict2Collector,
+    from vrl.rollouts.collectors import (
         CosmosPredict2CollectorConfig,
+        build_rollout_collector,
     )
     from vrl.rollouts.evaluators.diffusion.flow_matching import FlowMatchingEvaluator
     from vrl.trainers.online import OnlineTrainer
@@ -67,7 +67,9 @@ async def train_cosmos_predict2_grpo(
     )
 
     bundle = build_cosmos_predict2_runtime_bundle_from_cfg(
-        cfg, device, weight_dtype,
+        cfg,
+        device,
+        weight_dtype,
     )
     cosmos_model = bundle.policy
     transformer = cosmos_model.transformer
@@ -80,7 +82,9 @@ async def train_cosmos_predict2_grpo(
     if not reward_weights:
         raise ValueError("At least one reward component must have weight > 0.")
     reward_fn = MultiReward.from_dict(
-        reward_weights, device=str(device), reward_kwargs=reward_kwargs,
+        reward_weights,
+        device=str(device),
+        reward_kwargs=reward_kwargs,
     )
     logger.info("Reward mix: %s", reward_weights)
 
@@ -113,8 +117,11 @@ async def train_cosmos_predict2_grpo(
         sde_window_range=tuple(cfg.rollout.sde.window_range),
         same_latent=cfg.rollout.same_latent,
     )
-    collector = CosmosPredict2Collector(
-        cosmos_model, reward_fn, collector_config,
+    collector = build_rollout_collector(
+        "cosmos",
+        model=cosmos_model,
+        reward_fn=reward_fn,
+        config=collector_config,
         reference_image=reference_image,
     )
     rollout_backend_config = DistributedRolloutConfig.from_cfg(cfg)
@@ -129,14 +136,14 @@ async def train_cosmos_predict2_grpo(
         runtime=rollout_runtime,
         local_runtime_builder=collector._build_runtime,
         driver_bundle=None if rollout_backend_config.backend == "ray" else bundle,
-        runtime_spec=(
-            ray_rollout_inputs.runtime_spec if ray_rollout_inputs is not None else None
-        ),
+        runtime_spec=(ray_rollout_inputs.runtime_spec if ray_rollout_inputs is not None else None),
         gatherer=ray_rollout_inputs.gatherer if ray_rollout_inputs is not None else None,
     )
 
     evaluator = FlowMatchingEvaluator(
-        bundle.scheduler, noise_level=1.0, sde_type="sde",
+        bundle.scheduler,
+        noise_level=1.0,
+        sde_type="sde",
     )
     algorithm = GRPO(grpo_config)
 
@@ -144,7 +151,8 @@ async def train_cosmos_predict2_grpo(
     ref_model = cosmos_model if use_lora_kl else None
     stat_tracker = (
         PerPromptStatTracker(global_std=grpo_config.global_std)
-        if cfg.algorithm.per_prompt_stat_tracking else None
+        if cfg.algorithm.per_prompt_stat_tracking
+        else None
     )
 
     trainer = OnlineTrainer(
@@ -164,9 +172,7 @@ async def train_cosmos_predict2_grpo(
     if not manifest_path.exists():
         raise FileNotFoundError(f"Manifest not found: {manifest_path}")
     prompts = [
-        line.strip()
-        for line in manifest_path.read_text().strip().splitlines()
-        if line.strip()
+        line.strip() for line in manifest_path.read_text().strip().splitlines() if line.strip()
     ]
     if not prompts:
         raise ValueError(f"Manifest contains no prompts: {manifest_path}")
@@ -210,7 +216,9 @@ async def train_cosmos_predict2_grpo(
     # --- training loop ---
     logger.info(
         "Starting Cosmos Predict2 GRPO — %d epochs, %d prompts, n=%d",
-        trainer_config.total_epochs, len(prompts), trainer_config.n,
+        trainer_config.total_epochs,
+        len(prompts),
+        trainer_config.n,
     )
 
     if grpo_config.global_std and trainer_config.rollout_batch_size == 1:
@@ -226,8 +234,7 @@ async def train_cosmos_predict2_grpo(
         csv_path.write_text(
             "epoch,loss,policy_loss,kl_penalty,reward_mean,reward_std,"
             "clip_fraction,approx_kl,advantage_mean,grad_norm,adv_saturation,"
-            "adv_zero_rate,group_size,trained_prompt_num,ref_image,"
-            + component_cols + "\n"
+            "adv_zero_rate,group_size,trained_prompt_num,ref_image," + component_cols + "\n"
         )
 
     ref_image_flag = "1" if reference_image is not None else "0"
@@ -248,7 +255,8 @@ async def train_cosmos_predict2_grpo(
         if epoch == 0 and gate_enable:
             logger.info(
                 "Epoch 0 sanity check: approx_kl=%.6f clip_fraction=%.4f",
-                metrics.approx_kl, metrics.clip_fraction,
+                metrics.approx_kl,
+                metrics.clip_fraction,
             )
             if metrics.clip_fraction > clip_thresh:
                 logger.warning(
@@ -271,15 +279,18 @@ async def train_cosmos_predict2_grpo(
                 n: (sum(last.get(n, [])) / len(last.get(n, []))) if last.get(n) else float("nan")
                 for n in component_names
             }
-            component_str = " ".join(
-                f"{n}={component_means[n]:.3f}" for n in component_names
-            )
+            component_str = " ".join(f"{n}={component_means[n]:.3f}" for n in component_names)
             logger.info(
                 "Epoch %d | loss=%.4f kl=%.4f reward=%.4f+/-%.4f "
                 "grad_norm=%.4f adv_sat=%.3f adv_zero=%.3f | %s",
-                epoch, metrics.loss, metrics.kl_penalty,
-                metrics.reward_mean, metrics.reward_std,
-                metrics.grad_norm, metrics.adv_saturation, metrics.adv_zero_rate,
+                epoch,
+                metrics.loss,
+                metrics.kl_penalty,
+                metrics.reward_mean,
+                metrics.reward_std,
+                metrics.grad_norm,
+                metrics.adv_saturation,
+                metrics.adv_zero_rate,
                 component_str,
             )
             with open(csv_path, "a") as f:
@@ -291,12 +302,11 @@ async def train_cosmos_predict2_grpo(
                     f"{metrics.approx_kl:.6f},{metrics.advantage_mean:.6f},"
                     f"{metrics.grad_norm:.6f},{metrics.adv_saturation:.4f},"
                     f"{metrics.adv_zero_rate:.4f},{metrics.group_size:.2f},"
-                    f"{metrics.trained_prompt_num},{ref_image_flag},"
-                    + vals + "\n"
+                    f"{metrics.trained_prompt_num},{ref_image_flag}," + vals + "\n"
                 )
 
         if trainer_config.save_freq > 0 and (epoch + 1) % trainer_config.save_freq == 0:
-            ckpt_path = output_dir / f"checkpoint-{epoch+1}"
+            ckpt_path = output_dir / f"checkpoint-{epoch + 1}"
             ckpt_path.mkdir(parents=True, exist_ok=True)
             torch.save(trainer.state_dict(), ckpt_path / "trainer_state.pt")
             if hasattr(transformer, "save_pretrained"):
@@ -312,22 +322,28 @@ async def train_cosmos_predict2_grpo(
             for i, ep in enumerate(eval_prompts):
                 with torch.no_grad():
                     eval_batch = await collector.collect(
-                        [ep], reference_image=reference_image, seed=i,
+                        [ep],
+                        reference_image=reference_image,
+                        seed=i,
                     )
                 score = eval_batch.rewards[0].item()
                 eval_scores.append(score)
                 if eval_batch.videos is not None:
                     _save_middle_frame(
-                        eval_batch.videos[0], eval_dir,
-                        f"prompt_{i}_score_{score:.2f}.png", torch,
+                        eval_batch.videos[0],
+                        eval_dir,
+                        f"prompt_{i}_score_{score:.2f}.png",
+                        torch,
                     )
             transformer.train()
 
             avg_eval = sum(eval_scores) / len(eval_scores) if eval_scores else 0.0
             logger.info(
                 "Checkpoint %d | eval_reward=%.4f (%s) | saved to %s",
-                epoch + 1, avg_eval,
-                ", ".join(f"{s:.2f}" for s in eval_scores), ckpt_path,
+                epoch + 1,
+                avg_eval,
+                ", ".join(f"{s:.2f}" for s in eval_scores),
+                ckpt_path,
             )
 
     final_path = output_dir / "checkpoint-final"
@@ -339,7 +355,10 @@ async def train_cosmos_predict2_grpo(
 
 
 def _save_middle_frame(
-    video: Any, out_dir: Path, filename: str, torch: Any,
+    video: Any,
+    out_dir: Path,
+    filename: str,
+    torch: Any,
 ) -> None:
     """Extract middle frame from video tensor and save as PNG."""
     try:
@@ -385,7 +404,8 @@ async def _run_eval_only(
     # Evaluate LoRA model
     logger.info(
         "Evaluating LoRA model on %d prompts x %d seeds...",
-        len(eval_prompts), eval_seeds,
+        len(eval_prompts),
+        eval_seeds,
     )
     transformer.eval()
     lora_scores: list[float] = []
@@ -393,28 +413,36 @@ async def _run_eval_only(
         for seed in range(eval_seeds):
             with torch.no_grad():
                 batch = await collector.collect(
-                    [prompt], reference_image=reference_image, seed=seed,
+                    [prompt],
+                    reference_image=reference_image,
+                    seed=seed,
                 )
             score = batch.rewards[0].item()
             lora_scores.append(score)
             if batch.videos is not None:
                 _save_middle_frame(
-                    batch.videos[0], eval_dir,
+                    batch.videos[0],
+                    eval_dir,
                     f"lora_prompt_{i}_seed_{seed}_score_{score:.2f}.png",
                     torch,
                 )
-            rows.append({
-                "prompt": prompt, "seed": seed,
-                "lora_score": f"{score:.4f}",
-                "base_score": "", "delta": "",
-            })
+            rows.append(
+                {
+                    "prompt": prompt,
+                    "seed": seed,
+                    "lora_score": f"{score:.4f}",
+                    "base_score": "",
+                    "delta": "",
+                }
+            )
 
     # Evaluate base model (disable LoRA adapter) — same seeds for paired comparison
     base_scores: list[float] = []
     if hasattr(transformer, "disable_adapter"):
         logger.info(
             "Evaluating base model (LoRA disabled) on %d prompts x %d seeds...",
-            len(eval_prompts), eval_seeds,
+            len(eval_prompts),
+            eval_seeds,
         )
         with transformer.disable_adapter():
             row_idx = 0
@@ -422,20 +450,21 @@ async def _run_eval_only(
                 for seed in range(eval_seeds):
                     with torch.no_grad():
                         batch = await collector.collect(
-                            [prompt], reference_image=reference_image, seed=seed,
+                            [prompt],
+                            reference_image=reference_image,
+                            seed=seed,
                         )
                     score = batch.rewards[0].item()
                     base_scores.append(score)
                     if batch.videos is not None:
                         _save_middle_frame(
-                            batch.videos[0], eval_dir,
+                            batch.videos[0],
+                            eval_dir,
                             f"base_prompt_{i}_seed_{seed}_score_{score:.2f}.png",
                             torch,
                         )
                     rows[row_idx]["base_score"] = f"{score:.4f}"
-                    rows[row_idx]["delta"] = (
-                        f"{lora_scores[row_idx] - score:.4f}"
-                    )
+                    rows[row_idx]["delta"] = f"{lora_scores[row_idx] - score:.4f}"
                     row_idx += 1
     else:
         logger.warning(
@@ -457,5 +486,8 @@ async def _run_eval_only(
     delta = avg_lora - avg_base if base_scores else float("nan")
     logger.info(
         "Eval-only results: lora=%.4f base=%.4f delta=%.4f | %s",
-        avg_lora, avg_base, delta, csv_path,
+        avg_lora,
+        avg_base,
+        delta,
+        csv_path,
     )

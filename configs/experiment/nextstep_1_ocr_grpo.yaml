@@ -18,4 +18,5 @@ data:
   manifest: datasets/ocr/train.txt
 
 trainer:
+  entrypoint: vrl.scripts.nextstep_1.train:train_nextstep_1_ocr_grpo
   output_dir: outputs/nextstep_1_ocr_grpo

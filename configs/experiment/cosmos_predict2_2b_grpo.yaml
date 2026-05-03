@@ -33,6 +33,7 @@ data:
   manifest: datasets/drawbench/train_192.txt
 
 trainer:
+  entrypoint: vrl.scripts.cosmos.train:train_cosmos_predict2_grpo
   output_dir: outputs/cosmos_pred2_2b_grpo
   save_freq: 100
   log_freq: 1

@@ -126,7 +126,12 @@ class _StubCosmosPolicy:
         seed = request.seed if request.seed is not None else 0
         gen = torch.Generator().manual_seed(int(seed))
         latents = torch.randn(
-            bsz, self.latent_channels, T, H, W, generator=gen,
+            bsz,
+            self.latent_channels,
+            T,
+            H,
+            W,
+            generator=gen,
         )
         init_latents = torch.zeros_like(latents)
         return _StubCosmosState(
@@ -156,13 +161,12 @@ class _StubCosmosPolicy:
 
     def decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
         B, C, T, H, W = latents.shape
-        rgb = (
-            latents[:, :3] if C >= 3
-            else latents.repeat(1, 3, 1, 1, 1)[:, :3]
-        )
+        rgb = latents[:, :3] if C >= 3 else latents.repeat(1, 3, 1, 1, 1)[:, :3]
         rgb = rgb.reshape(B * T, 3, H, W)
         rgb = torch.nn.functional.interpolate(
-            rgb, scale_factor=8, mode="nearest",
+            rgb,
+            scale_factor=8,
+            mode="nearest",
         )
         H8, W8 = rgb.shape[-2], rgb.shape[-1]
         return rgb.reshape(B, 3, T, H8, W8)
@@ -283,7 +287,8 @@ async def test_executor_direct_matches_runtime_engine_loop_bitwise() -> None:
     runtime = GenerationRuntime(engine_loop)
     try:
         out_runtime = await asyncio.wait_for(
-            runtime.generate(_build_request()), timeout=5.0,
+            runtime.generate(_build_request()),
+            timeout=5.0,
         )
     finally:
         await runtime.shutdown()
@@ -308,9 +313,9 @@ async def test_executor_direct_matches_runtime_engine_loop_bitwise() -> None:
 @pytest.mark.asyncio
 async def test_collector_collect_twice_same_seed_bitwise() -> None:
     """Two collect() calls with the same prompts + seed → identical ExperienceBatch."""
-    from vrl.rollouts.collectors.cosmos_predict2 import (
-        CosmosPredict2Collector,
+    from vrl.rollouts.collectors import (
         CosmosPredict2CollectorConfig,
+        build_rollout_collector,
     )
 
     cfg = CosmosPredict2CollectorConfig(
@@ -325,11 +330,17 @@ async def test_collector_collect_twice_same_seed_bitwise() -> None:
         kl_reward=0.0,
     )
 
-    collector_a = CosmosPredict2Collector(
-        _StubCosmosPolicy(), _ConstantReward(), cfg,
+    collector_a = build_rollout_collector(
+        "cosmos",
+        model=_StubCosmosPolicy(),
+        reward_fn=_ConstantReward(),
+        config=cfg,
     )
-    collector_b = CosmosPredict2Collector(
-        _StubCosmosPolicy(), _ConstantReward(), cfg,
+    collector_b = build_rollout_collector(
+        "cosmos",
+        model=_StubCosmosPolicy(),
+        reward_fn=_ConstantReward(),
+        config=cfg,
     )
 
     try:
@@ -355,9 +366,9 @@ async def test_collector_collect_twice_same_seed_bitwise() -> None:
 @pytest.mark.asyncio
 async def test_collector_experience_batch_shape() -> None:
     """ExperienceBatch from collector has the trainer-expected fields and shapes."""
-    from vrl.rollouts.collectors.cosmos_predict2 import (
-        CosmosPredict2Collector,
+    from vrl.rollouts.collectors import (
         CosmosPredict2CollectorConfig,
+        build_rollout_collector,
     )
 
     cfg = CosmosPredict2CollectorConfig(
@@ -369,8 +380,11 @@ async def test_collector_experience_batch_shape() -> None:
         fps=16,
         sample_batch_size=8,
     )
-    collector = CosmosPredict2Collector(
-        _StubCosmosPolicy(), _ConstantReward(), cfg,
+    collector = build_rollout_collector(
+        "cosmos",
+        model=_StubCosmosPolicy(),
+        reward_fn=_ConstantReward(),
+        config=cfg,
     )
     try:
         batch = await collector.collect(["a red cube"], group_size=4, seed=11)

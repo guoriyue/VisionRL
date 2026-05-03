@@ -37,9 +37,9 @@ async def train_sd3_5_grpo(
     )
     from vrl.engine.generation import build_rollout_backend_from_cfg
     from vrl.rewards.multi import MultiReward
-    from vrl.rollouts.collectors.sd3_5 import (
-        SD3_5Collector,
+    from vrl.rollouts.collectors import (
         SD3_5CollectorConfig,
+        build_rollout_collector,
     )
     from vrl.rollouts.evaluators.diffusion.flow_matching import FlowMatchingEvaluator
     from vrl.trainers.data import PromptExample, load_prompt_manifest
@@ -75,7 +75,9 @@ async def train_sd3_5_grpo(
     if not reward_weights:
         raise ValueError("At least one reward component must have weight > 0.")
     reward_fn = MultiReward.from_dict(
-        reward_weights, device=str(device), reward_kwargs=reward_kwargs,
+        reward_weights,
+        device=str(device),
+        reward_kwargs=reward_kwargs,
     )
     logger.info("Reward mix: %s", reward_weights)
 
@@ -93,7 +95,12 @@ async def train_sd3_5_grpo(
         sde_window_size=cfg.rollout.sde.window_size,
         sde_window_range=tuple(cfg.rollout.sde.window_range),
     )
-    collector = SD3_5Collector(sd3_5_model, reward_fn, collector_config)
+    collector = build_rollout_collector(
+        "sd3_5",
+        model=sd3_5_model,
+        reward_fn=reward_fn,
+        config=collector_config,
+    )
     rollout_backend_config = DistributedRolloutConfig.from_cfg(cfg)
     ray_rollout_inputs = build_family_ray_rollout_runtime_inputs(
         cfg,
@@ -106,14 +113,14 @@ async def train_sd3_5_grpo(
         runtime=rollout_runtime,
         local_runtime_builder=collector._build_runtime,
         driver_bundle=None if rollout_backend_config.backend == "ray" else bundle,
-        runtime_spec=(
-            ray_rollout_inputs.runtime_spec if ray_rollout_inputs is not None else None
-        ),
+        runtime_spec=(ray_rollout_inputs.runtime_spec if ray_rollout_inputs is not None else None),
         gatherer=ray_rollout_inputs.gatherer if ray_rollout_inputs is not None else None,
     )
 
     evaluator = FlowMatchingEvaluator(
-        bundle.scheduler, noise_level=noise_level, sde_type="sde",
+        bundle.scheduler,
+        noise_level=noise_level,
+        sde_type="sde",
     )
     algorithm = GRPO(grpo_config)
 
@@ -121,7 +128,8 @@ async def train_sd3_5_grpo(
     ref_model = sd3_5_model if use_lora_kl else None
     stat_tracker = (
         PerPromptStatTracker(global_std=grpo_config.global_std)
-        if cfg.algorithm.per_prompt_stat_tracking else None
+        if cfg.algorithm.per_prompt_stat_tracking
+        else None
     )
 
     trainer = OnlineTrainer(
@@ -143,7 +151,9 @@ async def train_sd3_5_grpo(
     examples: list[PromptExample] = load_prompt_manifest(manifest_path)
     logger.info(
         "Starting SD3 GRPO — %d epochs, %d examples, n=%d",
-        trainer_config.total_epochs, len(examples), trainer_config.n,
+        trainer_config.total_epochs,
+        len(examples),
+        trainer_config.n,
     )
 
     output_dir = Path(trainer_config.output_dir)
@@ -173,15 +183,18 @@ async def train_sd3_5_grpo(
                 n: (sum(last.get(n, [])) / len(last.get(n, []))) if last.get(n) else float("nan")
                 for n in component_names
             }
-            component_str = " ".join(
-                f"{n}={component_means[n]:.3f}" for n in component_names
-            )
+            component_str = " ".join(f"{n}={component_means[n]:.3f}" for n in component_names)
             logger.info(
                 "Epoch %d | loss=%.4f kl=%.4f reward=%.4f+/-%.4f "
                 "grad_norm=%.4f adv_sat=%.3f adv_zero=%.3f | %s",
-                epoch, metrics.loss, metrics.kl_penalty,
-                metrics.reward_mean, metrics.reward_std,
-                metrics.grad_norm, metrics.adv_saturation, metrics.adv_zero_rate,
+                epoch,
+                metrics.loss,
+                metrics.kl_penalty,
+                metrics.reward_mean,
+                metrics.reward_std,
+                metrics.grad_norm,
+                metrics.adv_saturation,
+                metrics.adv_zero_rate,
                 component_str,
             )
             with open(csv_path, "a") as f:
@@ -197,7 +210,7 @@ async def train_sd3_5_grpo(
                 )
 
         if trainer_config.save_freq > 0 and (epoch + 1) % trainer_config.save_freq == 0:
-            ckpt_path = output_dir / f"checkpoint-{epoch+1}"
+            ckpt_path = output_dir / f"checkpoint-{epoch + 1}"
             ckpt_path.mkdir(parents=True, exist_ok=True)
             torch.save(trainer.state_dict(), ckpt_path / "trainer_state.pt")
             if hasattr(transformer, "save_pretrained"):
