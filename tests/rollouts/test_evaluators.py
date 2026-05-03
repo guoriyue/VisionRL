@@ -233,6 +233,65 @@ class TestFlowMatchingEvaluatorInit:
 
         assert policy.models == [trainable_transformer]
 
+    def test_evaluate_policy_model_does_not_override_with_itself(
+        self, monkeypatch,
+    ) -> None:
+        """When trainer model is the replay-owning policy, no override is passed."""
+        import types
+
+        import torch
+
+        import vrl.rollouts.evaluators.diffusion.flow_matching as fm
+        from vrl.algorithms.flow_matching import SDEStepResult
+        from vrl.rollouts.evaluators.types import SignalRequest
+
+        class ReplayPolicy:
+            def __init__(self) -> None:
+                self.models: list[object | None] = []
+
+            def replay_forward(self, batch, timestep_idx, *, model=None):
+                self.models.append(model)
+                return {
+                    "noise_pred": torch.zeros_like(
+                        batch.observations[:, timestep_idx],
+                    ),
+                }
+
+        def fake_sde_step_with_logprob(
+            scheduler, model_output, timestep, sample, **kwargs,
+        ):
+            del scheduler, timestep, kwargs
+            return SDEStepResult(
+                prev_sample=sample,
+                log_prob=torch.zeros(sample.shape[0]),
+                prev_sample_mean=model_output,
+                std_dev_t=torch.ones(sample.shape[0]),
+            )
+
+        monkeypatch.setattr(
+            fm.flow_matching_math,
+            "sde_step_with_logprob",
+            fake_sde_step_with_logprob,
+        )
+
+        policy = ReplayPolicy()
+        batch = types.SimpleNamespace(
+            observations=torch.randn(2, 1, 4),
+            actions=torch.randn(2, 1, 4),
+            extras={"timesteps": torch.tensor([[0.8], [0.8]])},
+        )
+
+        evaluator = fm.FlowMatchingEvaluator(scheduler=None)
+        evaluator.evaluate(
+            collector=types.SimpleNamespace(model=policy),
+            model=policy,
+            batch=batch,
+            timestep_idx=0,
+            signal_request=SignalRequest(need_ref=False),
+        )
+
+        assert policy.models == [None]
+
     def test_ref_replay_uses_trainable_disable_adapter(self, monkeypatch) -> None:
         """LoRA KL replay must disable the adapter on the trainable module."""
         import contextlib
@@ -308,6 +367,83 @@ class TestFlowMatchingEvaluatorInit:
         )
 
         assert policy.disabled_states == [False, True]
+        assert signals.ref_log_prob is not None
+
+    def test_ref_replay_policy_model_does_not_override_with_itself(
+        self, monkeypatch,
+    ) -> None:
+        """LoRA KL replay uses policy.disable_adapter without self override."""
+        import contextlib
+        import types
+
+        import torch
+
+        import vrl.rollouts.evaluators.diffusion.flow_matching as fm
+        from vrl.algorithms.flow_matching import SDEStepResult
+        from vrl.rollouts.evaluators.types import SignalRequest
+
+        class ReplayPolicy:
+            def __init__(self) -> None:
+                self.disabled = False
+                self.calls: list[tuple[bool, object | None]] = []
+
+            @contextlib.contextmanager
+            def disable_adapter(self):
+                self.disabled = True
+                try:
+                    yield
+                finally:
+                    self.disabled = False
+
+            def replay_forward(self, batch, timestep_idx, *, model=None):
+                self.calls.append((self.disabled, model))
+                return {
+                    "noise_pred": torch.zeros_like(
+                        batch.observations[:, timestep_idx],
+                    ),
+                }
+
+        def fake_sde_step_with_logprob(
+            scheduler, model_output, timestep, sample, **kwargs,
+        ):
+            del scheduler, timestep
+            return SDEStepResult(
+                prev_sample=sample,
+                log_prob=torch.zeros(sample.shape[0]),
+                prev_sample_mean=model_output,
+                std_dev_t=torch.ones(sample.shape[0]),
+                dt=torch.ones(sample.shape[0])
+                if kwargs.get("return_dt")
+                else None,
+            )
+
+        monkeypatch.setattr(
+            fm.flow_matching_math,
+            "sde_step_with_logprob",
+            fake_sde_step_with_logprob,
+        )
+
+        policy = ReplayPolicy()
+        batch = types.SimpleNamespace(
+            observations=torch.randn(2, 1, 4),
+            actions=torch.randn(2, 1, 4),
+            extras={"timesteps": torch.tensor([[0.8], [0.8]])},
+        )
+
+        evaluator = fm.FlowMatchingEvaluator(scheduler=None)
+        signals = evaluator.evaluate(
+            collector=types.SimpleNamespace(model=policy),
+            model=policy,
+            batch=batch,
+            timestep_idx=0,
+            ref_model=policy,
+            signal_request=SignalRequest(
+                need_ref=True,
+                need_kl_intermediates=True,
+            ),
+        )
+
+        assert policy.calls == [(False, None), (True, None)]
         assert signals.ref_log_prob is not None
 
 

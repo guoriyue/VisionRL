@@ -76,6 +76,7 @@ class WanT2VOfficialPolicy(DiffusionPolicy):
         default_t5_cpu: bool = True,
         default_convert_model_dtype: bool = True,
     ) -> None:
+        super().__init__()
         self.repo_dir = Path(repo_dir)
         self.default_checkpoint_dir = (
             None if default_checkpoint_dir is None else Path(default_checkpoint_dir)
@@ -496,6 +497,17 @@ class WanT2VOfficialPolicy(DiffusionPolicy):
         )
 
     # -- forward_step --------------------------------------------------
+
+    def forward(
+        self,
+        state: WanT2VOfficialSamplingState,
+        step_idx: int,
+        *,
+        model: Any | None = None,
+    ) -> dict[str, Any]:
+        """Run one official Wan step without assuming a single transformer."""
+
+        return self.forward_step(state, step_idx, model=model)
 
     def forward_step(
         self,

@@ -48,6 +48,10 @@ class RayRolloutWorker(RayActorBase):
             apply_state = getattr(policy, "load_trainable_state", None)
             if callable(apply_state) and state_ref is not None:
                 apply_state(state_ref)
+            else:
+                load_state_dict = getattr(policy, "load_state_dict", None)
+                if callable(load_state_dict) and state_ref is not None:
+                    load_state_dict(state_ref, strict=False)
         self._policy_version = int(policy_version)
 
     def current_policy_version(self) -> int | None:
@@ -145,9 +149,46 @@ def _build_executor(runtime_spec: RolloutRuntimeSpec) -> ChunkedFamilyPipelineEx
 
     build_runtime_bundle = import_from_path(str(builder_path))
     executor_cls = import_from_path(str(executor_path))
-    bundle = build_runtime_bundle(RuntimeBuildSpec(**runtime_spec.build_spec_payload()))
+    bundle = build_runtime_bundle(
+        RuntimeBuildSpec(**_normalize_runtime_build_spec_payload(
+            runtime_spec.build_spec_payload(),
+        )),
+    )
     built = executor_cls(bundle.policy, **dict(runtime_spec.executor_kwargs))
     return require_chunked_executor(built)
+
+
+def _normalize_runtime_build_spec_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    device = normalized.get("device")
+    if isinstance(device, str):
+        import torch
+
+        normalized["device"] = torch.device(device)
+    dtype = normalized.get("dtype")
+    if isinstance(dtype, str):
+        normalized["dtype"] = _torch_dtype_from_string(dtype)
+    return normalized
+
+
+def _torch_dtype_from_string(value: str) -> Any:
+    import torch
+
+    key = value.removeprefix("torch.").lower()
+    aliases = {
+        "bf16": torch.bfloat16,
+        "bfloat16": torch.bfloat16,
+        "fp16": torch.float16,
+        "float16": torch.float16,
+        "half": torch.float16,
+        "fp32": torch.float32,
+        "float32": torch.float32,
+        "float": torch.float32,
+    }
+    try:
+        return aliases[key]
+    except KeyError as exc:
+        raise ValueError(f"unsupported torch dtype string in runtime_spec: {value!r}") from exc
 
 
 def _to_cpu(value: Any) -> Any:

@@ -157,6 +157,7 @@ class NextStep1Collector(Collector):
 
         n_per = int(kwargs.get("group_size") or cfg.n_samples_per_prompt)
         seed = kwargs.get("seed")
+        policy_version = kwargs.get("policy_version")
 
         sampling: dict[str, Any] = {
             "cfg_scale": cfg.cfg_scale,
@@ -191,6 +192,7 @@ class NextStep1Collector(Collector):
             sampling=sampling,
             return_artifacts={"output", "rollout_trajectory_data"},
             metadata={"rollout_metadata": rollout_metadata},
+            policy_version=policy_version,
         )
 
         output = await self.runtime.generate(request)

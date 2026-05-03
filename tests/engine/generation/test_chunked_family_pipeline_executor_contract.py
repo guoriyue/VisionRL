@@ -125,10 +125,7 @@ def test_local_worker_pool_executes_prompt_major_chunks() -> None:
     registry.register(executor)
     pool = LocalRolloutWorkerPool(
         registry,
-        [
-            LocalWorkerSpec(worker_id="w0", device="cpu"),
-            LocalWorkerSpec(worker_id="w1", device="cpu"),
-        ],
+        [LocalWorkerSpec(worker_id="w0", device="cpu")],
     )
 
     import asyncio
@@ -147,3 +144,19 @@ def test_local_worker_pool_executes_prompt_major_chunks() -> None:
         1,
         1,
     ]
+
+
+def test_local_worker_pool_rejects_multi_worker_specs() -> None:
+    registry = FamilyPipelineRegistry()
+    registry.register(_ChunkedExecutor())
+
+    import pytest
+
+    with pytest.raises(ValueError, match="Ray backend"):
+        LocalRolloutWorkerPool(
+            registry,
+            [
+                LocalWorkerSpec(worker_id="w0", device="cpu"),
+                LocalWorkerSpec(worker_id="w1", device="cpu"),
+            ],
+        )

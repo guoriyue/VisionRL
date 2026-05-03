@@ -1,4 +1,4 @@
-"""Local chunk execution backend for large rollout requests."""
+"""Single-worker local chunk execution helper for rollout tests/debugging."""
 
 from __future__ import annotations
 
@@ -48,7 +48,11 @@ class LocalRolloutWorker:
 
 
 class LocalRolloutWorkerPool:
-    """Split one GenerationRequest into chunks and gather the result."""
+    """Split one request into chunks on one local worker.
+
+    Local execution is intentionally not a multi-GPU backend. Multi-worker,
+    multi-GPU, and multi-node rollout placement belongs to the Ray backend.
+    """
 
     def __init__(
         self,
@@ -59,16 +63,18 @@ class LocalRolloutWorkerPool:
     ) -> None:
         if not worker_specs:
             raise ValueError("LocalRolloutWorkerPool requires at least one worker")
+        if len(worker_specs) != 1:
+            raise ValueError(
+                "LocalRolloutWorkerPool is a single-worker debug helper; "
+                "use the Ray backend for multi-worker rollout",
+            )
         self.registry = registry
         self.worker_specs = list(worker_specs)
         self.id_factory = id_factory or GenerationIdFactory()
-        self.workers = [
-            LocalRolloutWorker(registry, spec)
-            for spec in self.worker_specs
-        ]
+        self.workers = [LocalRolloutWorker(registry, spec) for spec in self.worker_specs]
 
     async def execute(self, request: GenerationRequest) -> OutputBatch:
-        """Execute a full request by round-robin dispatching its chunks."""
+        """Execute a full request by sequentially running its chunks locally."""
 
         executor = self.registry.resolve(request.family, request.task)
         sample_specs = self.id_factory.build_sample_specs(request)
@@ -82,8 +88,8 @@ class LocalRolloutWorkerPool:
         )
 
         chunks: list[PipelineChunkResult] = []
-        for idx, micro_batch in enumerate(plan.micro_batches):
-            worker = self.workers[idx % len(self.workers)]
+        worker = self.workers[0]
+        for micro_batch in plan.micro_batches:
             chunks.append(worker.execute_chunk(request, micro_batch))
 
         return gather_pipeline_chunks(executor, request, sample_specs, chunks)

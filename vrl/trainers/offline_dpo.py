@@ -1,7 +1,7 @@
 """Offline Diffusion-DPO trainer.
 
-Generic over diffusion model family — works with any model whose
-forward signature is ``model(hidden_states, timestep, encoder_hidden_states)``.
+Generic over diffusion model family. Forward adapters may call either a raw
+diffusion backbone or the trainable backbone registered inside a policy module.
 The two batteries-included paths are:
 
   * SD UNet (epsilon prediction, ``DDPMScheduler.add_noise``)
@@ -116,6 +116,13 @@ def _build_optimizer(
 ForwardFn = Callable[..., torch.Tensor]
 
 
+def _trainable_forward_model(model: nn.Module) -> nn.Module:
+    """Return the trainable backbone when a policy wrapper owns replay semantics."""
+
+    transformer = getattr(model, "transformer", None)
+    return transformer if transformer is not None else model
+
+
 def wan_forward(
     model: nn.Module,
     noisy_latents: torch.Tensor,
@@ -123,8 +130,10 @@ def wan_forward(
     encoder_hidden_states: torch.Tensor,
     extra: dict[str, Any] | None = None,
 ) -> torch.Tensor:
-    """Wan transformer forward — matches WanT2VDiffusersPolicy signature."""
-    out = model(
+    """Wan transformer forward; unwrap policy modules before raw backbone call."""
+    del extra
+    forward_model = _trainable_forward_model(model)
+    out = forward_model(
         hidden_states=noisy_latents,
         timestep=timesteps,
         encoder_hidden_states=encoder_hidden_states,

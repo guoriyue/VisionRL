@@ -84,6 +84,19 @@ class _FakeChunkedExecutor(ChunkedFamilyPipelineExecutor):
         return _FakeChunkGatherer().gather_chunks(request, sample_specs, chunks)
 
 
+class _FakePolicyWithTrainableState:
+    def __init__(self) -> None:
+        self.loaded_states: list[dict[str, Any]] = []
+
+    def load_trainable_state(self, state_dict: dict[str, Any]) -> None:
+        self.loaded_states.append(dict(state_dict))
+
+
+class _FakeExecutorWithPolicy(_FakeChunkedExecutor):
+    def __init__(self) -> None:
+        self.model = _FakePolicyWithTrainableState()
+
+
 class _FakeChunkGatherer:
     def gather_chunks(
         self,
@@ -106,12 +119,23 @@ class _FakeChunkGatherer:
 _FAKE_EXECUTOR_FACTORY = (
     "tests.distributed.ray.test_large_rollout_execution:make_fake_chunked_executor"
 )
+_FAKE_POLICY_EXECUTOR_FACTORY = (
+    "tests.distributed.ray.test_large_rollout_execution:"
+    "make_fake_chunked_executor_with_policy"
+)
 
 
 def make_fake_chunked_executor(runtime_spec: RolloutRuntimeSpec) -> _FakeChunkedExecutor:
     assert runtime_spec.family == "fake"
     assert runtime_spec.executor_kwargs == {"sample_batch_size": 2}
     return _FakeChunkedExecutor()
+
+
+def make_fake_chunked_executor_with_policy(
+    runtime_spec: RolloutRuntimeSpec,
+) -> _FakeExecutorWithPolicy:
+    assert runtime_spec.family == "fake"
+    return _FakeExecutorWithPolicy()
 
 
 def _runtime_spec(*, policy_version: int | None = 3) -> RolloutRuntimeSpec:
@@ -125,6 +149,16 @@ def _runtime_spec(*, policy_version: int | None = 3) -> RolloutRuntimeSpec:
     )
 
 
+def _runtime_spec_with_policy(*, policy_version: int | None = 3) -> RolloutRuntimeSpec:
+    return RolloutRuntimeSpec(
+        family="fake",
+        task="t2i",
+        model_config={"model_name_or_path": "fake-model", "dtype": "float32"},
+        policy_version=policy_version,
+        executor_factory=_FAKE_POLICY_EXECUTOR_FACTORY,
+    )
+
+
 def _runtime_spec_dict(*, policy_version: int | None = 3) -> dict[str, Any]:
     return _runtime_spec(policy_version=policy_version).to_dict()
 
@@ -132,9 +166,10 @@ def _runtime_spec_dict(*, policy_version: int | None = 3) -> dict[str, Any]:
 class _FakeActor:
     def __init__(self) -> None:
         self.version: int | None = None
+        self.state_ref: Any = None
 
     def update_weights(self, state_ref: Any, policy_version: int) -> None:
-        del state_ref
+        self.state_ref = state_ref
         self.version = policy_version
 
 
@@ -266,6 +301,27 @@ def test_ray_rollout_worker_rejects_stale_policy_version() -> None:
     assert "policy_version mismatch" in (result.error or "")
 
 
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"weight": torch.ones(1)},
+        {"transformer.weight": torch.ones(1)},
+    ],
+)
+def test_ray_rollout_worker_updates_policy_trainable_state(state: dict[str, Any]) -> None:
+    worker = RayRolloutWorker(
+        worker_id="w0",
+        family="fake",
+        runtime_spec=_runtime_spec_with_policy(policy_version=1),
+    )
+
+    worker.update_weights(state, policy_version=9)
+
+    assert worker.current_policy_version() == 9
+    assert isinstance(worker.executor, _FakeExecutorWithPolicy)
+    assert worker.executor.model.loaded_states == [state]
+
+
 def test_distributed_rollout_executor_gathers_direct_actor_results() -> None:
     actors = [
         RayRolloutWorker("w0", "fake", _runtime_spec(policy_version=3)),
@@ -285,6 +341,19 @@ def test_distributed_rollout_executor_gathers_direct_actor_results() -> None:
     output = asyncio.run(executor.execute(_request(policy_version=3)))
 
     assert output.output == [(0, 0, 2), (0, 2, 2), (1, 0, 2), (1, 2, 2)]
+
+
+def test_distributed_rollout_executor_rejects_invalid_inflight_limit() -> None:
+    actor = RayRolloutWorker("w0", "fake", _runtime_spec(policy_version=3))
+    workers = [RayWorkerHandle(worker_id="w0", node_id="n0", actor=actor)]
+
+    with pytest.raises(ValueError, match="max_inflight_chunks_per_worker"):
+        DistributedRolloutExecutor(
+            DistributedExecutionPlanner(),
+            workers,
+            _FakeChunkGatherer(),
+            max_inflight_chunks_per_worker=0,
+        )
 
 
 def test_ray_distributed_runtime_delegates_to_executor() -> None:
@@ -333,9 +402,12 @@ def test_ray_rollout_weight_sync_updates_direct_workers() -> None:
         RayWorkerHandle(worker_id="w1", node_id="n1", actor=actors[1]),
     ]
 
-    asyncio.run(RayRolloutWeightSync(workers).push_to_rollout_workers({}, 7))
+    state = {"transformer.weight": torch.ones(1)}
+
+    asyncio.run(RayRolloutWeightSync(workers).push_to_rollout_workers(state, 7))
 
     assert [actor.version for actor in actors] == [7, 7]
+    assert [actor.state_ref for actor in actors] == [state, state]
 
 
 def test_ray_train_actor_builds_trainer_inside_actor() -> None:

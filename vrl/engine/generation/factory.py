@@ -58,11 +58,14 @@ def build_rollout_backend_from_cfg(
     trainable_modules: Mapping[str, Any] | Iterable[Any] | None = None,
     runtime_spec: Any | None = None,
     executor_factory: Callable[[Any, DistributedRolloutConfig], Any] | None = None,
+    gatherer: Any | None = None,
 ) -> RolloutBackend:
     """Build or return the rollout backend selected by config.
 
-    This intentionally does not launch Ray workers. Ray callers must inject an
-    already-built runtime, or provide an explicit local factory hook for tests.
+    Ray callers may inject an already-built runtime. If no runtime is injected,
+    local builds use ``local_runtime_builder`` and Ray builds require a
+    serializable ``runtime_spec`` plus pure chunk ``gatherer`` so the launcher
+    can create Ray rollout workers without receiving live model objects.
     """
     config = validate_rollout_backend_config(
         cfg,
@@ -87,6 +90,11 @@ def build_rollout_backend_from_cfg(
         "distributed.rollout.runtime_spec",
         None,
     )
+    if runtime_spec is not None and gatherer is not None:
+        from vrl.distributed.ray.launcher import RayRolloutLauncher
+
+        return RayRolloutLauncher().launch(config, runtime_spec, gatherer)
+
     executor_factory = (
         executor_factory
         if executor_factory is not None
@@ -96,11 +104,15 @@ def build_rollout_backend_from_cfg(
         raise ValueError(
             "Ray rollout backend requires an injected runtime, or both "
             "distributed.rollout.runtime_spec and "
-            "distributed.rollout.executor_factory. Training entrypoints do not "
-            "launch Ray rollout workers in this sprint.",
+            "distributed.rollout.executor_factory, or runtime_spec plus "
+            "gatherer for RayRolloutLauncher.",
         )
     if not callable(executor_factory):
-        raise ValueError("distributed.rollout.executor_factory must be callable")
+        raise ValueError(
+            "distributed.rollout.executor_factory must be callable when no "
+            "gatherer is provided; use runtime_spec plus gatherer for "
+            "RayRolloutLauncher.",
+        )
 
     built = executor_factory(runtime_spec, config)
     if callable(getattr(built, "generate", None)):

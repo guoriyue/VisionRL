@@ -332,55 +332,7 @@ class JanusProPipelineExecutor(
         sample_specs: Sequence[GenerationSampleSpec],
         chunks: Sequence[JanusProARChunkResult],
     ) -> OutputBatch:
-        """Pack prompt/sample AR chunks back into the canonical OutputBatch."""
-
-        ordered_chunks = _ordered_ar_chunks(request, sample_specs, chunks)
-        token_ids = torch.cat([chunk.token_ids for chunk in ordered_chunks], dim=0)
-        token_log_probs = torch.cat(
-            [chunk.token_log_probs for chunk in ordered_chunks], dim=0,
-        )
-        output = torch.cat([chunk.output for chunk in ordered_chunks], dim=0)
-        peak_mem_mb = _max_peak_memory_mb(ordered_chunks)
-        metrics = GenerationMetrics(
-            num_prompts=len(request.prompts),
-            num_samples=len(sample_specs),
-            num_steps=int(request.sampling.get("image_token_num", 576)),
-            micro_batches=len(ordered_chunks),
-            peak_memory_mb=peak_mem_mb,
-        )
-        extra: dict[str, Any] = {
-            "token_ids": token_ids,
-            "token_log_probs": token_log_probs,
-            "token_mask": torch.cat(
-                [chunk.token_mask for chunk in ordered_chunks], dim=0,
-            ),
-            "prompt_input_ids": torch.cat(
-                [chunk.prompt_input_ids for chunk in ordered_chunks], dim=0,
-            ),
-            "prompt_attention_mask": torch.cat(
-                [chunk.prompt_attention_mask for chunk in ordered_chunks], dim=0,
-            ),
-            "uncond_input_ids": torch.cat(
-                [chunk.uncond_input_ids for chunk in ordered_chunks], dim=0,
-            ),
-            "uncond_attention_mask": torch.cat(
-                [chunk.uncond_attention_mask for chunk in ordered_chunks], dim=0,
-            ),
-            "context": dict(ordered_chunks[0].context),
-        }
-
-        return OutputBatch(
-            request_id=request.request_id,
-            family=request.family,
-            task=request.task,
-            prompts=list(request.prompts),
-            sample_specs=list(sample_specs),
-            output=output,
-            rollout_trajectory_data=None,
-            extra=extra,
-            metrics=metrics,
-            peak_memory_mb=peak_mem_mb or 0.0,
-        )
+        return JanusProChunkGatherer().gather_chunks(request, sample_specs, chunks)
 
     def forward_batch(
         self,
@@ -656,10 +608,89 @@ def _max_peak_memory_mb(chunks: Sequence[JanusProARChunkResult]) -> float | None
     return max(peaks) if peaks else None
 
 
+class JanusProChunkGatherer:
+    """Pure driver-side gatherer for Janus-Pro AR chunk payloads."""
+
+    def gather_chunks(
+        self,
+        request: GenerationRequest,
+        sample_specs: Sequence[GenerationSampleSpec],
+        chunks: Sequence[JanusProARChunkResult],
+    ) -> OutputBatch:
+        """Pack prompt/sample AR chunks back into the canonical OutputBatch."""
+
+        ordered_chunks = _ordered_ar_chunks(request, sample_specs, chunks)
+        token_ids = torch.cat([chunk.token_ids for chunk in ordered_chunks], dim=0)
+        token_log_probs = torch.cat(
+            [chunk.token_log_probs for chunk in ordered_chunks], dim=0,
+        )
+        output = torch.cat([chunk.output for chunk in ordered_chunks], dim=0)
+        peak_mem_mb = _max_peak_memory_mb(ordered_chunks)
+        metrics = GenerationMetrics(
+            num_prompts=len(request.prompts),
+            num_samples=len(sample_specs),
+            num_steps=int(request.sampling.get("image_token_num", 576)),
+            micro_batches=len(ordered_chunks),
+            peak_memory_mb=peak_mem_mb,
+        )
+        extra: dict[str, Any] = {
+            "token_ids": token_ids,
+            "token_log_probs": token_log_probs,
+            "token_mask": torch.cat(
+                [chunk.token_mask for chunk in ordered_chunks], dim=0,
+            ),
+            "prompt_input_ids": torch.cat(
+                [chunk.prompt_input_ids for chunk in ordered_chunks], dim=0,
+            ),
+            "prompt_attention_mask": torch.cat(
+                [chunk.prompt_attention_mask for chunk in ordered_chunks], dim=0,
+            ),
+            "uncond_input_ids": torch.cat(
+                [chunk.uncond_input_ids for chunk in ordered_chunks], dim=0,
+            ),
+            "uncond_attention_mask": torch.cat(
+                [chunk.uncond_attention_mask for chunk in ordered_chunks], dim=0,
+            ),
+            "context": dict(ordered_chunks[0].context),
+        }
+
+        return OutputBatch(
+            request_id=request.request_id,
+            family=request.family,
+            task=request.task,
+            prompts=list(request.prompts),
+            sample_specs=list(sample_specs),
+            output=output,
+            rollout_trajectory_data=None,
+            extra=extra,
+            metrics=metrics,
+            peak_memory_mb=peak_mem_mb or 0.0,
+        )
+
+
+def build_janus_pro_executor_from_runtime_spec(runtime_spec: Any) -> JanusProPipelineExecutor:
+    """Build a Janus-Pro rollout executor inside a Ray worker."""
+
+    from vrl.distributed.ray.spec import RolloutRuntimeSpec
+    from vrl.models.families.janus_pro.policy import JanusProConfig, JanusProPolicy
+
+    spec = RolloutRuntimeSpec.from_value(runtime_spec)
+    config = dict(spec.model_config)
+    if "lora_target_modules" in config:
+        config["lora_target_modules"] = tuple(config["lora_target_modules"])
+    policy = JanusProPolicy(JanusProConfig(**config))
+    return JanusProPipelineExecutor(policy)
+
+
 # F is imported for potential future uses (entropy etc.) — keep silent
 # usage so linters don't strip the import; Janus' executor itself only
 # uses model.sample_image_tokens which already does softmax internally.
 _ = F
 
 
-__all__ = ["JanusProARChunkResult", "JanusProPipelineExecutor"]
+__all__ = [
+    "JanusProARChunkResult",
+    "JanusProChunkGatherer",
+    "JanusProPipelineExecutor",
+    "build_janus_pro_executor_from_runtime_spec",
+]

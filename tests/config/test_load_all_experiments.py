@@ -193,6 +193,27 @@ def test_scripts_have_no_experiment_argparse_defaults() -> None:
     assert not bad, "scripts carry experiment defaults in argparse:\n" + "\n".join(bad)
 
 
+def test_diffusion_training_scripts_use_policy_as_trainer_model() -> None:
+    """Diffusion trainers must optimize the policy wrapper, not raw transformer."""
+    import re
+
+    script_paths = [
+        REPO_ROOT / "vrl" / "scripts" / "sd3_5" / "train.py",
+        REPO_ROOT / "vrl" / "scripts" / "wan_2_1" / "train.py",
+        REPO_ROOT / "vrl" / "scripts" / "cosmos" / "train.py",
+        REPO_ROOT / "vrl" / "scripts" / "wan_2_1" / "train_dpo.py",
+    ]
+    bad: list[str] = []
+    for path in script_paths:
+        text = path.read_text()
+        if re.search(r"\bmodel\s*=\s*transformer\b", text):
+            bad.append(f"{path.relative_to(REPO_ROOT)}: model=transformer")
+        if re.search(r"\bref_model\s*=\s*transformer\b", text):
+            bad.append(f"{path.relative_to(REPO_ROOT)}: ref_model=transformer")
+
+    assert not bad, "diffusion scripts must pass bundle.policy to trainer:\n" + "\n".join(bad)
+
+
 # ---------------------------------------------------------------------------
 # SPRINT patch 3 Phase 7: validation gates and grep audits.
 # ---------------------------------------------------------------------------

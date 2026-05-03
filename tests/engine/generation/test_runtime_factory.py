@@ -122,6 +122,19 @@ def test_ray_backend_without_runtime_spec_does_not_build_local_runtime() -> None
     assert calls == 0
 
 
+def test_ray_backend_runtime_spec_without_gatherer_fails_clearly() -> None:
+    with pytest.raises(ValueError, match="runtime_spec plus gatherer"):
+        build_rollout_backend_from_cfg(
+            _cfg(backend="ray"),
+            runtime_spec={
+                "family": "fake",
+                "task": "t2i",
+                "executor_factory": "tests.fake:factory",
+            },
+            driver_policy=_CpuPolicy(),
+        )
+
+
 def test_ray_backend_rejects_driver_cuda_policy_without_overlap() -> None:
     with pytest.raises(ValueError, match="Driver loaded rollout policy on CUDA"):
         validate_rollout_backend_config(

@@ -109,8 +109,9 @@ def train_wan_2_1_dpo(cfg: DictConfig) -> None:
 
     # 1. Runtime via family builder (no diffusers import here)
     bundle = build_wan_2_1_runtime_bundle_from_cfg(cfg, device, weight_dtype)
+    wan_model = bundle.policy
     pipeline = bundle.backend_handle
-    transformer = bundle.trainable_modules["transformer"]
+    transformer = wan_model.transformer
 
     if bool(require(cfg, "actor.gradient_checkpointing")):
         transformer.enable_gradient_checkpointing()
@@ -173,7 +174,7 @@ def train_wan_2_1_dpo(cfg: DictConfig) -> None:
         pipeline.scheduler.config.num_train_timesteps, device=device,
     )
     trainer = OfflineDPOTrainer(
-        model=transformer,
+        model=wan_model,
         ref_model=None,                       # use LoRA disable_adapter for ref
         forward_fn=wan_forward,
         noise_scheduler=pipeline.scheduler,

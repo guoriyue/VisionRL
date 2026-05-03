@@ -26,8 +26,14 @@ from vrl.engine.generation import (
 )
 from vrl.executors import ChunkedFamilyPipelineExecutor
 from vrl.executors.microbatching import MicroBatchPlan
-from vrl.models.families.janus_pro.executor import JanusProPipelineExecutor
-from vrl.models.families.nextstep_1.executor import NextStep1PipelineExecutor
+from vrl.models.families.janus_pro.executor import (
+    JanusProChunkGatherer,
+    JanusProPipelineExecutor,
+)
+from vrl.models.families.nextstep_1.executor import (
+    NextStep1ChunkGatherer,
+    NextStep1PipelineExecutor,
+)
 
 
 def test_janus_pro_forward_chunk_and_gather_use_prompt_major_order() -> None:
@@ -50,16 +56,19 @@ def test_janus_pro_forward_chunk_and_gather_use_prompt_major_order() -> None:
     ]
 
     chunks = [executor.forward_chunk(request, plan) for plan in plans]
-    output = executor.gather_chunks(
+    gatherer = JanusProChunkGatherer()
+    output = gatherer.gather_chunks(
         request,
         sample_specs,
         [chunks[3], chunks[1], chunks[2], chunks[0]],
     )
 
     ordered_chunks = sorted(
-        chunks, key=lambda chunk: (chunk.prompt_index, chunk.sample_start),
+        chunks,
+        key=lambda chunk: (chunk.prompt_index, chunk.sample_start),
     )
     assert isinstance(executor, ChunkedFamilyPipelineExecutor)
+    assert not isinstance(gatherer, ChunkedFamilyPipelineExecutor)
     assert [call["B"] for call in policy.sample_calls] == [2, 2, 2, 2]
     assert [spec.sample_id for spec in output.sample_specs] == [
         spec.sample_id for spec in sample_specs
@@ -95,22 +104,27 @@ def test_nextstep_1_forward_chunk_and_gather_use_prompt_major_order() -> None:
     ]
 
     chunks = [executor.forward_chunk(request, plan) for plan in plans]
-    output = executor.gather_chunks(
+    gatherer = NextStep1ChunkGatherer()
+    output = gatherer.gather_chunks(
         request,
         sample_specs,
         [chunks[2], chunks[0], chunks[3], chunks[1]],
     )
 
     ordered_chunks = sorted(
-        chunks, key=lambda chunk: (chunk.prompt_index, chunk.sample_start),
+        chunks,
+        key=lambda chunk: (chunk.prompt_index, chunk.sample_start),
     )
     expected_tokens = torch.cat(
-        [chunk.tokens for chunk in ordered_chunks], dim=0,
+        [chunk.tokens for chunk in ordered_chunks],
+        dim=0,
     )
     expected_log_probs = torch.cat(
-        [chunk.log_probs for chunk in ordered_chunks], dim=0,
+        [chunk.log_probs for chunk in ordered_chunks],
+        dim=0,
     )
     assert isinstance(executor, ChunkedFamilyPipelineExecutor)
+    assert not isinstance(gatherer, ChunkedFamilyPipelineExecutor)
     assert policy.sample_calls == 4
     assert policy.decode_calls == 4
     assert [spec.sample_id for spec in output.sample_specs] == [
@@ -161,10 +175,7 @@ def test_ar_executors_run_through_local_prompt_sample_chunk_pool() -> None:
         registry.register(executor)
         pool = LocalRolloutWorkerPool(
             registry,
-            [
-                LocalWorkerSpec(worker_id="w0", device="cpu"),
-                LocalWorkerSpec(worker_id="w1", device="cpu"),
-            ],
+            [LocalWorkerSpec(worker_id="w0", device="cpu")],
         )
 
         output = asyncio.run(pool.execute(request))

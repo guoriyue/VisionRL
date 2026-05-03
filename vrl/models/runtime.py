@@ -44,8 +44,9 @@ class RuntimeBundle:
 
     ``backend_handle`` carries the raw backend object (e.g. diffusers pipeline)
     and must be treated as builder-internal — scripts and trainers must not
-    reach into it. Use ``policy`` for inference, ``trainable_modules``
-    for optimizer wiring, ``scheduler`` for evaluator construction.
+    reach into it. Use ``policy`` as both the rollout adapter and the
+    trainer-facing model. ``trainable_modules`` remains a compatibility,
+    debug, and export surface for older code that needs named inner modules.
     """
 
     policy: DiffusionPolicy

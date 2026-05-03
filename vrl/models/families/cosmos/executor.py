@@ -103,7 +103,7 @@ class CosmosPipelineExecutor(
         sample_batch_size: int = 8,
     ) -> None:
         self.model = model
-        self.reference_image = reference_image
+        self.reference_image = _load_reference_image(reference_image)
         self.default_sample_batch_size = max(1, int(sample_batch_size))
 
     # -- protocol ------------------------------------------------------
@@ -338,6 +338,14 @@ class CosmosPipelineExecutor(
             ),
             prepare_kwargs={"reference_image": reference_image},
         )
+
+
+def _load_reference_image(reference_image: Any) -> Any:
+    if not isinstance(reference_image, str) or not reference_image:
+        return reference_image
+    from PIL import Image
+
+    return Image.open(reference_image).convert("RGB")
 
 
 __all__ = ["CosmosPipelineExecutor"]

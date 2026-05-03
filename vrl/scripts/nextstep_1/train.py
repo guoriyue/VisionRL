@@ -40,6 +40,10 @@ async def train_nextstep_1_ocr_grpo(
 
     from vrl.algorithms.grpo_token import TokenGRPO, TokenGRPOConfig
     from vrl.config.loader import build_configs, require
+    from vrl.distributed.ray import (
+        DistributedRolloutConfig,
+        build_family_ray_rollout_runtime_inputs,
+    )
     from vrl.engine.generation import build_rollout_backend_from_cfg
     from vrl.models.families.nextstep_1 import NextStep1Config, NextStep1Policy
     from vrl.rewards.ocr import OCRReward
@@ -50,6 +54,7 @@ async def train_nextstep_1_ocr_grpo(
     from vrl.rollouts.evaluators.lm import ContinuousTokenLogProbEvaluator
     from vrl.trainers.data import load_prompt_manifest
     from vrl.trainers.online import OnlineTrainer
+    from vrl.trainers.weight_sync import build_runtime_weight_syncer
 
     built = build_configs(cfg)
     trainer_config = built["trainer"]
@@ -114,11 +119,21 @@ async def train_nextstep_1_ocr_grpo(
         max_text_length=int(require(cfg, "rollout.max_text_length")),
     )
     collector = NextStep1Collector(model=model, reward_fn=reward, config=collector_config)
+    rollout_backend_config = DistributedRolloutConfig.from_cfg(cfg)
+    ray_rollout_inputs = build_family_ray_rollout_runtime_inputs(
+        cfg,
+        "nextstep_1",
+        weight_dtype=str(require(cfg, "model.dtype")),
+    )
     collector._runtime = build_rollout_backend_from_cfg(
         cfg,
         runtime=rollout_runtime,
         local_runtime_builder=collector._build_runtime,
-        driver_policy=model,
+        driver_policy=None if rollout_backend_config.backend == "ray" else model,
+        runtime_spec=(
+            ray_rollout_inputs.runtime_spec if ray_rollout_inputs is not None else None
+        ),
+        gatherer=ray_rollout_inputs.gatherer if ray_rollout_inputs is not None else None,
     )
 
     evaluator = ContinuousTokenLogProbEvaluator()
@@ -140,6 +155,7 @@ async def train_nextstep_1_ocr_grpo(
         collector=collector,
         evaluator=evaluator,
         model=model,
+        weight_syncer=build_runtime_weight_syncer(collector._runtime),
         config=trainer_config,
         device=model.device,
     )

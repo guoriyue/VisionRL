@@ -348,62 +348,7 @@ class NextStep1PipelineExecutor(
         sample_specs: Sequence[GenerationSampleSpec],
         chunks: Sequence[NextStep1ARChunkResult],
     ) -> OutputBatch:
-        """Pack prompt/sample AR chunks back into the canonical OutputBatch."""
-
-        ordered_chunks = _ordered_ar_chunks(request, sample_specs, chunks)
-        tokens = torch.cat([chunk.tokens for chunk in ordered_chunks], dim=0)
-        saved_noise = torch.cat(
-            [chunk.saved_noise for chunk in ordered_chunks], dim=0,
-        )
-        log_probs = torch.cat([chunk.log_probs for chunk in ordered_chunks], dim=0)
-        output = torch.cat([chunk.output for chunk in ordered_chunks], dim=0)
-        peak_mem_mb = _max_peak_memory_mb(ordered_chunks)
-        rollout_trajectory_data = RolloutTrajectoryData(
-            rollout_log_probs=log_probs,
-            denoising_env=None,
-            dit_trajectory=None,
-        )
-        metrics = GenerationMetrics(
-            num_prompts=len(request.prompts),
-            num_samples=len(sample_specs),
-            num_steps=int(request.sampling["image_token_num"]),
-            micro_batches=len(ordered_chunks),
-            peak_memory_mb=peak_mem_mb,
-        )
-        extra: dict[str, Any] = {
-            "tokens": tokens,
-            "saved_noise": saved_noise,
-            "log_probs": log_probs,
-            "images_for_reward": torch.cat(
-                [chunk.images_for_reward for chunk in ordered_chunks], dim=0,
-            ),
-            "prompt_input_ids": torch.cat(
-                [chunk.prompt_input_ids for chunk in ordered_chunks], dim=0,
-            ),
-            "prompt_attention_mask": torch.cat(
-                [chunk.prompt_attention_mask for chunk in ordered_chunks], dim=0,
-            ),
-            "uncond_input_ids": torch.cat(
-                [chunk.uncond_input_ids for chunk in ordered_chunks], dim=0,
-            ),
-            "uncond_attention_mask": torch.cat(
-                [chunk.uncond_attention_mask for chunk in ordered_chunks], dim=0,
-            ),
-            "context": dict(ordered_chunks[0].context),
-        }
-
-        return OutputBatch(
-            request_id=request.request_id,
-            family=request.family,
-            task=request.task,
-            prompts=list(request.prompts),
-            sample_specs=list(sample_specs),
-            output=output,
-            rollout_trajectory_data=rollout_trajectory_data,
-            extra=extra,
-            metrics=metrics,
-            peak_memory_mb=peak_mem_mb or 0.0,
-        )
+        return NextStep1ChunkGatherer().gather_chunks(request, sample_specs, chunks)
 
     def forward_batch(
         self,
@@ -663,4 +608,95 @@ def _max_peak_memory_mb(chunks: Sequence[NextStep1ARChunkResult]) -> float | Non
     return max(peaks) if peaks else None
 
 
-__all__ = ["NextStep1ARChunkResult", "NextStep1PipelineExecutor"]
+class NextStep1ChunkGatherer:
+    """Pure driver-side gatherer for NextStep-1 AR chunk payloads."""
+
+    def gather_chunks(
+        self,
+        request: GenerationRequest,
+        sample_specs: Sequence[GenerationSampleSpec],
+        chunks: Sequence[NextStep1ARChunkResult],
+    ) -> OutputBatch:
+        """Pack prompt/sample AR chunks back into the canonical OutputBatch."""
+
+        ordered_chunks = _ordered_ar_chunks(request, sample_specs, chunks)
+        tokens = torch.cat([chunk.tokens for chunk in ordered_chunks], dim=0)
+        saved_noise = torch.cat(
+            [chunk.saved_noise for chunk in ordered_chunks], dim=0,
+        )
+        log_probs = torch.cat([chunk.log_probs for chunk in ordered_chunks], dim=0)
+        output = torch.cat([chunk.output for chunk in ordered_chunks], dim=0)
+        peak_mem_mb = _max_peak_memory_mb(ordered_chunks)
+        rollout_trajectory_data = RolloutTrajectoryData(
+            rollout_log_probs=log_probs,
+            denoising_env=None,
+            dit_trajectory=None,
+        )
+        metrics = GenerationMetrics(
+            num_prompts=len(request.prompts),
+            num_samples=len(sample_specs),
+            num_steps=int(request.sampling["image_token_num"]),
+            micro_batches=len(ordered_chunks),
+            peak_memory_mb=peak_mem_mb,
+        )
+        extra: dict[str, Any] = {
+            "tokens": tokens,
+            "saved_noise": saved_noise,
+            "log_probs": log_probs,
+            "images_for_reward": torch.cat(
+                [chunk.images_for_reward for chunk in ordered_chunks], dim=0,
+            ),
+            "prompt_input_ids": torch.cat(
+                [chunk.prompt_input_ids for chunk in ordered_chunks], dim=0,
+            ),
+            "prompt_attention_mask": torch.cat(
+                [chunk.prompt_attention_mask for chunk in ordered_chunks], dim=0,
+            ),
+            "uncond_input_ids": torch.cat(
+                [chunk.uncond_input_ids for chunk in ordered_chunks], dim=0,
+            ),
+            "uncond_attention_mask": torch.cat(
+                [chunk.uncond_attention_mask for chunk in ordered_chunks], dim=0,
+            ),
+            "context": dict(ordered_chunks[0].context),
+        }
+
+        return OutputBatch(
+            request_id=request.request_id,
+            family=request.family,
+            task=request.task,
+            prompts=list(request.prompts),
+            sample_specs=list(sample_specs),
+            output=output,
+            rollout_trajectory_data=rollout_trajectory_data,
+            extra=extra,
+            metrics=metrics,
+            peak_memory_mb=peak_mem_mb or 0.0,
+        )
+
+
+def build_nextstep_1_executor_from_runtime_spec(
+    runtime_spec: Any,
+) -> NextStep1PipelineExecutor:
+    """Build a NextStep-1 rollout executor inside a Ray worker."""
+
+    from vrl.distributed.ray.spec import RolloutRuntimeSpec
+    from vrl.models.families.nextstep_1.policy import (
+        NextStep1Config,
+        NextStep1Policy,
+    )
+
+    spec = RolloutRuntimeSpec.from_value(runtime_spec)
+    config = dict(spec.model_config)
+    if "lora_target_modules" in config:
+        config["lora_target_modules"] = tuple(config["lora_target_modules"])
+    policy = NextStep1Policy(NextStep1Config(**config))
+    return NextStep1PipelineExecutor(policy)
+
+
+__all__ = [
+    "NextStep1ARChunkResult",
+    "NextStep1ChunkGatherer",
+    "NextStep1PipelineExecutor",
+    "build_nextstep_1_executor_from_runtime_spec",
+]

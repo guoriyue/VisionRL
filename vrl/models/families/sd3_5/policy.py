@@ -60,8 +60,18 @@ class SD3_5Policy(DiffusionPolicy):
     family = "sd3_5-diffusers-t2i"
 
     def __init__(self, *, pipeline: Any, device: Any = None) -> None:
-        self.pipeline = pipeline
+        super().__init__()
+        object.__setattr__(self, "_pipeline", pipeline)
+        self.transformer = pipeline.transformer
         self._device = device
+
+    @property
+    def pipeline(self) -> Any:
+        return self._pipeline
+
+    def _set_transformer(self, transformer: Any) -> None:
+        self.transformer = transformer
+        self.pipeline.transformer = transformer
 
     @property
     def device(self) -> Any:
@@ -100,10 +110,11 @@ class SD3_5Policy(DiffusionPolicy):
         self.pipeline.transformer.to(self.device)
 
         if spec.lora_path:
-            self.pipeline.transformer = PeftModel.from_pretrained(
+            transformer = PeftModel.from_pretrained(
                 self.pipeline.transformer, spec.lora_path, is_trainable=True,
             )
-            self.pipeline.transformer.set_adapter("default")
+            transformer.set_adapter("default")
+            self._set_transformer(transformer)
         else:
             assert spec.lora_config is not None
             cfg = LoraConfig(
@@ -112,8 +123,8 @@ class SD3_5Policy(DiffusionPolicy):
                 init_lora_weights="gaussian",
                 target_modules=spec.lora_config["target_modules"],
             )
-            self.pipeline.transformer = get_peft_model(
-                self.pipeline.transformer, cfg,
+            self._set_transformer(
+                get_peft_model(self.pipeline.transformer, cfg),
             )
 
     def enable_full_finetune(self) -> None:
@@ -123,8 +134,8 @@ class SD3_5Policy(DiffusionPolicy):
 
     def torch_compile_transformer(self, mode: str) -> None:
         """Apply torch.compile to the transformer in-place."""
-        self.pipeline.transformer = torch.compile(
-            self.pipeline.transformer, mode=mode, fullgraph=False,
+        self._set_transformer(
+            torch.compile(self.pipeline.transformer, mode=mode, fullgraph=False),
         )
 
     def set_num_steps(self, n: int) -> None:
@@ -133,7 +144,7 @@ class SD3_5Policy(DiffusionPolicy):
 
     @property
     def trainable_modules(self) -> dict[str, Any]:
-        return {"transformer": self.pipeline.transformer}
+        return {"transformer": self.transformer}
 
     @property
     def scheduler(self) -> Any:
@@ -265,7 +276,7 @@ class SD3_5Policy(DiffusionPolicy):
         forward through the LoRA-wrapped policy). Returns noise_pred plus
         the un/conditional branches; the caller owns scheduler.step / SDE.
         """
-        m = model if model is not None else self.pipeline.transformer
+        m = self._resolve_step_model(model)
 
         t = state.timesteps[step_idx]
         bsz = state.latents.shape[0]

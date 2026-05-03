@@ -180,6 +180,7 @@ class JanusProCollector(Collector):
             rollout_metadata.update(sample_md)
 
         seed = kwargs.get("seed")
+        policy_version = kwargs.get("policy_version")
 
         sampling: dict[str, Any] = {
             "cfg_weight": cfg.cfg_weight,
@@ -200,6 +201,7 @@ class JanusProCollector(Collector):
             sampling=sampling,
             return_artifacts={"output", "token_ids", "token_log_probs"},
             metadata=dict(rollout_metadata),
+            policy_version=policy_version,
         )
 
         output = await self.runtime.generate(request)

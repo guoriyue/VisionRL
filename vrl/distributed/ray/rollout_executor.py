@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from typing import Any
 
 from vrl.distributed.ray.planning import DistributedExecutionPlanner
@@ -24,21 +25,25 @@ class DistributedRolloutExecutor:
         gatherer: ChunkGatherer,
         *,
         id_factory: GenerationIdFactory | None = None,
+        max_inflight_chunks_per_worker: int = 1,
     ) -> None:
         if not workers:
             raise ValueError("DistributedRolloutExecutor requires at least one worker")
+        if max_inflight_chunks_per_worker < 1:
+            raise ValueError("max_inflight_chunks_per_worker must be >= 1")
         self.planner = planner
         self.workers = list(workers)
         self.gatherer = gatherer
         self.id_factory = id_factory or GenerationIdFactory()
+        self.max_inflight_chunks_per_worker = int(max_inflight_chunks_per_worker)
 
     async def execute(self, request: GenerationRequest) -> OutputBatch:
         assignments = self.planner.plan(request, self.workers)
         worker_by_id = {worker.worker_id: worker for worker in self.workers}
-        refs: list[Any] = []
+        remote_jobs: list[tuple[int, Any, RayWorkerHandle, Any]] = []
         direct_results: list[RayChunkResult] = []
 
-        for assignment in assignments:
+        for job_index, assignment in enumerate(assignments):
             worker = worker_by_id[assignment.worker_id]
             actor = worker.actor
             if actor is None:
@@ -46,13 +51,12 @@ class DistributedRolloutExecutor:
             execute_chunk = actor.execute_chunk
             remote = getattr(execute_chunk, "remote", None)
             if callable(remote):
-                refs.append(remote(request, assignment.chunk))
+                remote_jobs.append((job_index, remote, worker, assignment.chunk))
             else:
                 direct_results.append(execute_chunk(request, assignment.chunk))
 
-        if refs:
-            ray = require_ray()
-            remote_results = await asyncio.to_thread(ray.get, refs)
+        if remote_jobs:
+            remote_results = await self._run_remote_jobs(request, remote_jobs)
             results = [*direct_results, *remote_results]
         else:
             results = direct_results
@@ -96,6 +100,46 @@ class DistributedRolloutExecutor:
             sample_specs,
             chunk_outputs,
         )
+
+    async def _run_remote_jobs(
+        self,
+        request: GenerationRequest,
+        jobs: list[tuple[int, Any, RayWorkerHandle, Any]],
+    ) -> list[RayChunkResult]:
+        ray = require_ray()
+        pending = deque(jobs)
+        inflight_by_worker = {worker.worker_id: 0 for _, _, worker, _ in jobs}
+        ref_to_job: dict[Any, tuple[int, str]] = {}
+        result_pairs: list[tuple[int, RayChunkResult]] = []
+
+        def _submit_ready() -> None:
+            made_progress = True
+            while pending and made_progress:
+                made_progress = False
+                for _ in range(len(pending)):
+                    job_index, remote, worker, chunk = pending.popleft()
+                    if inflight_by_worker[worker.worker_id] >= self.max_inflight_chunks_per_worker:
+                        pending.append((job_index, remote, worker, chunk))
+                        continue
+                    ref = remote(request, chunk)
+                    ref_to_job[ref] = (job_index, worker.worker_id)
+                    inflight_by_worker[worker.worker_id] += 1
+                    made_progress = True
+
+        _submit_ready()
+        while ref_to_job:
+            ready, _ = await asyncio.to_thread(
+                ray.wait,
+                list(ref_to_job),
+                num_returns=1,
+            )
+            job_index, worker_id = ref_to_job.pop(ready[0])
+            inflight_by_worker[worker_id] -= 1
+            result = await asyncio.to_thread(ray.get, ready[0])
+            result_pairs.append((job_index, result))
+            _submit_ready()
+
+        return [result for _, result in sorted(result_pairs, key=lambda pair: pair[0])]
 
 
 __all__ = ["DistributedRolloutExecutor"]

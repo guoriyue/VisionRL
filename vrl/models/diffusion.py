@@ -34,9 +34,13 @@ This is the sole model contract; the engine consumes it directly.
 
 from __future__ import annotations
 
+import contextlib
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
+
+import torch.nn as nn
 
 
 @dataclass(slots=True)
@@ -71,7 +75,7 @@ class VideoGenerationRequest:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
-class DiffusionPolicy(ABC):
+class DiffusionPolicy(nn.Module, ABC):
     """Single protocol for visual-generation diffusion families on the RL path."""
 
     family: str = "diffusion"
@@ -118,11 +122,31 @@ class DiffusionPolicy(ABC):
     ) -> dict[str, Any]:
         """Run one transformer forward (with optional CFG batch concat).
 
-        ``model`` overrides the default transformer (used by the trainer to
-        forward through the LoRA-wrapped policy). Returns at least
+        ``model`` overrides the default transformer for legacy callers.
+        Policy-as-module training passes ``model=None`` or ``model=self`` so
+        the registered ``self.transformer`` is used. Returns at least
         ``{"noise_pred": Tensor}``. NO scheduler step happens here — the
         collector owns scheduler.step / SDE / log_prob.
         """
+
+    def forward(
+        self,
+        state: Any,
+        step_idx: int,
+        *,
+        model: Any | None = None,
+    ) -> dict[str, Any]:
+        """Run one trainable denoise transformer step.
+
+        This is not a full rollout loop. Executors and collectors own sampling,
+        scheduler stepping, reward, and rollout artifact packing.
+        """
+
+        return self.forward_step(
+            state,
+            step_idx,
+            model=self._resolve_step_model(model),
+        )
 
     @abstractmethod
     def decode_latents(self, latents: Any) -> Any:
@@ -194,7 +218,62 @@ class DiffusionPolicy(ABC):
             batch.observations[:, timestep_idx],
             timestep_idx,
         )
-        return self.forward_step(state, 0, model=model)
+        return self.forward(state, 0, model=model)
+
+    # -- trainer-facing module helpers -------------------------------------
+
+    def _resolve_step_model(self, model: Any | None) -> Any:
+        """Resolve the transformer used for one replay/denoise step."""
+
+        if model is not None and model is not self:
+            return model
+        transformer = getattr(self, "transformer", None)
+        if transformer is None:
+            raise RuntimeError(
+                f"{type(self).__name__} has no registered trainable transformer",
+            )
+        return transformer
+
+    def disable_adapter(self) -> contextlib.AbstractContextManager[None]:
+        """Disable LoRA/adapters on the registered transformer, when available."""
+
+        transformer = self._resolve_step_model(None)
+        disable = getattr(transformer, "disable_adapter", None)
+        if not callable(disable):
+            raise RuntimeError(
+                f"{type(transformer).__name__} does not expose disable_adapter()",
+            )
+        return disable()
+
+    def load_trainable_state(self, state_dict: Mapping[str, Any]) -> Any:
+        """Load trainable transformer weights from policy or transformer keys.
+
+        Accepts both the new policy state dict format (``transformer.*`` keys)
+        and the legacy transformer-only format used before diffusion policies
+        became trainer-facing modules.
+        """
+
+        transformer = self._resolve_step_model(None)
+        state = dict(state_dict)
+        if not state:
+            raise ValueError("load_trainable_state received an empty state dict")
+        prefix = "transformer."
+        if any(key.startswith(prefix) for key in state):
+            state = {
+                key[len(prefix):]: value
+                for key, value in state.items()
+                if key.startswith(prefix)
+            }
+        if not state:
+            raise ValueError("load_trainable_state found no transformer keys")
+        result = transformer.load_state_dict(state, strict=False)
+        unexpected = list(getattr(result, "unexpected_keys", ()))
+        if unexpected and len(unexpected) == len(state):
+            raise RuntimeError(
+                "load_trainable_state did not match any transformer keys: "
+                f"{unexpected}",
+            )
+        return result
 
     # -- backend ownership (called by builder, NOT by collectors) ----------
 

@@ -12,7 +12,11 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from vrl.trainers.offline_dpo import OfflineDPOTrainer, OfflineDPOTrainerConfig
+from vrl.trainers.offline_dpo import (
+    OfflineDPOTrainer,
+    OfflineDPOTrainerConfig,
+    wan_forward,
+)
 
 
 def _noop_forward(model, noisy, ts, encoder, extra=None):  # pragma: no cover
@@ -71,7 +75,7 @@ class TestSampleTimesteps:
     def test_missing_timesteps_attr_raises(self) -> None:
         """Same red line when the scheduler doesn't expose timesteps at all."""
         scheduler = SimpleNamespace(config=SimpleNamespace(num_train_timesteps=1000))
-        # Avoid setting ``timesteps`` — getattr should return None.
+        # Avoid setting ``timesteps`` - getattr should return None.
         cfg = OfflineDPOTrainerConfig(prediction_type="epsilon", num_frames=1)
         trainer = OfflineDPOTrainer(
             model=torch.nn.Linear(4, 4),
@@ -85,3 +89,68 @@ class TestSampleTimesteps:
         )
         with pytest.raises(RuntimeError, match="set_timesteps"):
             trainer._sample_timesteps(4)
+
+
+class _WanTransformerStub(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.tensor(2.0))
+        self.calls: list[dict[str, torch.Tensor]] = []
+
+    def forward(
+        self,
+        *,
+        hidden_states: torch.Tensor,
+        timestep: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        return_dict: bool,
+    ) -> tuple[torch.Tensor]:
+        self.calls.append(
+            {
+                "hidden_states": hidden_states,
+                "timestep": timestep,
+                "encoder_hidden_states": encoder_hidden_states,
+            },
+        )
+        assert return_dict is False
+        return (hidden_states * self.weight + encoder_hidden_states,)
+
+
+class _DiffusionPolicyWrapperStub(torch.nn.Module):
+    def __init__(self, transformer: _WanTransformerStub) -> None:
+        super().__init__()
+        self.transformer = transformer
+
+    def forward(self, *args, **kwargs):  # pragma: no cover - red-line guard
+        raise AssertionError("wan_forward must call the registered transformer")
+
+
+def test_wan_forward_unwraps_policy_transformer() -> None:
+    transformer = _WanTransformerStub()
+    policy = _DiffusionPolicyWrapperStub(transformer)
+    noisy = torch.ones(2, 3)
+    timesteps = torch.tensor([1, 2])
+    encoder_hidden_states = torch.full((2, 3), 0.5)
+
+    out = wan_forward(policy, noisy, timesteps, encoder_hidden_states)
+
+    assert torch.equal(out, noisy * transformer.weight + encoder_hidden_states)
+    assert transformer.calls == [
+        {
+            "hidden_states": noisy,
+            "timestep": timesteps,
+            "encoder_hidden_states": encoder_hidden_states,
+        },
+    ]
+
+
+def test_wan_forward_still_accepts_raw_transformer() -> None:
+    transformer = _WanTransformerStub()
+    noisy = torch.ones(1, 2)
+    timesteps = torch.tensor([4])
+    encoder_hidden_states = torch.full((1, 2), 0.25)
+
+    out = wan_forward(transformer, noisy, timesteps, encoder_hidden_states)
+
+    assert torch.equal(out, noisy * transformer.weight + encoder_hidden_states)
+    assert len(transformer.calls) == 1

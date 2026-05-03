@@ -31,6 +31,10 @@ async def train_sd3_5_grpo(
     from vrl.algorithms.grpo_token import TokenGRPOConfig
     from vrl.algorithms.stat_tracking import PerPromptStatTracker
     from vrl.config.loader import build_configs, require
+    from vrl.distributed.ray import (
+        DistributedRolloutConfig,
+        build_family_ray_rollout_runtime_inputs,
+    )
     from vrl.engine.generation import build_rollout_backend_from_cfg
     from vrl.rewards.multi import MultiReward
     from vrl.rollouts.collectors.sd3_5 import (
@@ -40,6 +44,7 @@ async def train_sd3_5_grpo(
     from vrl.rollouts.evaluators.diffusion.flow_matching import FlowMatchingEvaluator
     from vrl.trainers.data import PromptExample, load_prompt_manifest
     from vrl.trainers.online import OnlineTrainer
+    from vrl.trainers.weight_sync import build_runtime_weight_syncer
 
     built = build_configs(cfg)
     trainer_config = built["trainer"]
@@ -60,7 +65,7 @@ async def train_sd3_5_grpo(
 
     bundle = build_sd3_5_runtime_bundle_from_cfg(cfg, device, weight_dtype)
     sd3_5_model = bundle.policy
-    transformer = bundle.trainable_modules["transformer"]
+    transformer = sd3_5_model.transformer
 
     if trainer_config.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
@@ -89,11 +94,22 @@ async def train_sd3_5_grpo(
         sde_window_range=tuple(cfg.rollout.sde.window_range),
     )
     collector = SD3_5Collector(sd3_5_model, reward_fn, collector_config)
+    rollout_backend_config = DistributedRolloutConfig.from_cfg(cfg)
+    ray_rollout_inputs = build_family_ray_rollout_runtime_inputs(
+        cfg,
+        "sd3_5",
+        weight_dtype=weight_dtype,
+        executor_kwargs={"sample_batch_size": collector_config.sample_batch_size},
+    )
     collector._runtime = build_rollout_backend_from_cfg(
         cfg,
         runtime=rollout_runtime,
         local_runtime_builder=collector._build_runtime,
-        driver_bundle=bundle,
+        driver_bundle=None if rollout_backend_config.backend == "ray" else bundle,
+        runtime_spec=(
+            ray_rollout_inputs.runtime_spec if ray_rollout_inputs is not None else None
+        ),
+        gatherer=ray_rollout_inputs.gatherer if ray_rollout_inputs is not None else None,
     )
 
     evaluator = FlowMatchingEvaluator(
@@ -101,7 +117,8 @@ async def train_sd3_5_grpo(
     )
     algorithm = GRPO(grpo_config)
 
-    ref_model = transformer if cfg.model.use_lora and grpo_config.init_kl_coef > 0 else None
+    use_lora_kl = cfg.model.use_lora and grpo_config.init_kl_coef > 0
+    ref_model = sd3_5_model if use_lora_kl else None
     stat_tracker = (
         PerPromptStatTracker(global_std=grpo_config.global_std)
         if cfg.algorithm.per_prompt_stat_tracking else None
@@ -111,8 +128,9 @@ async def train_sd3_5_grpo(
         algorithm=algorithm,
         collector=collector,
         evaluator=evaluator,
-        model=transformer,
+        model=sd3_5_model,
         ref_model=ref_model,
+        weight_syncer=build_runtime_weight_syncer(collector._runtime),
         config=trainer_config,
         device=device,
         stat_tracker=stat_tracker,

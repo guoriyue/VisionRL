@@ -6,6 +6,11 @@ from vrl.distributed.ray.actor import RayActorBase
 from vrl.distributed.ray.collector_actor import CollectorJob, RayCollectorActor
 from vrl.distributed.ray.collector_manager import RayCollectorManager
 from vrl.distributed.ray.config import DistributedRolloutConfig, RayConfig
+from vrl.distributed.ray.family_runtime import (
+    RayRolloutRuntimeInputs,
+    build_family_ray_rollout_runtime_inputs,
+)
+from vrl.distributed.ray.launcher import RayRolloutLauncher, launch_ray_rollout_runtime
 from vrl.distributed.ray.placement_group import RayPlacement, create_rollout_placement_group
 from vrl.distributed.ray.planning import DeviceAssignment, DistributedExecutionPlanner
 from vrl.distributed.ray.rollout_executor import DistributedRolloutExecutor
@@ -30,6 +35,8 @@ __all__ = [
     "RayConfig",
     "RayDistributedRuntime",
     "RayPlacement",
+    "RayRolloutLauncher",
+    "RayRolloutRuntimeInputs",
     "RayRolloutWeightSync",
     "RayRolloutWorker",
     "RayTrainActor",
@@ -38,5 +45,7 @@ __all__ = [
     "RayWorkerHandle",
     "RolloutRuntimeSpec",
     "RolloutWeightSync",
+    "build_family_ray_rollout_runtime_inputs",
     "create_rollout_placement_group",
+    "launch_ray_rollout_runtime",
 ]
