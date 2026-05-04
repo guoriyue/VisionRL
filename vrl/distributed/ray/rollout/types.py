@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from vrl.distributed.ray.rollout.spec import RolloutRuntimeSpec
 from vrl.engine.generation.microbatching import MicroBatchPlan
 from vrl.engine.generation.protocols import PipelineChunkResult
 
@@ -36,5 +35,4 @@ class RayChunkResult:
 __all__ = [
     "RayChunkResult",
     "RayWorkerHandle",
-    "RolloutRuntimeSpec",
 ]

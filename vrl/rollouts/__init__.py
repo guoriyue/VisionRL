@@ -1,5 +1,5 @@
-"""Experience collection for RL training."""
+"""Rollout collection contracts for RL training."""
 
-from vrl.rollouts.experience import ExperienceBatch
+from vrl.rollouts.batch import RolloutBatch
 
-__all__ = ["ExperienceBatch"]
+__all__ = ["RolloutBatch"]

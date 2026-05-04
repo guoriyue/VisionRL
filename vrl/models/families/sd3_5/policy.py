@@ -328,7 +328,7 @@ class SD3_5Policy(DiffusionPolicy):
     # -- collector boundary --------------------------------------------
 
     def export_batch_context(self, state: SD3SamplingState) -> dict[str, Any]:
-        """Project SD3 sampling state into ExperienceBatch.context."""
+        """Project SD3 sampling state into RolloutBatch.context."""
         return {
             "guidance_scale": state.guidance_scale,
             "cfg": state.do_cfg,
@@ -336,7 +336,7 @@ class SD3_5Policy(DiffusionPolicy):
         }
 
     def export_training_extras(self, state: SD3SamplingState) -> dict[str, Any]:
-        """Project SD3 sampling state into ExperienceBatch.extras."""
+        """Project SD3 sampling state into RolloutBatch.extras."""
         return {
             "prompt_embeds": state.prompt_embeds,
             "pooled_prompt_embeds": state.pooled_prompt_embeds,

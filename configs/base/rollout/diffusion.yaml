@@ -4,6 +4,8 @@
 rollout:
   n: 4
   rollout_batch_size: 4
+  noise_level: 1.0
+  sample_batch_size: 1
 
   # Stochastic SDE sampling window (0 = SDE all steps; >0 = SDE only inside window).
   sde:

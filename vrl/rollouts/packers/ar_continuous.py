@@ -1,4 +1,4 @@
-"""Continuous-token AR OutputBatch to ExperienceBatch packing."""
+"""Continuous-token AR OutputBatch to RolloutBatch packing."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 import torch
 
 from vrl.engine.generation import OutputBatch
-from vrl.rollouts.experience import ExperienceBatch
+from vrl.rollouts.batch import RolloutBatch
 from vrl.rollouts.packers.base import RolloutPackContext
 
 
@@ -35,7 +35,7 @@ class ARContinuousRolloutPacker:
         output: OutputBatch,
         rewards_raw: torch.Tensor,
         context: RolloutPackContext,
-    ) -> ExperienceBatch:
+    ) -> RolloutBatch:
         extra = output.extra
         device = context.device or extra["prompt_input_ids"].device
         tokens = extra["tokens"]
@@ -51,7 +51,7 @@ class ARContinuousRolloutPacker:
         observations = prompt_ids.unsqueeze(1)
         log_probs_3d = old_logprobs.detach().unsqueeze(1)
 
-        return ExperienceBatch(
+        return RolloutBatch(
             observations=observations,
             actions=tokens,
             rewards=rewards_raw.to(device),

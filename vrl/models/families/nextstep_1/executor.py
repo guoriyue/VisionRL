@@ -2,11 +2,11 @@
 
 Owns the continuous-token autoregressive sampling loop previously inlined
 in ``vrl.rollouts.collectors.nextstep_1.NextStep1Collector.collect``. The
-collector keeps reward scoring and ``ExperienceBatch`` packing.
+collector keeps reward scoring and ``RolloutBatch`` packing.
 
 Boundary:
 
-- This module MUST NOT import ``vrl.rollouts.*`` or ``ExperienceBatch``.
+- This module MUST NOT import ``vrl.rollouts.*`` or ``RolloutBatch``.
 - This module MUST NOT compute reward.
 - Inputs come from ``GenerationRequest.sampling`` (collector packs them).
 - Outputs are the canonical ``OutputBatch``. NextStep-1 is AR with
@@ -15,7 +15,7 @@ Boundary:
   carries the three replay-determinism artifacts:
 
       * ``tokens``      [B, L_img, D_token]  — sampled continuous tokens
-                                              (used as ``ExperienceBatch.actions``)
+                                              (used as ``RolloutBatch.actions``)
       * ``saved_noise`` [B, L_img, D_token]  — per-token x_0 prior for the
                                               flow ODE; replay reads this so
                                               ``recompute_logprobs`` can
@@ -228,7 +228,7 @@ class NextStep1PipelineExecutor(ARPipelineExecutorBase):
         )
 
         # ``extra`` is the contract surface for the collector. Everything
-        # the OutputBatch → ExperienceBatch translation needs lives here.
+        # the OutputBatch → RolloutBatch translation needs lives here.
         extra: dict[str, Any] = {
             "tokens": tokens,
             "saved_noise": saved_noise,

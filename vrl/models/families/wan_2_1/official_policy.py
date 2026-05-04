@@ -550,7 +550,7 @@ class WanT2VOfficialPolicy(DiffusionPolicy):
     # -- collector boundary --------------------------------------------
 
     def export_batch_context(self, state: WanT2VOfficialSamplingState) -> dict[str, Any]:
-        """Project SamplingState -> ExperienceBatch.context (shared metadata).
+        """Project SamplingState -> RolloutBatch.context (shared metadata).
 
         Note: official adapter is not yet wired into the RL builder; this
         keeps the contract uniform without committing to behavior the path

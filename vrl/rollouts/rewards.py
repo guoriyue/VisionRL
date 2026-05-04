@@ -12,7 +12,7 @@ from vrl.algorithms.types import Rollout, Trajectory
 
 
 class RewardScorer:
-    """Score decoded rollout outputs without knowing ExperienceBatch layout."""
+    """Score decoded rollout outputs without knowing RolloutBatch layout."""
 
     def __init__(self, reward_fn: Any | None) -> None:
         self.reward_fn = reward_fn

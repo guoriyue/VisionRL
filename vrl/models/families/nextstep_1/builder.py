@@ -33,6 +33,54 @@ def build_nextstep_1_runtime_bundle(spec: RuntimeBuildSpec) -> RuntimeBundle:
     )
 
 
+def extract_nextstep_1_runtime_spec(
+    cfg: Any,
+    device: Any,
+    weight_dtype: Any | None = None,
+) -> RuntimeBuildSpec:
+    """Slice NextStep-1 runtime construction fields out of a whole RL cfg."""
+
+    dtype = _cfg_path(cfg, "model.dtype", weight_dtype or "bfloat16")
+    return RuntimeBuildSpec(
+        model_name_or_path=str(_cfg_path(cfg, "model.path", "stepfun-ai/NextStep-1.1")),
+        device=device,
+        dtype=_dtype_to_config_string(dtype),
+        backend_preference=("native",),
+        task_variant="ar_t2i",
+        use_lora=bool(_cfg_path(cfg, "model.use_lora", True)),
+        lora_config={
+            "rank": int(_cfg_path(cfg, "model.lora.rank", 32)),
+            "alpha": int(_cfg_path(cfg, "model.lora.alpha", 64)),
+            "dropout": float(_cfg_path(cfg, "model.lora.dropout", 0.0)),
+            "target_modules": list(
+                _cfg_path(cfg, "model.lora.target_modules", ("q_proj", "v_proj")),
+            ),
+            "init": str(_cfg_path(cfg, "model.lora.init", "gaussian")),
+        },
+        scheduler_config={
+            "cfg_scale": float(_cfg_path(cfg, "sampling.cfg_scale", 4.5)),
+            "num_flow_steps": int(_cfg_path(cfg, "sampling.num_flow_steps", 20)),
+            "noise_level": float(_cfg_path(cfg, "sampling.noise_level", 1.0)),
+            "image_token_num": int(_cfg_path(cfg, "sampling.image_token_num", 1024)),
+            "image_size": int(_cfg_path(cfg, "sampling.image_size", 256)),
+        },
+        extra={
+            "vae_path": str(
+                _cfg_path(
+                    cfg,
+                    "model.vae_path",
+                    "stepfun-ai/NextStep-1-f8ch16-Tokenizer",
+                ),
+            ),
+            "freeze_vae": bool(_cfg_path(cfg, "model.freeze_vae", True)),
+            "freeze_image_head": bool(_cfg_path(cfg, "model.freeze_image_head", False)),
+            "gradient_checkpointing": bool(
+                _cfg_path(cfg, "actor.gradient_checkpointing", True),
+            ),
+        },
+    )
+
+
 def _nextstep_1_config_from_runtime_spec(spec: RuntimeBuildSpec) -> dict[str, Any]:
     config: dict[str, Any] = {
         "model_path": spec.model_name_or_path,
@@ -93,4 +141,35 @@ def _dtype_to_config_string(value: Any) -> str:
     return aliases.get(text.lower(), text)
 
 
-__all__ = ["build_nextstep_1_runtime_bundle"]
+_MISSING = object()
+
+
+def _cfg_path(cfg: Any, path: str, default: Any) -> Any:
+    node = cfg
+    for key in path.split("."):
+        node = _cfg_get(node, key, _MISSING)
+        if node is _MISSING:
+            return default
+    return node
+
+
+def _cfg_get(node: Any, key: str, default: Any) -> Any:
+    if node is None:
+        return default
+    getter = getattr(node, "get", None)
+    if callable(getter):
+        try:
+            return getter(key, default)
+        except TypeError:
+            pass
+    try:
+        return node[key]
+    except (KeyError, IndexError, TypeError):
+        pass
+    return getattr(node, key, default)
+
+
+__all__ = [
+    "build_nextstep_1_runtime_bundle",
+    "extract_nextstep_1_runtime_spec",
+]

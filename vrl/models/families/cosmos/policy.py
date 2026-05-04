@@ -443,7 +443,7 @@ class CosmosPredict2Policy(DiffusionPolicy):
         self,
         state: CosmosPredict2SamplingState,
     ) -> dict[str, Any]:
-        """Project SamplingState -> ExperienceBatch.context (shared metadata).
+        """Project SamplingState -> RolloutBatch.context (shared metadata).
 
         The cond/uncond/padding masks + indicators are shared across the
         batch (not per-sample), so they live in ``context`` rather than
@@ -469,7 +469,7 @@ class CosmosPredict2Policy(DiffusionPolicy):
         self,
         state: CosmosPredict2SamplingState,
     ) -> dict[str, Any]:
-        """Project SamplingState -> ExperienceBatch.extras (per-sample tensors).
+        """Project SamplingState -> RolloutBatch.extras (per-sample tensors).
 
         ``init_latents`` is per-sample because Video2World conditioning
         depends on the reference image.

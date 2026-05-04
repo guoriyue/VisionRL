@@ -14,10 +14,8 @@ import pytest
 import torch
 
 from vrl.distributed.ray import (
-    DistributedRolloutConfig,
     RayRolloutLauncher,
     RayRolloutWorker,
-    RolloutRuntimeSpec,
 )
 from vrl.engine.generation import (
     ChunkedFamilyPipelineExecutor,
@@ -25,9 +23,11 @@ from vrl.engine.generation import (
     OutputBatch,
     PipelineChunkResult,
     WorkloadSignature,
-    build_rollout_backend_from_cfg,
 )
 from vrl.engine.generation.microbatching import MicroBatchPlan
+from vrl.engine.generation.runtime_spec import GenerationRuntimeSpec
+from vrl.rollouts.backend import build_rollout_backend_from_cfg
+from vrl.rollouts.backend_config import RolloutBackendConfig
 
 
 @dataclass(slots=True)
@@ -144,8 +144,8 @@ def ray_local():
         ray.shutdown()
 
 
-def _runtime_spec(*, policy_version: int | None = 3) -> RolloutRuntimeSpec:
-    return RolloutRuntimeSpec(
+def _runtime_spec(*, policy_version: int | None = 3) -> GenerationRuntimeSpec:
+    return GenerationRuntimeSpec(
         family="fake",
         task="t2i",
         build_spec={
@@ -174,8 +174,8 @@ def _request(*, policy_version: int | None = 3) -> GenerationRequest:
     )
 
 
-def _config(*, num_workers: int = 2) -> DistributedRolloutConfig:
-    return DistributedRolloutConfig(
+def _config(*, num_workers: int = 2) -> RolloutBackendConfig:
+    return RolloutBackendConfig(
         backend="ray",
         num_workers=num_workers,
         gpus_per_worker=0.0,
@@ -298,8 +298,7 @@ def test_ray_rollout_launcher_runtime_spec_rejects_live_objects() -> None:
 def test_ray_rollout_worker_runtime_builder_normalizes_device_and_dtype() -> None:
     worker = RayRolloutWorker(
         worker_id="w0",
-        family="fake",
-        runtime_spec=RolloutRuntimeSpec(
+        runtime_spec=GenerationRuntimeSpec(
             family="fake",
             task="t2i",
             build_spec={

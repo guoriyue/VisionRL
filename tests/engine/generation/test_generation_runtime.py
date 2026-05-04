@@ -2,19 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import pytest
 
-from vrl.engine import ContinuousBatchPlanner, EngineLoop, Scheduler
 from vrl.engine.generation import (
     BatchedFamilyPipelineExecutor,
     FamilyPipelineExecutor,
     FamilyPipelineRegistry,
-    GenerationBatchPlanner,
     GenerationIdFactory,
-    GenerationModelRunner,
     GenerationRequest,
     GenerationRuntime,
     GenerationWorker,
@@ -26,7 +22,6 @@ from vrl.engine.generation import (
 from vrl.engine.generation.batching import (
     forward_batch_by_merging_prompts,
 )
-from vrl.engine.scheduler_types import SchedulerOutput, SchedulerRequest
 
 
 class _FakeExecutor(BatchedFamilyPipelineExecutor):
@@ -79,9 +74,7 @@ class _FakeExecutor(BatchedFamilyPipelineExecutor):
                 task=request.task,
                 prompts=list(request.prompts),
                 sample_specs=sample_specs_by_request[request.request_id],
-                output={
-                    "num_samples": len(sample_specs_by_request[request.request_id])
-                },
+                output={"num_samples": len(sample_specs_by_request[request.request_id])},
             )
             for request in requests
         }
@@ -186,29 +179,6 @@ def test_generation_id_factory_is_deterministic() -> None:
     assert {spec.group_id for spec in specs} == {"req-1:prompt:0"}
 
 
-def test_generation_model_runner_converts_scheduler_io() -> None:
-    request = _request()
-    scheduler_request = SchedulerRequest(
-        request_id=request.request_id,
-        data=request,
-    )
-    scheduler_output = SchedulerOutput(
-        requests=[scheduler_request],
-        batch_data=[request],
-        step_id=1,
-    )
-    runner = GenerationModelRunner(_worker(), execute_in_thread=False)
-
-    output = runner.execute(scheduler_output)
-
-    assert output.req_ids == ["req-1"]
-    request_output = output.outputs["req-1"]
-    assert request_output.finished is True
-    assert request_output.finish_reason == "completed"
-    assert isinstance(request_output.data, OutputBatch)
-    assert request_output.data.output == {"num_samples": 2}
-
-
 def test_generation_worker_batches_identical_sampling_once() -> None:
     registry = FamilyPipelineRegistry()
     executor = _FakeExecutor()
@@ -230,10 +200,12 @@ def test_generation_worker_does_not_batch_different_sampling() -> None:
     registry.register(executor)
     worker = GenerationWorker(registry)
 
-    outputs = worker.execute([
-        _request("a", seed=None),
-        _request("b", height=768, seed=None),
-    ])
+    outputs = worker.execute(
+        [
+            _request("a", seed=None),
+            _request("b", height=768, seed=None),
+        ]
+    )
 
     assert sorted(outputs) == ["a", "b"]
     assert executor.forward_batch_calls == 0
@@ -298,19 +270,11 @@ def test_forward_batch_by_merging_prompts_splits_outputs_by_request() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generation_runtime_uses_existing_engine_loop() -> None:
-    worker = _worker()
-    runner = GenerationModelRunner(worker, execute_in_thread=False)
-    engine_loop = EngineLoop(
-        scheduler=Scheduler(
-            batch_planner=ContinuousBatchPlanner(max_batch_size=1),
-        ),
-        model_runner=runner,
-    )
-    runtime = GenerationRuntime(engine_loop)
+async def test_generation_runtime_routes_directly_to_worker() -> None:
+    runtime = GenerationRuntime(_worker(), execute_in_thread=False)
 
     try:
-        output = await asyncio.wait_for(runtime.generate(_request()), timeout=2.0)
+        output = await runtime.generate(_request())
     finally:
         await runtime.shutdown()
 
@@ -318,16 +282,3 @@ async def test_generation_runtime_uses_existing_engine_loop() -> None:
     assert output.output == {"num_samples": 2}
     assert output.rollout_trajectory_data is not None
     assert output.rollout_trajectory_data.rollout_log_probs == [0.0, 0.0]
-
-
-def test_generation_batch_planner_groups_same_signature() -> None:
-    planner = GenerationBatchPlanner(max_batch_size=3)
-    req_a = SchedulerRequest("a", _request("a"))
-    req_b = SchedulerRequest("b", _request("b"))
-    req_c = SchedulerRequest("c", _request("c", height=768))
-
-    selected = planner.select_requests([req_a, req_b, req_c], [])
-    batch = planner.build_batch(selected)
-
-    assert [request.request_id for request in selected] == ["a", "b"]
-    assert [request.request_id for request in batch] == ["a", "b"]

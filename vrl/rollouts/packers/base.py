@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from vrl.engine.generation import OutputBatch
-from vrl.rollouts.experience import ExperienceBatch
+from vrl.rollouts.batch import RolloutBatch
 
 
 @dataclass(slots=True)
@@ -40,7 +40,7 @@ class RolloutPacker(Protocol):
         output: OutputBatch,
         rewards_raw: Any,
         context: RolloutPackContext,
-    ) -> ExperienceBatch: ...
+    ) -> RolloutBatch: ...
 
 
 __all__ = ["RolloutPackContext", "RolloutPacker"]

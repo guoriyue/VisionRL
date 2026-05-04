@@ -43,11 +43,9 @@ async def test_real_sd3_5_ray_rollout_smoke() -> None:
     torch = _require_cuda_for_workers(num_workers)
 
     from vrl.config.loader import load_config
-    from vrl.distributed.ray import (
-        RayRolloutLauncher,
-        build_family_ray_rollout_runtime_inputs,
-    )
+    from vrl.distributed.ray import RayRolloutLauncher
     from vrl.engine.generation import GenerationRequest
+    from vrl.rollouts.runtime_inputs import build_rollout_runtime_inputs
 
     cfg = load_config(
         "experiment/sd3_5_ocr_grpo",
@@ -66,7 +64,7 @@ async def test_real_sd3_5_ray_rollout_smoke() -> None:
             "rollout.sample_batch_size=1",
         ],
     )
-    inputs = build_family_ray_rollout_runtime_inputs(
+    inputs = build_rollout_runtime_inputs(
         cfg,
         "sd3_5",
         weight_dtype=torch.bfloat16,

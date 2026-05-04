@@ -16,7 +16,7 @@ import torch.nn as nn
 
 from vrl.algorithms.base import Algorithm
 from vrl.algorithms.types import TrainStepMetrics
-from vrl.rollouts.experience import ExperienceBatch
+from vrl.rollouts.batch import RolloutBatch
 from vrl.trainers.base import Trainer
 from vrl.trainers.ema import EMAModuleWrapper
 from vrl.trainers.types import TrainerConfig, TrainState
@@ -107,8 +107,8 @@ def _get_autocast(config: TrainerConfig, device: torch.device) -> Any:
     return contextlib.nullcontext()
 
 
-def _apply_sample_mask(batch: ExperienceBatch, mask: torch.Tensor) -> ExperienceBatch:
-    """Filter ExperienceBatch along sample dim by a boolean mask.
+def _apply_sample_mask(batch: RolloutBatch, mask: torch.Tensor) -> RolloutBatch:
+    """Filter RolloutBatch along sample dim by a boolean mask.
 
     All per-sample tensors (observations, actions, rewards, dones, group_ids,
     videos, and extras whose leading dim matches the batch) are indexed by
@@ -127,7 +127,7 @@ def _apply_sample_mask(batch: ExperienceBatch, mask: torch.Tensor) -> Experience
         prompts = [p for p, m in zip(batch.prompts, mask_list, strict=True) if m]
     else:
         prompts = None
-    return ExperienceBatch(
+    return RolloutBatch(
         observations=batch.observations[mask],
         actions=batch.actions[mask],
         rewards=batch.rewards[mask],
@@ -140,7 +140,7 @@ def _apply_sample_mask(batch: ExperienceBatch, mask: torch.Tensor) -> Experience
     )
 
 
-def _split_batch_by_group(batch: ExperienceBatch) -> list[ExperienceBatch]:
+def _split_batch_by_group(batch: RolloutBatch) -> list[RolloutBatch]:
     """Split a rollout batch into group-local batches for bounded training memory."""
 
     group_ids = batch.group_ids
@@ -156,7 +156,7 @@ def _split_batch_by_group(batch: ExperienceBatch) -> list[ExperienceBatch]:
     return [_apply_sample_mask(batch, group_ids == group_id) for group_id in ordered_ids]
 
 
-def _remap_group_ids_(batch: ExperienceBatch, global_prompt_indices: list[int]) -> None:
+def _remap_group_ids_(batch: RolloutBatch, global_prompt_indices: list[int]) -> None:
     """Map collector-local prompt groups back to trainer-global prompt indices."""
 
     if not global_prompt_indices:
@@ -291,7 +291,7 @@ class OnlineTrainer(Trainer):
         # executor can plan prompt x group_size micro-batches directly. Rich
         # PromptExample items stay single-prompt because reward metadata and
         # request_overrides are per prompt.
-        all_batches: list[ExperienceBatch] = []
+        all_batches: list[RolloutBatch] = []
         with timer.time("collect"):
             pending_prompts: list[str] = []
             pending_indices: list[int] = []
@@ -392,7 +392,7 @@ class OnlineTrainer(Trainer):
 
         # Zero-advantage sample filter + full-dead fallback, applied *per-batch*
         # so each filtered batch remains a standalone tensor for forward/backward.
-        filtered_batches: list[ExperienceBatch] = []
+        filtered_batches: list[RolloutBatch] = []
         filtered_advs: list[torch.Tensor] = []
         if self.stat_tracker is not None:
             for b, adv_b in zip(all_batches, adv_split, strict=True):

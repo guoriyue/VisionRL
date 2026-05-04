@@ -20,6 +20,7 @@ algorithm:
 rollout:
   n: 4
   rollout_batch_size: 1
+  sample_batch_size: 8
   same_latent: false
 
 reward:

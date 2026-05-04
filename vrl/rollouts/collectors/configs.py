@@ -23,6 +23,10 @@ class SD3_5CollectorConfig:
     same_latent: bool = False
     max_batch_requests: int = 1
 
+    @property
+    def return_kl(self) -> bool:
+        return self.kl_reward > 0
+
 
 @dataclass(slots=True)
 class Wan_2_1CollectorConfig:
@@ -34,6 +38,7 @@ class Wan_2_1CollectorConfig:
     width: int = 416
     num_frames: int = 33
     max_sequence_length: int = 512
+    noise_level: float = 1.0
     cfg: bool = True
     sample_batch_size: int = 1
     kl_reward: float = 0.0
@@ -41,6 +46,10 @@ class Wan_2_1CollectorConfig:
     sde_window_range: tuple[int, int] = (0, 10)
     same_latent: bool = False
     max_batch_requests: int = 1
+
+    @property
+    def return_kl(self) -> bool:
+        return self.kl_reward > 0
 
 
 @dataclass(slots=True)
@@ -54,6 +63,7 @@ class CosmosPredict2CollectorConfig:
     num_frames: int = 93
     max_sequence_length: int = 512
     fps: int = 16
+    noise_level: float = 1.0
     cfg: bool = True
     sample_batch_size: int = 8
     kl_reward: float = 0.0
@@ -61,6 +71,10 @@ class CosmosPredict2CollectorConfig:
     sde_window_range: tuple[int, int] = (0, 10)
     same_latent: bool = False
     max_batch_requests: int = 1
+
+    @property
+    def return_kl(self) -> bool:
+        return self.kl_reward > 0
 
 
 @dataclass(slots=True)

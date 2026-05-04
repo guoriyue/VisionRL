@@ -2,11 +2,11 @@
 
 Owns the autoregressive image-token sampling + VQ decode previously
 inlined in :mod:`vrl.rollouts.collectors.janus_pro`. The collector keeps
-reward scoring and ``ExperienceBatch`` packing.
+reward scoring and ``RolloutBatch`` packing.
 
 Boundary:
 
-- This module MUST NOT import ``vrl.rollouts.*`` or ``ExperienceBatch``.
+- This module MUST NOT import ``vrl.rollouts.*`` or ``RolloutBatch``.
 - This module MUST NOT compute reward.
 - Inputs come from ``GenerationRequest.sampling`` + ``prompts`` (the
   collector packs them).
@@ -110,7 +110,7 @@ class JanusProPipelineExecutor(ARPipelineExecutorBase):
     - ``uncond_input_ids``: ``[B, L_text]`` int64.
     - ``uncond_attention_mask``: ``[B, L_text]`` int64.
 
-    These keys map directly into ``JanusProCollector``'s ``ExperienceBatch``
+    These keys map directly into ``JanusProCollector``'s ``RolloutBatch``
     packing so the trainer's ``replay_forward`` contract stays explicit.
     """
 

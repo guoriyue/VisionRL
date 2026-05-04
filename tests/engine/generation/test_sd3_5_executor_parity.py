@@ -8,29 +8,26 @@ These tests pin two equivalences:
    path must not reorder or mutate trajectory tensors.
 
 2. ``SD3_5Collector.collect`` invoked twice with the same prompts and
-   the same seed produces bitwise-identical ``ExperienceBatch`` tensors.
+   the same seed produces bitwise-identical ``RolloutBatch`` tensors.
    This is the parity contract for Phase 2 — same prompts + same seed ⇒
    same trajectory ⇒ same advantages ⇒ same gradient.
 
 The stubs below are bare-minimum: no diffusers / SD3.5 weights are
 loaded. They exercise the executor + collector wiring, the SDE math, and
-the OutputBatch → ExperienceBatch translation.
+the OutputBatch → RolloutBatch translation.
 """
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
 import torch
 
-from vrl.engine import ContinuousBatchPlanner, EngineLoop, Scheduler
 from vrl.engine.generation import (
     FamilyPipelineRegistry,
     GenerationIdFactory,
-    GenerationModelRunner,
     GenerationRequest,
     GenerationRuntime,
     GenerationWorker,
@@ -257,8 +254,8 @@ def test_executor_direct_matches_runtime_routed_bitwise() -> None:
 
 
 @pytest.mark.asyncio
-async def test_executor_direct_matches_runtime_engine_loop_bitwise() -> None:
-    """Routing through the full GenerationRuntime + EngineLoop preserves tensors."""
+async def test_executor_direct_matches_generation_runtime_bitwise() -> None:
+    """Routing through GenerationRuntime preserves tensors."""
     policy_a = _StubPolicy()
     executor_a = SD3_5PipelineExecutor(policy_a)
     request_a = _build_request()
@@ -270,19 +267,9 @@ async def test_executor_direct_matches_runtime_engine_loop_bitwise() -> None:
     registry = FamilyPipelineRegistry()
     registry.register(executor_b)
     worker = GenerationWorker(registry)
-    runner = GenerationModelRunner(worker, execute_in_thread=False)
-    engine_loop = EngineLoop(
-        scheduler=Scheduler(
-            batch_planner=ContinuousBatchPlanner(max_batch_size=1),
-        ),
-        model_runner=runner,
-    )
-    runtime = GenerationRuntime(engine_loop)
+    runtime = GenerationRuntime(worker, execute_in_thread=False)
     try:
-        out_runtime = await asyncio.wait_for(
-            runtime.generate(_build_request()),
-            timeout=5.0,
-        )
+        out_runtime = await runtime.generate(_build_request())
     finally:
         await runtime.shutdown()
 
@@ -305,7 +292,7 @@ async def test_executor_direct_matches_runtime_engine_loop_bitwise() -> None:
 
 @pytest.mark.asyncio
 async def test_collector_collect_twice_same_seed_bitwise() -> None:
-    """Two collect() calls with the same prompts + seed → identical ExperienceBatch.
+    """Two collect() calls with the same prompts + seed → identical RolloutBatch.
 
     Parity is bitwise on every tensor field. The reward fn is also
     deterministic so the kl-adjusted rewards match.
@@ -361,7 +348,7 @@ async def test_collector_collect_twice_same_seed_bitwise() -> None:
 
 @pytest.mark.asyncio
 async def test_collector_experience_batch_shape() -> None:
-    """ExperienceBatch from collector has the trainer-expected fields and shapes."""
+    """RolloutBatch from collector has the trainer-expected fields and shapes."""
     from vrl.rollouts.collectors import (
         SD3_5CollectorConfig,
         build_rollout_collector,

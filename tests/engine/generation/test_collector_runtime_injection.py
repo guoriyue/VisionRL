@@ -8,13 +8,14 @@ import pytest
 import torch
 
 from vrl.engine.generation import GenerationIdFactory, OutputBatch, RolloutBackend
+from vrl.rollouts.batch import RolloutBatch
 from vrl.rollouts.collectors import (
     CosmosPredict2CollectorConfig,
     SD3_5CollectorConfig,
     Wan_2_1CollectorConfig,
     build_rollout_collector,
 )
-from vrl.rollouts.experience import ExperienceBatch
+from vrl.rollouts.family_registry import DIFFUSION_RETURN_ARTIFACTS
 
 
 class _FakeRuntime(RolloutBackend):
@@ -41,11 +42,11 @@ class _FakeRuntime(RolloutBackend):
         return None
 
 
-async def _fake_to_batch(*args: Any, **kwargs: Any) -> ExperienceBatch:
+async def _fake_to_batch(*args: Any, **kwargs: Any) -> RolloutBatch:
     output = args[0]
     del kwargs
     batch_size = len(output.sample_specs)
-    return ExperienceBatch(
+    return RolloutBatch(
         observations=torch.zeros(batch_size, 1, 1),
         actions=torch.zeros(batch_size, 1, 1),
         rewards=torch.zeros(batch_size),
@@ -88,4 +89,8 @@ def test_diffusion_collector_uses_injected_runtime_without_model(
     assert request.prompts == ["p0", "p1"]
     assert request.samples_per_prompt == 2
     assert request.policy_version == 9
+    assert request.return_artifacts == set(DIFFUSION_RETURN_ARTIFACTS)
+    assert "noise_level" in request.sampling
+    assert "return_kl" in request.sampling
+    assert "sample_batch_size" in request.sampling
     assert batch.group_ids.tolist() == [0, 0, 1, 1]

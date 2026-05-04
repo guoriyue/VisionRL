@@ -301,6 +301,8 @@ _COMMON_REQUIRED_FIELDS: tuple[str, ...] = (
 _GRPO_DIFFUSION_REQUIRED: tuple[str, ...] = (
     "rollout.n",
     "rollout.rollout_batch_size",
+    "rollout.noise_level",
+    "rollout.sample_batch_size",
     "rollout.sde.window_size",
     "rollout.sde.window_range",
     "rollout.same_latent",

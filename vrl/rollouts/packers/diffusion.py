@@ -1,4 +1,4 @@
-"""Diffusion OutputBatch to ExperienceBatch packing."""
+"""Diffusion OutputBatch to RolloutBatch packing."""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ from typing import Any
 import torch
 
 from vrl.engine.generation import OutputBatch
-from vrl.rollouts.experience import ExperienceBatch
+from vrl.rollouts.batch import RolloutBatch
 from vrl.rollouts.packers.base import RolloutPackContext
 
 
 class DiffusionRolloutPacker:
-    """Pack diffusion trajectory tensors into the CEA ExperienceBatch shape."""
+    """Pack diffusion trajectory tensors into the CEA RolloutBatch shape."""
 
     def __init__(self, *, error_prefix: str) -> None:
         self.error_prefix = error_prefix
@@ -38,7 +38,7 @@ class DiffusionRolloutPacker:
         output: OutputBatch,
         rewards_raw: torch.Tensor,
         context: RolloutPackContext,
-    ) -> ExperienceBatch:
+    ) -> RolloutBatch:
         rt = output.rollout_trajectory_data
         if rt is None or rt.dit_trajectory is None:
             raise RuntimeError(
@@ -83,7 +83,7 @@ class DiffusionRolloutPacker:
         }
         extras.update(training_extras)
 
-        return ExperienceBatch(
+        return RolloutBatch(
             observations=observations,
             actions=actions,
             rewards=rewards_adjusted,

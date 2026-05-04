@@ -440,7 +440,7 @@ class JanusProPolicy(nn.Module, AutoregressivePolicy):
     ) -> dict[str, Any]:
         """Single forward producing per-token logits over the image vocab.
 
-        Train-time replay: given an ``ExperienceBatch`` that recorded
+        Train-time replay: given a ``RolloutBatch`` that recorded
         ``observations`` (text prompt ids), ``extras["prompt_attention_mask"]``,
         and ``actions`` (sampled image tokens), recompute the conditional
         logits over the image vocab so the evaluator can gather log-probs

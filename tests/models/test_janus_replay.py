@@ -25,13 +25,13 @@ from vrl.models.families.janus_pro.policy import (
     JanusProConfig,
     JanusProPolicy,
 )
+from vrl.rollouts.batch import RolloutBatch
 from vrl.rollouts.collectors import (
     JanusProCollectorConfig,
     build_rollout_collector,
 )
 from vrl.rollouts.evaluators.ar.token_logprob import TokenLogProbEvaluator
 from vrl.rollouts.evaluators.types import SignalRequest
-from vrl.rollouts.experience import ExperienceBatch
 
 HIDDEN = 32
 TEXT_VOCAB = 64
@@ -99,12 +99,12 @@ def _build_stub_model(*, unfreeze_gen_head: bool = False) -> JanusProPolicy:
     return model
 
 
-def _make_batch(B: int = 2, L_text: int = 5, L_img: int = 4) -> ExperienceBatch:
-    """Fake ``ExperienceBatch`` with the keys ``replay_forward`` reads."""
+def _make_batch(B: int = 2, L_text: int = 5, L_img: int = 4) -> RolloutBatch:
+    """Fake ``RolloutBatch`` with the keys ``replay_forward`` reads."""
     prompt_ids = torch.randint(0, TEXT_VOCAB, (B, L_text))
     prompt_mask = torch.ones(B, L_text, dtype=torch.long)
     image_token_ids = torch.randint(0, JANUS_IMAGE_VOCAB_SIZE, (B, L_img))
-    return ExperienceBatch(
+    return RolloutBatch(
         observations=prompt_ids.unsqueeze(1),  # [B, 1, L_text] — OnlineTrainer shape
         actions=image_token_ids,
         rewards=torch.zeros(B),

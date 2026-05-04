@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
+from vrl.rollouts.batch import RolloutBatch
 from vrl.rollouts.evaluators.types import SignalBatch, SignalRequest
-from vrl.rollouts.experience import ExperienceBatch
 
 
 @runtime_checkable
@@ -22,7 +22,7 @@ class Evaluator(Protocol):
     def evaluate(
         self,
         model: Any,
-        batch: ExperienceBatch,
+        batch: RolloutBatch,
         timestep_idx: int,
         ref_model: Any | None = None,
         signal_request: SignalRequest | None = None,

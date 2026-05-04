@@ -293,7 +293,7 @@ class WanT2VDiffusersPolicy(DiffusionPolicy):
     # -- collector boundary --------------------------------------------
 
     def export_batch_context(self, state: WanT2VSamplingState) -> dict[str, Any]:
-        """Project SamplingState -> ExperienceBatch.context (shared metadata)."""
+        """Project SamplingState -> RolloutBatch.context (shared metadata)."""
         return {
             "guidance_scale": state.guidance_scale,
             "cfg": state.do_cfg,
@@ -301,7 +301,7 @@ class WanT2VDiffusersPolicy(DiffusionPolicy):
         }
 
     def export_training_extras(self, state: WanT2VSamplingState) -> dict[str, Any]:
-        """Project SamplingState -> ExperienceBatch.extras (per-sample tensors)."""
+        """Project SamplingState -> RolloutBatch.extras (per-sample tensors)."""
         return {
             "prompt_embeds": state.prompt_embeds,
             "negative_prompt_embeds": state.negative_prompt_embeds,

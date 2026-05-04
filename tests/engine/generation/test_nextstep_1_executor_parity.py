@@ -12,7 +12,7 @@ These tests pin three equivalences:
    on top of the worker).
 
 3. ``NextStep1Collector.collect`` invoked twice with the same prompts and
-   the same seed produces bitwise-identical ``ExperienceBatch`` tensors —
+   the same seed produces bitwise-identical ``RolloutBatch`` tensors —
    especially ``actions`` (continuous tokens), ``extras["saved_noise"]``,
    and ``extras["log_probs"]``. ``saved_noise`` round-tripping bitwise IS
    the determinism contract that ``NextStep1Policy.replay_forward`` relies
@@ -20,12 +20,11 @@ These tests pin three equivalences:
 
 The stubs below are bare-minimum: no upstream NextStep-1 weights are
 loaded. They exercise the executor + collector wiring and the
-OutputBatch → ExperienceBatch translation.
+OutputBatch → RolloutBatch translation.
 """
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -33,11 +32,9 @@ import pytest
 import torch
 import torch.nn as nn
 
-from vrl.engine import ContinuousBatchPlanner, EngineLoop, Scheduler
 from vrl.engine.generation import (
     FamilyPipelineRegistry,
     GenerationIdFactory,
-    GenerationModelRunner,
     GenerationRequest,
     GenerationRuntime,
     GenerationWorker,
@@ -235,8 +232,8 @@ def test_executor_direct_matches_worker_routed_bitwise() -> None:
 
 
 @pytest.mark.asyncio
-async def test_executor_direct_matches_runtime_engine_loop_bitwise() -> None:
-    """Routing through the full GenerationRuntime + EngineLoop preserves tensors."""
+async def test_executor_direct_matches_generation_runtime_bitwise() -> None:
+    """Routing through GenerationRuntime preserves tensors."""
     policy_a = _StubPolicy()
     executor_a = NextStep1PipelineExecutor(policy_a)
     request_a = _build_request()
@@ -248,19 +245,9 @@ async def test_executor_direct_matches_runtime_engine_loop_bitwise() -> None:
     registry = FamilyPipelineRegistry()
     registry.register(executor_b)
     worker = GenerationWorker(registry)
-    runner = GenerationModelRunner(worker, execute_in_thread=False)
-    engine_loop = EngineLoop(
-        scheduler=Scheduler(
-            batch_planner=ContinuousBatchPlanner(max_batch_size=1),
-        ),
-        model_runner=runner,
-    )
-    runtime = GenerationRuntime(engine_loop)
+    runtime = GenerationRuntime(worker, execute_in_thread=False)
     try:
-        out_runtime = await asyncio.wait_for(
-            runtime.generate(_build_request()),
-            timeout=5.0,
-        )
+        out_runtime = await runtime.generate(_build_request())
     finally:
         await runtime.shutdown()
 
@@ -287,7 +274,7 @@ async def test_executor_direct_matches_runtime_engine_loop_bitwise() -> None:
 
 @pytest.mark.asyncio
 async def test_collector_collect_twice_same_seed_bitwise() -> None:
-    """Two collect() calls with the same prompts + seed → identical ExperienceBatch.
+    """Two collect() calls with the same prompts + seed → identical RolloutBatch.
 
     Parity is bitwise on every tensor field. The reward fn is
     deterministic, so the rewards also match.
@@ -365,13 +352,13 @@ async def test_collector_collect_twice_same_seed_bitwise() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 4: ExperienceBatch shape sanity
+# Test 4: RolloutBatch shape sanity
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_collector_experience_batch_shape() -> None:
-    """ExperienceBatch from collector has the trainer/replay-expected fields and shapes.
+    """RolloutBatch from collector has the trainer/replay-expected fields and shapes.
 
     The replay contract for NextStep1Policy.replay_forward:
       - actions.shape == (B, L, D)

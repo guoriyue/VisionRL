@@ -6,9 +6,9 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from vrl.distributed.ray.config import DistributedRolloutConfig
 from vrl.distributed.ray.dependencies import require_ray
 from vrl.distributed.ray.placement.network import sort_node_gpu_key
+from vrl.rollouts.backend_config import RolloutBackendConfig
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +29,14 @@ class _InfoActor:
         return str(ray.util.get_node_ip_address()), gpu_id
 
 
-def _bundle(config: DistributedRolloutConfig) -> dict[str, float]:
+def _bundle(config: RolloutBackendConfig) -> dict[str, float]:
     bundle = {"CPU": float(config.cpus_per_worker)}
     if config.gpus_per_worker > 0:
         bundle["GPU"] = float(config.gpus_per_worker)
     return bundle
 
 
-def create_rollout_placement_group(config: DistributedRolloutConfig) -> RayPlacement:
+def create_rollout_placement_group(config: RolloutBackendConfig) -> RayPlacement:
     """Create a placement group for rollout workers and stable-sort bundles."""
 
     ray = require_ray()
@@ -68,10 +68,7 @@ def create_rollout_placement_group(config: DistributedRolloutConfig) -> RayPlace
         for actor in info_actors:
             ray.kill(actor, no_restart=True)
 
-    bundle_infos = [
-        (idx, node_ip, gpu_id)
-        for idx, (node_ip, gpu_id) in enumerate(ip_gpu_pairs)
-    ]
+    bundle_infos = [(idx, node_ip, gpu_id) for idx, (node_ip, gpu_id) in enumerate(ip_gpu_pairs)]
     ordered = [idx for idx, _, _ in sorted(bundle_infos, key=sort_node_gpu_key)]
 
     for logical_idx, actual_idx in enumerate(ordered):

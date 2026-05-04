@@ -6,9 +6,9 @@ import contextlib
 from typing import Any
 
 import vrl.algorithms.flow_matching as flow_matching_math
+from vrl.rollouts.batch import RolloutBatch
 from vrl.rollouts.evaluators.base import Evaluator
 from vrl.rollouts.evaluators.types import SignalBatch, SignalRequest
-from vrl.rollouts.experience import ExperienceBatch
 
 # ------------------------------------------------------------------
 # FlowMatchingEvaluator
@@ -34,7 +34,7 @@ class FlowMatchingEvaluator(Evaluator):
     def evaluate(
         self,
         model: Any,
-        batch: ExperienceBatch,
+        batch: RolloutBatch,
         timestep_idx: int,
         ref_model: Any | None = None,
         signal_request: SignalRequest | None = None,

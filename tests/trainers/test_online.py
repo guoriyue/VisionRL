@@ -14,8 +14,8 @@ class TestOnlineTrainerCeaRegressions:
         import torch.nn as nn
 
         from vrl.algorithms.types import TrainStepMetrics
+        from vrl.rollouts.batch import RolloutBatch
         from vrl.rollouts.evaluators.types import SignalBatch
-        from vrl.rollouts.experience import ExperienceBatch
         from vrl.trainers.online import OnlineTrainer
         from vrl.trainers.types import DebugConfig, EMAConfig, OptimConfig, TrainerConfig
 
@@ -60,7 +60,7 @@ class TestOnlineTrainerCeaRegressions:
                 for _ in range(group_size):
                     rewards.append(self._reward_values[self._cursor])
                     self._cursor += 1
-                return ExperienceBatch(
+                return RolloutBatch(
                     observations=torch.zeros(group_size, 2, 1),
                     actions=torch.zeros(group_size, 2, 1),
                     rewards=torch.tensor(rewards, dtype=torch.float32),
@@ -136,8 +136,8 @@ class TestOnlineTrainerCeaRegressions:
         import torch
 
         from vrl.algorithms.types import TrainStepMetrics
+        from vrl.rollouts.batch import RolloutBatch
         from vrl.rollouts.evaluators.types import SignalBatch
-        from vrl.rollouts.experience import ExperienceBatch
         from vrl.trainers.data import PromptExample
         from vrl.trainers.online import OnlineTrainer
         from vrl.trainers.types import DebugConfig, EMAConfig, OptimConfig, TrainerConfig
@@ -175,7 +175,7 @@ class TestOnlineTrainerCeaRegressions:
             async def collect(self, prompts, **kwargs):
                 captured_kwargs.append(dict(kwargs))
                 group_size = int(kwargs.get("group_size", 1))
-                return ExperienceBatch(
+                return RolloutBatch(
                     observations=torch.zeros(group_size, 2, 1),
                     actions=torch.zeros(group_size, 2, 1),
                     rewards=torch.ones(group_size, dtype=torch.float32),
@@ -237,8 +237,8 @@ class TestOnlineTrainerCeaRegressions:
         import torch.nn as nn
 
         from vrl.algorithms.types import TrainStepMetrics
+        from vrl.rollouts.batch import RolloutBatch
         from vrl.rollouts.evaluators.types import SignalBatch
-        from vrl.rollouts.experience import ExperienceBatch
         from vrl.trainers.online import OnlineTrainer
         from vrl.trainers.types import DebugConfig, EMAConfig, OptimConfig, TrainerConfig
 
@@ -289,7 +289,7 @@ class TestOnlineTrainerCeaRegressions:
                     [float(i % group_size) for i in range(batch_size)],
                     dtype=torch.float32,
                 )
-                return ExperienceBatch(
+                return RolloutBatch(
                     observations=torch.zeros(batch_size, 2, 1),
                     actions=torch.zeros(batch_size, 2, 1),
                     rewards=rewards,

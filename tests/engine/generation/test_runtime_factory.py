@@ -8,9 +8,9 @@ from typing import Any
 import pytest
 from omegaconf import OmegaConf
 
-from vrl.engine.generation import (
+from vrl.engine.generation import OutputBatch
+from vrl.rollouts.backend import (
     DRIVER_CUDA_OWNERSHIP_ERROR,
-    OutputBatch,
     build_rollout_backend_from_cfg,
     validate_rollout_backend_config,
 )

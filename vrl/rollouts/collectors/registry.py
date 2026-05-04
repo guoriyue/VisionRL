@@ -2,26 +2,20 @@
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from vrl.engine.generation import RolloutBackend
 from vrl.rollouts.collect import RolloutCollector
-from vrl.rollouts.collectors.configs import (
-    CosmosPredict2CollectorConfig,
-    JanusProCollectorConfig,
-    NextStep1CollectorConfig,
-    SD3_5CollectorConfig,
-    Wan_2_1CollectorConfig,
+from vrl.rollouts.engine_requests import (
+    RolloutEngineRequestBuilder,
+    RolloutRequestBuilder,
 )
+from vrl.rollouts.family_registry import FAMILY_REGISTRY, get_rollout_family_entry
 from vrl.rollouts.packers.ar_continuous import ARContinuousRolloutPacker
 from vrl.rollouts.packers.ar_discrete import ARDiscreteRolloutPacker
 from vrl.rollouts.packers.diffusion import DiffusionRolloutPacker
-from vrl.rollouts.request_builders import (
-    ARRequestBuilder,
-    DiffusionRequestBuilder,
-    RolloutRequestBuilder,
-)
 from vrl.rollouts.rewards import RewardScorer
 
 CollectorKind = Literal["diffusion", "ar_discrete", "ar_continuous"]
@@ -37,77 +31,36 @@ class CollectorRegistryEntry:
     task: str
     kind: CollectorKind
     config_cls: type
+    executor_cls: type
     request_prefix: str | None = None
     default_task_type: str | None = None
     error_prefix: str | None = None
-    include_fps: bool = False
     sampling_fields: tuple[str, ...] = ()
     return_artifacts: tuple[str, ...] = ()
     metadata_key: str | None = None
 
 
+def _import_from_path(path: str) -> Any:
+    module_path, attr = path.split(":", 1)
+    module = importlib.import_module(module_path)
+    return getattr(module, attr)
+
+
 COLLECTOR_REGISTRY: dict[str, CollectorRegistryEntry] = {
-    "sd3_5": CollectorRegistryEntry(
-        family="sd3_5",
-        task="t2i",
-        kind="diffusion",
-        config_cls=SD3_5CollectorConfig,
-        request_prefix="sd3_5",
-        default_task_type="text_to_image",
-        error_prefix="SD3.5",
-    ),
-    "wan_2_1": CollectorRegistryEntry(
-        family="wan_2_1",
-        task="t2v",
-        kind="diffusion",
-        config_cls=Wan_2_1CollectorConfig,
-        request_prefix="wan_2_1",
-        default_task_type="text_to_video",
-        error_prefix="Wan 2.1",
-    ),
-    "cosmos": CollectorRegistryEntry(
-        family="cosmos",
-        task="v2w",
-        kind="diffusion",
-        config_cls=CosmosPredict2CollectorConfig,
-        request_prefix="cosmos",
-        default_task_type="video2world",
-        error_prefix="Cosmos",
-        include_fps=True,
-    ),
-    "janus_pro": CollectorRegistryEntry(
-        family="janus_pro",
-        task="ar_t2i",
-        kind="ar_discrete",
-        config_cls=JanusProCollectorConfig,
-        request_prefix="janus_pro",
-        sampling_fields=(
-            "cfg_weight",
-            "temperature",
-            "image_token_num",
-            "image_size",
-            "max_text_length",
-        ),
-        return_artifacts=("output", "token_ids", "token_log_probs"),
-    ),
-    "nextstep_1": CollectorRegistryEntry(
-        family="nextstep_1",
-        task="ar_t2i",
-        kind="ar_continuous",
-        config_cls=NextStep1CollectorConfig,
-        request_prefix="nextstep_1",
-        sampling_fields=(
-            "cfg_scale",
-            "num_flow_steps",
-            "noise_level",
-            "image_token_num",
-            "image_size",
-            "max_text_length",
-            "rescale_to_unit",
-        ),
-        return_artifacts=("output", "rollout_trajectory_data"),
-        metadata_key="rollout_metadata",
-    ),
+    family: CollectorRegistryEntry(
+        family=entry.family,
+        task=entry.task,
+        kind=entry.collector.kind,
+        config_cls=_import_from_path(entry.collector.config_cls),
+        executor_cls=_import_from_path(entry.local_executor_cls),
+        request_prefix=entry.collector.request_prefix,
+        default_task_type=entry.collector.default_task_type,
+        error_prefix=entry.collector.error_prefix,
+        sampling_fields=entry.collector.sampling_fields,
+        return_artifacts=entry.collector.return_artifacts,
+        metadata_key=entry.collector.metadata_key,
+    )
+    for family, entry in FAMILY_REGISTRY.items()
 }
 
 
@@ -122,7 +75,8 @@ def build_rollout_collector(
 ) -> RolloutCollector:
     """Build a rollout collector from an explicit family registry key."""
 
-    entry = _entry_for(family)
+    family_entry = get_rollout_family_entry(family)
+    entry = _entry_for(family_entry.family)
     collector_config = _resolve_config(entry, config)
     request_builder = _build_request_builder(entry, collector_config)
     packer = _build_packer(entry)
@@ -133,6 +87,7 @@ def build_rollout_collector(
         config=collector_config,
         family=entry.family,
         task=entry.task,
+        executor_cls=entry.executor_cls,
         request_builder=request_builder,
         packer=packer,
         reward_scorer=RewardScorer(reward_fn),
@@ -146,7 +101,7 @@ def build_rollout_collector(
 def collector_config_cls(family: str) -> type:
     """Return the config schema for an explicit family registry key."""
 
-    return _entry_for(family).config_cls
+    return _entry_for(get_rollout_family_entry(family).family).config_cls
 
 
 def _entry_for(family: str) -> CollectorRegistryEntry:
@@ -174,27 +129,17 @@ def _build_request_builder(
     entry: CollectorRegistryEntry,
     config: Any,
 ) -> RolloutRequestBuilder:
-    if entry.kind == "diffusion":
-        if entry.request_prefix is None or entry.default_task_type is None:
-            raise ValueError(f"{entry.family} diffusion registry entry is incomplete")
-        return DiffusionRequestBuilder(
-            family=entry.family,
-            task=entry.task,
-            request_prefix=entry.request_prefix,
-            config=config,
-            default_task_type=entry.default_task_type,
-            include_fps=entry.include_fps,
-        )
-    if entry.kind in {"ar_discrete", "ar_continuous"}:
-        if entry.request_prefix is None or not entry.sampling_fields:
-            raise ValueError(f"{entry.family} AR registry entry is incomplete")
-        return ARRequestBuilder(
+    if entry.kind in {"diffusion", "ar_discrete", "ar_continuous"}:
+        if entry.request_prefix is None:
+            raise ValueError(f"{entry.family} collector registry entry is incomplete")
+        return RolloutEngineRequestBuilder(
             family=entry.family,
             task=entry.task,
             request_prefix=entry.request_prefix,
             config=config,
             sampling_fields=entry.sampling_fields,
             return_artifacts=entry.return_artifacts,
+            default_task_type=entry.default_task_type,
             metadata_key=entry.metadata_key,
         )
     raise AssertionError(f"unhandled collector kind: {entry.kind}")

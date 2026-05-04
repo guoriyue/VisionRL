@@ -33,17 +33,15 @@ async def train_cosmos_predict2_grpo(
     from vrl.algorithms.grpo_token import TokenGRPOConfig
     from vrl.algorithms.stat_tracking import PerPromptStatTracker
     from vrl.config.loader import build_configs, require
-    from vrl.distributed.ray import (
-        DistributedRolloutConfig,
-        build_family_ray_rollout_runtime_inputs,
-    )
-    from vrl.engine.generation import build_rollout_backend_from_cfg
     from vrl.rewards.multi import MultiReward
+    from vrl.rollouts.backend import build_rollout_backend_from_cfg
+    from vrl.rollouts.backend_config import RolloutBackendConfig
     from vrl.rollouts.collectors import (
         CosmosPredict2CollectorConfig,
         build_rollout_collector,
     )
     from vrl.rollouts.evaluators.diffusion.flow_matching import FlowMatchingEvaluator
+    from vrl.rollouts.runtime_inputs import build_rollout_runtime_inputs
     from vrl.trainers.online import OnlineTrainer
     from vrl.trainers.weight_sync import build_runtime_weight_syncer
 
@@ -104,6 +102,7 @@ async def train_cosmos_predict2_grpo(
         )
 
     # 4. Collector + evaluator + algorithm
+    noise_level = float(require(cfg, "rollout.noise_level"))
     collector_config = CosmosPredict2CollectorConfig(
         num_steps=cfg.sampling.num_steps,
         guidance_scale=cfg.sampling.guidance_scale,
@@ -111,7 +110,9 @@ async def train_cosmos_predict2_grpo(
         width=cfg.sampling.width,
         num_frames=cfg.sampling.num_frames,
         fps=cfg.sampling.fps,
+        noise_level=noise_level,
         cfg=cfg.sampling.cfg,
+        sample_batch_size=int(require(cfg, "rollout.sample_batch_size")),
         kl_reward=cfg.algorithm.kl_reward,
         sde_window_size=cfg.rollout.sde.window_size,
         sde_window_range=tuple(cfg.rollout.sde.window_range),
@@ -124,25 +125,31 @@ async def train_cosmos_predict2_grpo(
         config=collector_config,
         reference_image=reference_image,
     )
-    rollout_backend_config = DistributedRolloutConfig.from_cfg(cfg)
-    ray_rollout_inputs = build_family_ray_rollout_runtime_inputs(
+    rollout_backend_config = RolloutBackendConfig.from_cfg(cfg)
+    rollout_runtime_inputs = build_rollout_runtime_inputs(
         cfg,
         "cosmos",
         weight_dtype=weight_dtype,
         executor_kwargs={"sample_batch_size": collector_config.sample_batch_size},
     )
-    collector._runtime = build_rollout_backend_from_cfg(
-        cfg,
-        runtime=rollout_runtime,
-        local_runtime_builder=collector._build_runtime,
-        driver_bundle=None if rollout_backend_config.backend == "ray" else bundle,
-        runtime_spec=(ray_rollout_inputs.runtime_spec if ray_rollout_inputs is not None else None),
-        gatherer=ray_rollout_inputs.gatherer if ray_rollout_inputs is not None else None,
+    collector.set_runtime(
+        build_rollout_backend_from_cfg(
+            cfg,
+            runtime=rollout_runtime,
+            local_runtime_builder=collector.build_runtime,
+            driver_bundle=None if rollout_backend_config.backend == "ray" else bundle,
+            runtime_spec=(
+                rollout_runtime_inputs.runtime_spec if rollout_runtime_inputs is not None else None
+            ),
+            gatherer=(
+                rollout_runtime_inputs.gatherer if rollout_runtime_inputs is not None else None
+            ),
+        ),
     )
 
     evaluator = FlowMatchingEvaluator(
         bundle.scheduler,
-        noise_level=1.0,
+        noise_level=noise_level,
         sde_type="sde",
     )
     algorithm = GRPO(grpo_config)
@@ -161,7 +168,7 @@ async def train_cosmos_predict2_grpo(
         evaluator=evaluator,
         model=cosmos_model,
         ref_model=ref_model,
-        weight_syncer=build_runtime_weight_syncer(collector._runtime),
+        weight_syncer=build_runtime_weight_syncer(collector.runtime),
         config=trainer_config,
         device=device,
         stat_tracker=stat_tracker,

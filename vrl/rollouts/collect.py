@@ -13,14 +13,13 @@ from vrl.engine.generation import (
     RolloutBackend,
     build_local_generation_runtime,
 )
-from vrl.rollouts.collectors.base import Collector
-from vrl.rollouts.experience import ExperienceBatch
+from vrl.rollouts.batch import RolloutBatch
+from vrl.rollouts.engine_requests import RolloutRequestBuilder, RolloutRequestPlan
 from vrl.rollouts.packers.base import RolloutPackContext, RolloutPacker
-from vrl.rollouts.request_builders import RolloutRequestBuilder, RolloutRequestPlan
 from vrl.rollouts.rewards import RewardScorer
 
 
-class RolloutCollector(Collector):
+class RolloutCollector:
     """Generic collector: request -> generation runtime -> reward -> pack."""
 
     def __init__(
@@ -30,6 +29,7 @@ class RolloutCollector(Collector):
         config: Any,
         family: str,
         task: str,
+        executor_cls: type,
         request_builder: RolloutRequestBuilder,
         packer: RolloutPacker,
         reward_scorer: RewardScorer,
@@ -42,6 +42,7 @@ class RolloutCollector(Collector):
         self.config = config
         self.family = family
         self.task = task
+        self.executor_cls = executor_cls
         self.request_builder = request_builder
         self.packer = packer
         self.reward_scorer = reward_scorer
@@ -50,19 +51,25 @@ class RolloutCollector(Collector):
         self.executor_kwargs = dict(executor_kwargs or {})
         self.phase_sink = phase_sink
 
-    def _build_runtime(self) -> GenerationRuntime:
+    def build_runtime(self) -> GenerationRuntime:
         return build_local_generation_runtime(
             model=self.model,
-            family=self.family,
-            task=self.task,
+            executor_cls=self.executor_cls,
             cfg=self.config,
             executor_kwargs=self.executor_kwargs,
         )
 
+    def set_runtime(self, runtime: RolloutBackend) -> None:
+        if not callable(getattr(runtime, "generate", None)):
+            raise TypeError(
+                "rollout runtime must implement async generate(request) -> OutputBatch",
+            )
+        self._runtime = runtime
+
     @property
     def runtime(self) -> RolloutBackend:
         if self._runtime is None:
-            self._runtime = self._build_runtime()
+            self._runtime = self.build_runtime()
         return self._runtime
 
     async def shutdown(self) -> None:
@@ -75,7 +82,7 @@ class RolloutCollector(Collector):
         self,
         prompts: list[str],
         **kwargs: Any,
-    ) -> ExperienceBatch:
+    ) -> RolloutBatch:
         group_size = int(kwargs.get("group_size", self.default_group_size))
         plan = self.request_builder.build(prompts, group_size, dict(kwargs))
 
@@ -115,7 +122,7 @@ class RolloutCollector(Collector):
         request_plan: RolloutRequestPlan,
         phases: dict[str, float] | None = None,
         phase_t: float | None = None,
-    ) -> ExperienceBatch:
+    ) -> RolloutBatch:
         context = RolloutPackContext(
             metadata=dict(request_plan.pack_metadata),
             device=_device_from_model(self.model),

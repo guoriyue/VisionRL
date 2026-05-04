@@ -14,7 +14,6 @@ import torch
 
 from vrl.distributed.ray import (
     DistributedExecutionPlanner,
-    DistributedRolloutConfig,
     DistributedRolloutExecutor,
     RayDistributedRuntime,
     RayRolloutWeightSync,
@@ -22,7 +21,6 @@ from vrl.distributed.ray import (
     RayTrainActor,
     RayTrainGroup,
     RayWorkerHandle,
-    RolloutRuntimeSpec,
 )
 from vrl.engine.generation import (
     ChunkedFamilyPipelineExecutor,
@@ -32,6 +30,8 @@ from vrl.engine.generation import (
     WorkloadSignature,
 )
 from vrl.engine.generation.microbatching import MicroBatchPlan
+from vrl.engine.generation.runtime_spec import GenerationRuntimeSpec
+from vrl.rollouts.backend_config import RolloutBackendConfig
 
 
 @dataclass(slots=True)
@@ -143,8 +143,8 @@ def make_fake_runtime_bundle(build_spec: Any) -> Any:
     return SimpleNamespace(policy=_FakePolicyWithTrainableState())
 
 
-def _runtime_spec(*, policy_version: int | None = 3) -> RolloutRuntimeSpec:
-    return RolloutRuntimeSpec(
+def _runtime_spec(*, policy_version: int | None = 3) -> GenerationRuntimeSpec:
+    return GenerationRuntimeSpec(
         family="fake",
         task="t2i",
         build_spec={
@@ -159,8 +159,8 @@ def _runtime_spec(*, policy_version: int | None = 3) -> RolloutRuntimeSpec:
     )
 
 
-def _runtime_spec_with_policy(*, policy_version: int | None = 3) -> RolloutRuntimeSpec:
-    return RolloutRuntimeSpec(
+def _runtime_spec_with_policy(*, policy_version: int | None = 3) -> GenerationRuntimeSpec:
+    return GenerationRuntimeSpec(
         family="fake",
         task="t2i",
         build_spec={
@@ -215,7 +215,7 @@ def _request(*, policy_version: int | None = 3) -> GenerationRequest:
 
 
 def test_distributed_rollout_config_validation() -> None:
-    config = DistributedRolloutConfig(
+    config = RolloutBackendConfig(
         backend="ray",
         num_workers=2,
         gpus_per_worker=0.0,
@@ -261,7 +261,6 @@ def test_rollout_runtime_spec_rejects_live_object_keys(key: str) -> None:
     with pytest.raises(ValueError, match=key):
         RayRolloutWorker(
             worker_id="w0",
-            family="fake",
             runtime_spec={
                 key: _FakeChunkedExecutor(),
                 "policy_version": 3,
@@ -273,7 +272,7 @@ def test_rollout_runtime_spec_rejects_live_object_keys(key: str) -> None:
 
 def test_rollout_runtime_spec_rejects_live_tensor_payload() -> None:
     with pytest.raises(TypeError, match=r"torch\.Tensor"):
-        RolloutRuntimeSpec(
+        GenerationRuntimeSpec(
             family="fake",
             task="t2i",
             model_config={"weights": torch.zeros(1)},
@@ -284,7 +283,7 @@ def test_rollout_runtime_spec_rejects_live_tensor_payload() -> None:
 
 def test_rollout_runtime_spec_rejects_executor_factory_key() -> None:
     with pytest.raises(ValueError, match=r"unsupported.*executor_factory"):
-        RolloutRuntimeSpec.from_dict(
+        GenerationRuntimeSpec.from_dict(
             {
                 "family": "fake",
                 "task": "t2i",
@@ -297,7 +296,7 @@ def test_rollout_runtime_spec_rejects_executor_factory_key() -> None:
 
 def test_rollout_runtime_spec_rejects_missing_builder_mode() -> None:
     with pytest.raises(ValueError, match="runtime_builder and executor_cls"):
-        RolloutRuntimeSpec(family="fake", task="t2i")
+        GenerationRuntimeSpec(family="fake", task="t2i")
 
 
 @pytest.mark.parametrize(
@@ -313,7 +312,7 @@ def test_rollout_runtime_spec_requires_complete_builder_pair(
     match: str,
 ) -> None:
     with pytest.raises(ValueError, match=match):
-        RolloutRuntimeSpec(
+        GenerationRuntimeSpec(
             family="fake",
             task="t2i",
             runtime_builder=runtime_builder,
@@ -324,7 +323,6 @@ def test_rollout_runtime_spec_requires_complete_builder_pair(
 def test_ray_rollout_worker_returns_cpu_only_chunk_result() -> None:
     worker = RayRolloutWorker(
         worker_id="w0",
-        family="fake",
         runtime_spec=_runtime_spec(policy_version=3),
     )
     result = worker.execute_chunk(
@@ -341,7 +339,6 @@ def test_ray_rollout_worker_returns_cpu_only_chunk_result() -> None:
 def test_ray_rollout_worker_rejects_stale_policy_version() -> None:
     worker = RayRolloutWorker(
         worker_id="w0",
-        family="fake",
         runtime_spec=_runtime_spec_dict(policy_version=1),
     )
 
@@ -364,7 +361,6 @@ def test_ray_rollout_worker_rejects_stale_policy_version() -> None:
 def test_ray_rollout_worker_updates_policy_trainable_state(state: dict[str, Any]) -> None:
     worker = RayRolloutWorker(
         worker_id="w0",
-        family="fake",
         runtime_spec=_runtime_spec_with_policy(policy_version=1),
     )
 
@@ -378,7 +374,6 @@ def test_ray_rollout_worker_updates_policy_trainable_state(state: dict[str, Any]
 def test_ray_rollout_worker_requires_model_for_weight_sync() -> None:
     worker = RayRolloutWorker(
         worker_id="w0",
-        family="fake",
         runtime_spec=_runtime_spec(policy_version=1),
     )
 
@@ -388,8 +383,8 @@ def test_ray_rollout_worker_requires_model_for_weight_sync() -> None:
 
 def test_distributed_rollout_executor_gathers_direct_actor_results() -> None:
     actors = [
-        RayRolloutWorker("w0", "fake", _runtime_spec(policy_version=3)),
-        RayRolloutWorker("w1", "fake", _runtime_spec(policy_version=3)),
+        RayRolloutWorker("w0", _runtime_spec(policy_version=3)),
+        RayRolloutWorker("w1", _runtime_spec(policy_version=3)),
     ]
     workers = [
         RayWorkerHandle(worker_id="w0", node_id="n0", actor=actors[0]),
@@ -408,7 +403,7 @@ def test_distributed_rollout_executor_gathers_direct_actor_results() -> None:
 
 
 def test_distributed_rollout_executor_rejects_invalid_inflight_limit() -> None:
-    actor = RayRolloutWorker("w0", "fake", _runtime_spec(policy_version=3))
+    actor = RayRolloutWorker("w0", _runtime_spec(policy_version=3))
     workers = [RayWorkerHandle(worker_id="w0", node_id="n0", actor=actor)]
 
     with pytest.raises(ValueError, match="max_inflight_chunks_per_worker"):
@@ -422,7 +417,7 @@ def test_distributed_rollout_executor_rejects_invalid_inflight_limit() -> None:
 
 def test_ray_distributed_runtime_delegates_to_executor() -> None:
     actors = [
-        RayRolloutWorker("w0", "fake", _runtime_spec(policy_version=None)),
+        RayRolloutWorker("w0", _runtime_spec(policy_version=None)),
     ]
     workers = [RayWorkerHandle(worker_id="w0", node_id="n0", actor=actors[0])]
     executor = DistributedRolloutExecutor(
@@ -441,7 +436,6 @@ def test_ray_distributed_runtime_delegates_to_executor() -> None:
 def test_ray_distributed_runtime_fills_current_policy_version() -> None:
     actor = RayRolloutWorker(
         "w0",
-        "fake",
         _runtime_spec(policy_version=5),
     )
     workers = [RayWorkerHandle(worker_id="w0", node_id="n0", actor=actor)]

@@ -3,7 +3,7 @@
 The RL loop owner is ``vrl/rollouts/`` (collectors). The adapter exposes
 inference primitives + opaque state projection helpers; the collector
 owns the loop, the SDE step, the log-prob accounting, the reward
-scoring, and the ExperienceBatch packing. There is NO default loop in
+scoring, and the RolloutBatch packing. There is NO default loop in
 this contract — ``inference()`` was removed deliberately so we don't
 maintain two parallel loops (one in ``models``, one in ``rollouts``).
 
@@ -16,8 +16,8 @@ Inference primitives:
 
 Boundary helpers — make ``SamplingState`` opaque to the collector:
 
-    export_batch_context(state)            -> dict   (scalar/shared metadata for ExperienceBatch.context)
-    export_training_extras(state)            -> dict   (per-sample tensors for ExperienceBatch.extras)
+    export_batch_context(state)            -> dict   (scalar/shared metadata for RolloutBatch.context)
+    export_training_extras(state)            -> dict   (per-sample tensors for RolloutBatch.extras)
     restore_eval_state(extras, context, latents, step_idx) -> SamplingState  (rebuild for the eval forward path)
 
 Backend ownership (called by the family builder, not the collector):
@@ -147,7 +147,7 @@ class DiffusionPolicy(nn.Module, ABC):
 
     def export_batch_context(self, state: Any) -> dict[str, Any]:
         """Project SamplingState into the read-only dict packed into
-        ``ExperienceBatch.context``.
+        ``RolloutBatch.context``.
 
         Implementations return scalar / shared metadata — guidance_scale,
         do_cfg flag, model_family, plus family-specific shared tensors
@@ -157,7 +157,7 @@ class DiffusionPolicy(nn.Module, ABC):
 
     def export_training_extras(self, state: Any) -> dict[str, Any]:
         """Project SamplingState into the per-sample tensor dict packed
-        into ``ExperienceBatch.extras``.
+        into ``RolloutBatch.extras``.
 
         Implementations return prompt embeds and any family-specific
         per-sample tensors (e.g. cosmos init_latents). The collector

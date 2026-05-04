@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from vrl.rollouts.experience import ExperienceBatch
+from vrl.rollouts.batch import RolloutBatch
 
 
 @runtime_checkable
@@ -16,7 +16,7 @@ class Collector(Protocol):
       - prompt expansion / group sampling
       - calling the policy's sampling path
       - reward scoring
-      - ``ExperienceBatch`` packing
+      - ``RolloutBatch`` packing
       - prompt / reference / metadata forwarding
 
     Train-time replay forward used to live here as ``forward_step``; that
@@ -29,5 +29,5 @@ class Collector(Protocol):
         self,
         prompts: list[str],
         **kwargs: Any,
-    ) -> ExperienceBatch:
+    ) -> RolloutBatch:
         ...

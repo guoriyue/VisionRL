@@ -7,17 +7,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from vrl.distributed.ray.config import DistributedRolloutConfig
 from vrl.distributed.ray.dependencies import require_ray
 from vrl.distributed.ray.placement.group import create_rollout_placement_group
 from vrl.distributed.ray.rollout.executor import DistributedRolloutExecutor
 from vrl.distributed.ray.rollout.planner import DistributedExecutionPlanner
 from vrl.distributed.ray.rollout.runtime import RayDistributedRuntime
-from vrl.distributed.ray.rollout.spec import RolloutRuntimeSpec
 from vrl.distributed.ray.rollout.types import RayWorkerHandle
 from vrl.distributed.ray.rollout.weight_sync import RayRolloutWeightSync
 from vrl.distributed.ray.rollout.worker import RayRolloutWorker
 from vrl.engine.generation.gather import ChunkGatherer, require_chunk_gatherer
+from vrl.engine.generation.runtime_spec import GenerationRuntimeSpec
+from vrl.rollouts.backend_config import RolloutBackendConfig
 
 
 @dataclass(slots=True)
@@ -29,20 +29,20 @@ class RayRolloutLauncher:
 
     def launch(
         self,
-        config: DistributedRolloutConfig | Mapping[str, Any],
-        runtime_spec: RolloutRuntimeSpec | Mapping[str, Any],
+        config: RolloutBackendConfig | Mapping[str, Any],
+        runtime_spec: GenerationRuntimeSpec | Mapping[str, Any],
         gatherer: ChunkGatherer,
     ) -> RayDistributedRuntime:
-        rollout_config = DistributedRolloutConfig.from_cfg(config)
+        rollout_config = RolloutBackendConfig.from_cfg(config)
         if rollout_config.backend != "ray":
             raise ValueError(
                 "RayRolloutLauncher requires distributed rollout backend='ray', "
                 f"got {rollout_config.backend!r}",
             )
 
-        spec = RolloutRuntimeSpec.from_value(runtime_spec)
+        spec = GenerationRuntimeSpec.from_value(runtime_spec)
         if not spec.family:
-            raise ValueError("Ray rollout runtime_spec.family is required")
+            raise ValueError("GenerationRuntimeSpec.family is required")
         chunk_gatherer = require_chunk_gatherer(gatherer)
 
         ray = require_ray()
@@ -68,7 +68,7 @@ class RayRolloutLauncher:
                     placement_group_capture_child_tasks=True,
                     placement_group_bundle_index=bundle_idx,
                 ),
-            ).remote(worker_id, spec.family, spec)
+            ).remote(worker_id, spec)
             actors.append(actor)
             worker_ids.append(worker_id)
 
@@ -113,8 +113,8 @@ class RayRolloutLauncher:
 
 
 def launch_ray_rollout_runtime(
-    config: DistributedRolloutConfig | Mapping[str, Any],
-    runtime_spec: RolloutRuntimeSpec | Mapping[str, Any],
+    config: RolloutBackendConfig | Mapping[str, Any],
+    runtime_spec: GenerationRuntimeSpec | Mapping[str, Any],
     gatherer: ChunkGatherer,
     *,
     init_ray: bool = True,

@@ -1,4 +1,4 @@
-"""OutputBatch to ExperienceBatch packers."""
+"""OutputBatch to RolloutBatch packers."""
 
 from vrl.rollouts.packers.ar_continuous import ARContinuousRolloutPacker
 from vrl.rollouts.packers.ar_discrete import ARDiscreteRolloutPacker

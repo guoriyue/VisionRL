@@ -1,4 +1,4 @@
-"""Discrete-token AR OutputBatch to ExperienceBatch packing."""
+"""Discrete-token AR OutputBatch to RolloutBatch packing."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 import torch
 
 from vrl.engine.generation import OutputBatch
-from vrl.rollouts.experience import ExperienceBatch
+from vrl.rollouts.batch import RolloutBatch
 from vrl.rollouts.packers.base import RolloutPackContext
 
 
@@ -38,7 +38,7 @@ class ARDiscreteRolloutPacker:
         output: OutputBatch,
         rewards_raw: torch.Tensor,
         context: RolloutPackContext,
-    ) -> ExperienceBatch:
+    ) -> RolloutBatch:
         device = context.device or output.extra["prompt_input_ids"].device
         images = output.output
         token_ids = output.extra["token_ids"]
@@ -52,7 +52,7 @@ class ARDiscreteRolloutPacker:
         observations = prompt_ids.unsqueeze(1)
         log_probs_3d = token_log_probs.detach().unsqueeze(1)
 
-        return ExperienceBatch(
+        return RolloutBatch(
             observations=observations,
             actions=token_ids,
             rewards=rewards_raw.to(device),

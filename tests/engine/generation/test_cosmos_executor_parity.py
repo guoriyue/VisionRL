@@ -8,34 +8,31 @@ These tests pin three equivalences:
    or mutate trajectory tensors.
 
 2. ``CosmosPipelineExecutor.forward`` called directly produces the same
-   ``OutputBatch`` as routing through the full async ``GenerationRuntime``
-   + ``EngineLoop`` stack. Bitwise-equal: the runtime adds no extra ops.
+   ``OutputBatch`` as routing through ``GenerationRuntime``. Bitwise-equal:
+   the runtime adds no extra ops.
 
 3. ``CosmosPredict2Collector.collect`` invoked twice with the same
    prompts and the same seed produces bitwise-identical
-   ``ExperienceBatch`` tensors. This is the parity contract for Phase 4
+   ``RolloutBatch`` tensors. This is the parity contract for Phase 4
    — same prompts + same seed ⇒ same trajectory ⇒ same advantages ⇒
    same gradient.
 
 The stubs below are bare-minimum: no diffusers / Cosmos weights are
 loaded. They exercise the executor + collector wiring, the SDE math, and
-the OutputBatch → ExperienceBatch translation.
+the OutputBatch → RolloutBatch translation.
 """
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
 import torch
 
-from vrl.engine import ContinuousBatchPlanner, EngineLoop, Scheduler
 from vrl.engine.generation import (
     FamilyPipelineRegistry,
     GenerationIdFactory,
-    GenerationModelRunner,
     GenerationRequest,
     GenerationRuntime,
     GenerationWorker,
@@ -264,8 +261,8 @@ def test_executor_direct_matches_worker_execute_bitwise() -> None:
 
 
 @pytest.mark.asyncio
-async def test_executor_direct_matches_runtime_engine_loop_bitwise() -> None:
-    """Routing through the full GenerationRuntime + EngineLoop preserves tensors."""
+async def test_executor_direct_matches_generation_runtime_bitwise() -> None:
+    """Routing through GenerationRuntime preserves tensors."""
     policy_a = _StubCosmosPolicy()
     executor_a = CosmosPipelineExecutor(policy_a)
     request_a = _build_request()
@@ -277,19 +274,9 @@ async def test_executor_direct_matches_runtime_engine_loop_bitwise() -> None:
     registry = FamilyPipelineRegistry()
     registry.register(executor_b)
     worker = GenerationWorker(registry)
-    runner = GenerationModelRunner(worker, execute_in_thread=False)
-    engine_loop = EngineLoop(
-        scheduler=Scheduler(
-            batch_planner=ContinuousBatchPlanner(max_batch_size=1),
-        ),
-        model_runner=runner,
-    )
-    runtime = GenerationRuntime(engine_loop)
+    runtime = GenerationRuntime(worker, execute_in_thread=False)
     try:
-        out_runtime = await asyncio.wait_for(
-            runtime.generate(_build_request()),
-            timeout=5.0,
-        )
+        out_runtime = await runtime.generate(_build_request())
     finally:
         await runtime.shutdown()
 
@@ -312,7 +299,7 @@ async def test_executor_direct_matches_runtime_engine_loop_bitwise() -> None:
 
 @pytest.mark.asyncio
 async def test_collector_collect_twice_same_seed_bitwise() -> None:
-    """Two collect() calls with the same prompts + seed → identical ExperienceBatch."""
+    """Two collect() calls with the same prompts + seed → identical RolloutBatch."""
     from vrl.rollouts.collectors import (
         CosmosPredict2CollectorConfig,
         build_rollout_collector,
@@ -365,7 +352,7 @@ async def test_collector_collect_twice_same_seed_bitwise() -> None:
 
 @pytest.mark.asyncio
 async def test_collector_experience_batch_shape() -> None:
-    """ExperienceBatch from collector has the trainer-expected fields and shapes."""
+    """RolloutBatch from collector has the trainer-expected fields and shapes."""
     from vrl.rollouts.collectors import (
         CosmosPredict2CollectorConfig,
         build_rollout_collector,

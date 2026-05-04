@@ -17,9 +17,9 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
+from vrl.rollouts.batch import RolloutBatch
 from vrl.rollouts.evaluators.base import Evaluator
 from vrl.rollouts.evaluators.types import SignalBatch, SignalRequest
-from vrl.rollouts.experience import ExperienceBatch
 
 
 def _has_active_adapter(model: Any) -> bool:
@@ -58,7 +58,7 @@ class TokenLogProbEvaluator(Evaluator):
     def evaluate(
         self,
         model: Any,
-        batch: ExperienceBatch,
+        batch: RolloutBatch,
         timestep_idx: int = 0,
         ref_model: Any | None = None,
         signal_request: SignalRequest | None = None,
@@ -111,7 +111,7 @@ class TokenLogProbEvaluator(Evaluator):
     @staticmethod
     def _compute_logprobs(
         model: Any,
-        batch: ExperienceBatch,
+        batch: RolloutBatch,
         action_ids: torch.Tensor,
     ) -> torch.Tensor:
         """Forward + gather. Always returns ``[B, L]`` float32 log-probs."""

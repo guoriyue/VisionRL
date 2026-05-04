@@ -145,7 +145,7 @@ class RolloutTrajectoryData:
 class OutputBatch:
     """Engine runtime output batch.
 
-    This is the generation-side output, not the trainer-side ExperienceBatch.
+    This is the generation-side output, not the trainer-side RolloutBatch.
     Reward, advantage, and GRPO group semantics stay outside this type.
     """
 

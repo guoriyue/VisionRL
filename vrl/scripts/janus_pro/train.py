@@ -78,17 +78,15 @@ async def _train_janus_pro(
     from vrl.algorithms.grpo_token import TokenGRPO, TokenGRPOConfig
     from vrl.algorithms.stat_tracking import PerPromptStatTracker
     from vrl.config.loader import build_configs, require
-    from vrl.distributed.ray import (
-        DistributedRolloutConfig,
-        build_family_ray_rollout_runtime_inputs,
-    )
-    from vrl.engine.generation import build_rollout_backend_from_cfg
     from vrl.models.families.janus_pro import JanusProConfig, JanusProPolicy
+    from vrl.rollouts.backend import build_rollout_backend_from_cfg
+    from vrl.rollouts.backend_config import RolloutBackendConfig
     from vrl.rollouts.collectors import (
         JanusProCollectorConfig,
         build_rollout_collector,
     )
     from vrl.rollouts.evaluators.ar import TokenLogProbEvaluator
+    from vrl.rollouts.runtime_inputs import build_rollout_runtime_inputs
     from vrl.trainers.data import PromptExample, load_prompt_manifest
     from vrl.trainers.online import OnlineTrainer
     from vrl.trainers.weight_sync import build_runtime_weight_syncer
@@ -155,19 +153,25 @@ async def _train_janus_pro(
             max_text_length=int(require(cfg, "rollout.max_text_length")),
         ),
     )
-    rollout_backend_config = DistributedRolloutConfig.from_cfg(cfg)
-    ray_rollout_inputs = build_family_ray_rollout_runtime_inputs(
+    rollout_backend_config = RolloutBackendConfig.from_cfg(cfg)
+    rollout_runtime_inputs = build_rollout_runtime_inputs(
         cfg,
         "janus_pro",
         weight_dtype=str(require(cfg, "model.dtype")),
     )
-    collector._runtime = build_rollout_backend_from_cfg(
-        cfg,
-        runtime=rollout_runtime,
-        local_runtime_builder=collector._build_runtime,
-        driver_policy=None if rollout_backend_config.backend == "ray" else policy,
-        runtime_spec=(ray_rollout_inputs.runtime_spec if ray_rollout_inputs is not None else None),
-        gatherer=ray_rollout_inputs.gatherer if ray_rollout_inputs is not None else None,
+    collector.set_runtime(
+        build_rollout_backend_from_cfg(
+            cfg,
+            runtime=rollout_runtime,
+            local_runtime_builder=collector.build_runtime,
+            driver_policy=None if rollout_backend_config.backend == "ray" else policy,
+            runtime_spec=(
+                rollout_runtime_inputs.runtime_spec if rollout_runtime_inputs is not None else None
+            ),
+            gatherer=(
+                rollout_runtime_inputs.gatherer if rollout_runtime_inputs is not None else None
+            ),
+        ),
     )
     evaluator = TokenLogProbEvaluator()
     algo_section = cfg.algorithm
@@ -189,7 +193,7 @@ async def _train_janus_pro(
         collector=collector,
         evaluator=evaluator,
         model=policy,
-        weight_syncer=build_runtime_weight_syncer(collector._runtime),
+        weight_syncer=build_runtime_weight_syncer(collector.runtime),
         config=trainer_config,
         device=policy.device,
         stat_tracker=stat_tracker,
