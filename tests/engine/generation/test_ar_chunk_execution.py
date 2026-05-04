@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import torch
 
 from tests.engine.generation.test_pipeline_janus_pro import (
@@ -18,14 +16,11 @@ from tests.engine.generation.test_pipeline_nextstep_1 import (
 from tests.engine.generation.test_pipeline_nextstep_1 import (
     _StubPolicy as _NextStepStubPolicy,
 )
-from vrl.engine.generation import (
+from vrl.engine import (
     ChunkedFamilyPipelineExecutor,
-    FamilyPipelineRegistry,
     GenerationIdFactory,
-    LocalRolloutWorkerPool,
-    LocalWorkerSpec,
 )
-from vrl.engine.generation.microbatching import MicroBatchPlan
+from vrl.engine.microbatching import MicroBatchPlan
 from vrl.models.families.janus_pro.executor import (
     JanusProChunkGatherer,
     JanusProPipelineExecutor,
@@ -142,48 +137,3 @@ def test_nextstep_1_forward_chunk_and_gather_use_prompt_major_order() -> None:
     assert output.extra["images_for_reward"].shape == output.output.shape
     assert output.metrics is not None
     assert output.metrics.micro_batches == 4
-
-
-def test_ar_executors_run_through_local_prompt_sample_chunk_pool() -> None:
-    cases = [
-        (
-            JanusProPipelineExecutor(_JanusStubPolicy(image_token_num=4)),
-            _janus_request(
-                prompts=["red cube", "blue sphere"],
-                samples_per_prompt=4,
-                image_token_num=4,
-                image_size=64,
-                max_text_length=8,
-                seed=23,
-            ),
-        ),
-        (
-            NextStep1PipelineExecutor(_NextStepStubPolicy()),
-            _nextstep_request(
-                prompts=["red cube", "blue sphere"],
-                samples_per_prompt=4,
-                image_token_num=8,
-                image_size=16,
-                seed=29,
-            ),
-        ),
-    ]
-
-    for executor, request in cases:
-        request.sampling["sample_batch_size"] = 2
-        registry = FamilyPipelineRegistry()
-        registry.register(executor)
-        pool = LocalRolloutWorkerPool(
-            registry,
-            [LocalWorkerSpec(worker_id="w0", device="cpu")],
-        )
-
-        output = asyncio.run(pool.execute(request))
-        sample_specs = GenerationIdFactory().build_sample_specs(request)
-
-        assert [spec.sample_id for spec in output.sample_specs] == [
-            spec.sample_id for spec in sample_specs
-        ]
-        assert output.output.shape[0] == len(sample_specs)
-        assert output.metrics is not None
-        assert output.metrics.micro_batches == 4

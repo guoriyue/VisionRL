@@ -3,6 +3,7 @@ defaults:
   - /base/algorithm/grpo
   - /base/actor
   - /base/rollout/diffusion
+  - /base/distributed/ray_rollout_single_gpu
   - /base/trainer
   - /model/wan/wan_2_1_1_3b
   - /sampling/video_240p_33f

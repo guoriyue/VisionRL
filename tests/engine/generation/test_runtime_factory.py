@@ -8,24 +8,14 @@ from typing import Any
 import pytest
 from omegaconf import OmegaConf
 
-from vrl.engine.generation import OutputBatch
-from vrl.rollouts.backend import (
+from vrl.engine import OutputBatch
+from vrl.engine.core.runtime_spec import GenerationRuntimeSpec
+from vrl.rollouts.runtime.backend import (
     DRIVER_CUDA_OWNERSHIP_ERROR,
     build_rollout_backend_from_cfg,
     validate_rollout_backend_config,
 )
-
-
-class _FakeRuntime:
-    async def generate(self, request: Any) -> OutputBatch:
-        return OutputBatch(
-            request_id=request.request_id,
-            family=request.family,
-            task=request.task,
-            prompts=list(request.prompts),
-            sample_specs=[],
-            output=None,
-        )
+from vrl.rollouts.runtime.config import RolloutBackendConfig
 
 
 class _CudaPolicy:
@@ -55,7 +45,29 @@ class _Bundle:
     trainable_modules: dict[str, Any]
 
 
-def _cfg(*, backend: str = "local", num_workers: int = 1, overlap: bool = False):
+class _FakeGatherer:
+    def gather_chunks(self, request: Any, sample_specs: Any, chunks: Any) -> OutputBatch:
+        del sample_specs, chunks
+        return OutputBatch(
+            request_id=request.request_id,
+            family=request.family,
+            task=request.task,
+            prompts=list(request.prompts),
+            sample_specs=[],
+            output=None,
+        )
+
+
+def _runtime_spec() -> GenerationRuntimeSpec:
+    return GenerationRuntimeSpec(
+        family="fake",
+        task="t2i",
+        runtime_builder="tests.fake:build_runtime",
+        executor_cls="tests.fake:Executor",
+    )
+
+
+def _cfg(*, backend: str = "ray", num_workers: int = 1, overlap: bool = False):
     return OmegaConf.create(
         {
             "distributed": {
@@ -69,69 +81,33 @@ def _cfg(*, backend: str = "local", num_workers: int = 1, overlap: bool = False)
     )
 
 
-def test_local_backend_builds_injected_local_runtime() -> None:
-    runtime = _FakeRuntime()
-    calls = 0
-
-    def build_local() -> _FakeRuntime:
-        nonlocal calls
-        calls += 1
-        return runtime
-
-    backend = build_rollout_backend_from_cfg(
-        _cfg(),
-        local_runtime_builder=build_local,
-    )
-
-    assert backend is runtime
-    assert calls == 1
+def test_rollout_backend_config_from_cfg_requires_explicit_backend() -> None:
+    with pytest.raises(ValueError, match=r"distributed\.backend or backend"):
+        RolloutBackendConfig.from_cfg({})
 
 
-def test_local_backend_rejects_multiple_workers_before_building_runtime() -> None:
-    calls = 0
-
-    def build_local() -> _FakeRuntime:
-        nonlocal calls
-        calls += 1
-        return _FakeRuntime()
-
-    with pytest.raises(ValueError, match="num_workers=1"):
-        build_rollout_backend_from_cfg(
-            _cfg(num_workers=2),
-            local_runtime_builder=build_local,
-        )
-
-    assert calls == 0
+def test_rollout_backend_config_from_cfg_rejects_non_ray_backend() -> None:
+    with pytest.raises(ValueError, match="backend must be 'ray'"):
+        RolloutBackendConfig.from_cfg(_cfg(backend="local"))
 
 
-def test_ray_backend_without_runtime_spec_does_not_build_local_runtime() -> None:
-    calls = 0
-
-    def build_local() -> _FakeRuntime:
-        nonlocal calls
-        calls += 1
-        return _FakeRuntime()
-
-    with pytest.raises(ValueError, match="requires an injected runtime"):
-        build_rollout_backend_from_cfg(
-            _cfg(backend="ray"),
-            local_runtime_builder=build_local,
-            driver_policy=_CpuPolicy(),
-        )
-
-    assert calls == 0
-
-
-def test_ray_backend_runtime_spec_without_gatherer_fails_clearly() -> None:
+@pytest.mark.parametrize(
+    ("runtime_spec", "gatherer"),
+    [
+        pytest.param(None, _FakeGatherer(), id="missing-runtime-spec"),
+        pytest.param(_runtime_spec(), None, id="missing-gatherer"),
+        pytest.param(None, None, id="missing-both"),
+    ],
+)
+def test_ray_backend_requires_runtime_spec_and_gatherer(
+    runtime_spec: Any,
+    gatherer: Any,
+) -> None:
     with pytest.raises(ValueError, match="runtime_spec plus gatherer"):
         build_rollout_backend_from_cfg(
-            _cfg(backend="ray"),
-            runtime_spec={
-                "family": "fake",
-                "task": "t2i",
-                "runtime_builder": "tests.fake:build_runtime",
-                "executor_cls": "tests.fake:Executor",
-            },
+            _cfg(),
+            runtime_spec=runtime_spec,
+            gatherer=gatherer,
             driver_policy=_CpuPolicy(),
         )
 
@@ -139,27 +115,11 @@ def test_ray_backend_runtime_spec_without_gatherer_fails_clearly() -> None:
 def test_ray_backend_rejects_driver_cuda_policy_without_overlap() -> None:
     with pytest.raises(ValueError, match="Driver loaded rollout policy on CUDA"):
         validate_rollout_backend_config(
-            _cfg(backend="ray"),
+            _cfg(),
             driver_policy=_CudaPolicy(),
         )
 
     assert "model.device=cpu" in DRIVER_CUDA_OWNERSHIP_ERROR
-
-
-def test_ray_backend_accepts_explicit_runtime_without_building_local_runtime() -> None:
-    runtime = _FakeRuntime()
-
-    def build_local() -> _FakeRuntime:
-        raise AssertionError("Ray backend must not build local GenerationRuntime")
-
-    backend = build_rollout_backend_from_cfg(
-        _cfg(backend="ray"),
-        runtime=runtime,
-        local_runtime_builder=build_local,
-        driver_policy=_CpuPolicy(),
-    )
-
-    assert backend is runtime
 
 
 def test_ray_backend_detects_cuda_trainable_module_when_policy_has_no_device() -> None:
@@ -170,14 +130,14 @@ def test_ray_backend_detects_cuda_trainable_module_when_policy_has_no_device() -
 
     with pytest.raises(ValueError, match="Driver loaded rollout policy on CUDA"):
         validate_rollout_backend_config(
-            _cfg(backend="ray"),
+            _cfg(),
             driver_bundle=bundle,
         )
 
 
 def test_ray_backend_allows_driver_cuda_policy_with_explicit_overlap() -> None:
     config = validate_rollout_backend_config(
-        _cfg(backend="ray", overlap=True),
+        _cfg(overlap=True),
         driver_policy=_CudaPolicy(),
     )
 

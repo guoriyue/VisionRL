@@ -9,11 +9,11 @@ from typing import Any
 from vrl.distributed.ray.dependencies import current_gpu_ids, current_node_ip
 from vrl.distributed.ray.module_loading import import_from_path
 from vrl.distributed.ray.rollout.types import RayChunkResult
-from vrl.engine.generation.gather import require_chunked_executor
-from vrl.engine.generation.microbatching import MicroBatchPlan
-from vrl.engine.generation.protocols import ChunkedFamilyPipelineExecutor
-from vrl.engine.generation.runtime_spec import GenerationRuntimeSpec
-from vrl.engine.generation.types import GenerationRequest
+from vrl.engine.core.protocols import ChunkedFamilyPipelineExecutor
+from vrl.engine.core.runtime_spec import GenerationRuntimeSpec
+from vrl.engine.core.types import GenerationRequest
+from vrl.engine.gather import require_chunked_executor
+from vrl.engine.microbatching import MicroBatchPlan
 
 
 class RayRolloutWorker:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from vrl.rollouts.collectors.base import Collector
+from vrl.rollouts.collector.base import Collector
 from vrl.rollouts.evaluators.base import Evaluator
 
 
@@ -68,7 +68,8 @@ class TestOnlineTrainerCeaRegressions:
                     group_ids=torch.zeros(group_size, dtype=torch.long),
                     extras={
                         "log_probs": torch.tensor(
-                            [[0.0, 1.0]] * group_size, dtype=torch.float32,
+                            [[0.0, 1.0]] * group_size,
+                            dtype=torch.float32,
                         ),
                     },
                     prompts=list(prompts) * group_size,
@@ -168,7 +169,9 @@ class TestOnlineTrainerCeaRegressions:
             def compute_signal_loss(self, signals, advantages, old_log_probs):
                 loss = signals.log_prob.mean()
                 return loss, TrainStepMetrics(
-                    loss=loss.item(), policy_loss=loss.item(), approx_kl=0.0,
+                    loss=loss.item(),
+                    policy_loss=loss.item(),
+                    approx_kl=0.0,
                 )
 
         class _CapturingCollector(Collector):
@@ -278,11 +281,7 @@ class TestOnlineTrainerCeaRegressions:
                 group_size = int(kwargs.get("group_size", 1))
                 batch_size = len(prompts) * group_size
                 group_ids = torch.tensor(
-                    [
-                        prompt_idx
-                        for prompt_idx in range(len(prompts))
-                        for _ in range(group_size)
-                    ],
+                    [prompt_idx for prompt_idx in range(len(prompts)) for _ in range(group_size)],
                     dtype=torch.long,
                 )
                 rewards = torch.tensor(
@@ -306,9 +305,7 @@ class TestOnlineTrainerCeaRegressions:
                 evaluate_group_ids.append(
                     [int(x) for x in batch.group_ids.detach().cpu().tolist()]
                 )
-                return SignalBatch(
-                    log_prob=model.weight.view(1).expand(batch.rewards.shape[0])
-                )
+                return SignalBatch(log_prob=model.weight.view(1).expand(batch.rewards.shape[0]))
 
         model = nn.Linear(1, 1, bias=False)
         with torch.no_grad():

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import pickle
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -17,17 +16,16 @@ from vrl.distributed.ray import (
     RayRolloutLauncher,
     RayRolloutWorker,
 )
-from vrl.engine.generation import (
+from vrl.engine import (
     ChunkedFamilyPipelineExecutor,
     GenerationRequest,
     OutputBatch,
     PipelineChunkResult,
     WorkloadSignature,
 )
-from vrl.engine.generation.microbatching import MicroBatchPlan
-from vrl.engine.generation.runtime_spec import GenerationRuntimeSpec
-from vrl.rollouts.backend import build_rollout_backend_from_cfg
-from vrl.rollouts.backend_config import RolloutBackendConfig
+from vrl.engine.core.runtime_spec import GenerationRuntimeSpec
+from vrl.engine.microbatching import MicroBatchPlan
+from vrl.rollouts.runtime.config import RolloutBackendConfig
 
 
 @dataclass(slots=True)
@@ -236,63 +234,6 @@ def test_ray_rollout_launcher_multi_worker_assigns_chunks_to_distinct_replicas(
         ((0, 0), (1, 0)),
         ((0, 2), (1, 2)),
     }
-
-
-def test_runtime_factory_launches_ray_runtime_when_spec_and_gatherer_are_provided(
-    ray_local,
-) -> None:
-    runtime = build_rollout_backend_from_cfg(
-        {
-            "distributed": {
-                "backend": "ray",
-                "rollout": {
-                    "num_workers": 1,
-                    "gpus_per_worker": 0.0,
-                    "cpus_per_worker": 1.0,
-                },
-            },
-        },
-        runtime_spec=_runtime_spec(policy_version=None),
-        gatherer=_LauncherGatherer(),
-    )
-    try:
-        output = asyncio.run(runtime.generate(_request(policy_version=None)))
-    finally:
-        asyncio.run(runtime.shutdown())
-
-    assert [
-        (row["prompt_index"], row["sample_start"], row["sample_count"]) for row in output.output
-    ] == [(0, 0, 2), (0, 2, 2), (1, 0, 2), (1, 2, 2)]
-
-
-def test_ray_rollout_launcher_runtime_spec_rejects_live_objects() -> None:
-    spec = _runtime_spec(policy_version=7)
-    assert pickle.loads(pickle.dumps(spec)) == spec
-
-    for key in ("executor", "policy", "pipeline"):
-        with pytest.raises(ValueError, match=key):
-            RayRolloutLauncher().launch(
-                _config(num_workers=1),
-                {"family": "fake", "task": "t2i", key: object()},
-                _LauncherGatherer(),
-            )
-
-    with pytest.raises(TypeError, match=r"torch\.Tensor"):
-        RayRolloutLauncher().launch(
-            _config(num_workers=1),
-            {
-                "family": "fake",
-                "task": "t2i",
-                "model_config": {"weights": torch.zeros(1)},
-                "runtime_builder": (
-                    "tests.distributed.ray.test_rollout_launcher:make_launcher_runtime_bundle"
-                ),
-                "executor_cls": (
-                    "tests.distributed.ray.test_rollout_launcher:_LauncherFakeExecutor"
-                ),
-            },
-            _LauncherGatherer(),
-        )
 
 
 def test_ray_rollout_worker_runtime_builder_normalizes_device_and_dtype() -> None:

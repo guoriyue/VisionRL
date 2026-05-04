@@ -1,7 +1,7 @@
 """NextStep-1 pipeline executor.
 
 Owns the continuous-token autoregressive sampling loop previously inlined
-in ``vrl.rollouts.collectors.nextstep_1.NextStep1Collector.collect``. The
+in the NextStep-1 rollout collector. The
 collector keeps reward scoring and ``RolloutBatch`` packing.
 
 Boundary:
@@ -39,7 +39,7 @@ from typing import Any
 
 import torch
 
-from vrl.engine.generation.ar import (
+from vrl.engine.ar import (
     ActiveSequence,
     ARGenerationSpec,
     ARPipelineExecutorBase,
@@ -47,9 +47,8 @@ from vrl.engine.generation.ar import (
     max_peak_memory_mb,
     ordered_chunks,
 )
-from vrl.engine.generation.microbatching import MicroBatchPlan
-from vrl.engine.generation.protocols import PipelineChunkResult
-from vrl.engine.generation.types import (
+from vrl.engine.core.protocols import PipelineChunkResult
+from vrl.engine.core.types import (
     GenerationMetrics,
     GenerationRequest,
     GenerationSampleSpec,
@@ -57,6 +56,7 @@ from vrl.engine.generation.types import (
     RolloutTrajectoryData,
     WorkloadSignature,
 )
+from vrl.engine.microbatching import MicroBatchPlan
 
 logger = logging.getLogger(__name__)
 

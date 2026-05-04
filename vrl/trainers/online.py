@@ -623,7 +623,7 @@ class OnlineTrainer(Trainer):
         phase_times = dict(timer.times)
         if cfg.profile:
             try:
-                from vrl.rollouts.collectors import LAST_COLLECT_PHASES
+                from vrl.rollouts.collector import LAST_COLLECT_PHASES
 
                 phase_times.update(LAST_COLLECT_PHASES)
             except Exception:

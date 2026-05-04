@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 def test_plan_prompt_group_microbatches_prompt_major() -> None:
-    from vrl.engine.generation.microbatching import plan_prompt_group_microbatches
+    from vrl.engine.microbatching import plan_prompt_group_microbatches
 
     plan = plan_prompt_group_microbatches(
         ["a", "b"],
@@ -13,8 +13,7 @@ def test_plan_prompt_group_microbatches_prompt_major() -> None:
     )
 
     got = [
-        (mb.prompt_index, mb.prompt, mb.sample_start, mb.sample_count)
-        for mb in plan.micro_batches
+        (mb.prompt_index, mb.prompt, mb.sample_start, mb.sample_count) for mb in plan.micro_batches
     ]
     assert got == [
         (0, "a", 0, 2),
@@ -28,7 +27,7 @@ def test_plan_prompt_group_microbatches_prompt_major() -> None:
 
 
 def test_run_microbatches_with_oom_retry_splits_until_success() -> None:
-    from vrl.engine.generation.microbatching import (
+    from vrl.engine.microbatching import (
         MicroBatchPlan,
         run_microbatches_with_oom_retry,
     )

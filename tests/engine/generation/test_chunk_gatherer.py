@@ -7,15 +7,15 @@ from typing import Any
 
 import torch
 
-from vrl.engine.generation.diffusion import DiffusionChunkResult
-from vrl.engine.generation.gather import (
+from vrl.engine.core.types import GenerationRequest, OutputBatch
+from vrl.engine.core.worker import GenerationIdFactory
+from vrl.engine.diffusion import DiffusionChunkResult
+from vrl.engine.gather import (
     ChunkGatherer,
     DiffusionChunkGatherer,
     gather_pipeline_chunks,
     require_chunk_gatherer,
 )
-from vrl.engine.generation.types import GenerationRequest, OutputBatch
-from vrl.engine.generation.worker import GenerationIdFactory
 
 
 class _PureGatherer:

@@ -25,34 +25,21 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from omegaconf import DictConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
 
-if TYPE_CHECKING:
-    from vrl.engine.generation import RolloutBackend
 
-
-async def train_janus_pro_grpo(
-    cfg: DictConfig,
-    *,
-    rollout_runtime: RolloutBackend | None = None,
-) -> None:
+async def train_janus_pro_grpo(cfg: DictConfig) -> None:
     """Run Janus-Pro GRPO with a multi-component image-quality reward."""
     await _train_janus_pro(
         cfg,
         ocr_mode=False,
-        rollout_runtime=rollout_runtime,
     )
 
 
-async def train_janus_pro_ocr_grpo(
-    cfg: DictConfig,
-    *,
-    rollout_runtime: RolloutBackend | None = None,
-) -> None:
+async def train_janus_pro_ocr_grpo(cfg: DictConfig) -> None:
     """Run Janus-Pro GRPO with the OCR edit-distance reward.
 
     Manifest entries must carry ``target_text`` so ``OCRReward`` knows what
@@ -61,7 +48,6 @@ async def train_janus_pro_ocr_grpo(
     await _train_janus_pro(
         cfg,
         ocr_mode=True,
-        rollout_runtime=rollout_runtime,
     )
 
 
@@ -69,7 +55,6 @@ async def _train_janus_pro(
     cfg: DictConfig,
     *,
     ocr_mode: bool,
-    rollout_runtime: RolloutBackend | None = None,
 ) -> None:
     import csv
 
@@ -79,14 +64,13 @@ async def _train_janus_pro(
     from vrl.algorithms.stat_tracking import PerPromptStatTracker
     from vrl.config.loader import build_configs, require
     from vrl.models.families.janus_pro import JanusProConfig, JanusProPolicy
-    from vrl.rollouts.backend import build_rollout_backend_from_cfg
-    from vrl.rollouts.backend_config import RolloutBackendConfig
-    from vrl.rollouts.collectors import (
+    from vrl.rollouts.collector import (
         JanusProCollectorConfig,
         build_rollout_collector,
     )
     from vrl.rollouts.evaluators.ar import TokenLogProbEvaluator
-    from vrl.rollouts.runtime_inputs import build_rollout_runtime_inputs
+    from vrl.rollouts.runtime.backend import build_rollout_backend_from_cfg
+    from vrl.rollouts.runtime.launch_inputs import build_rollout_runtime_inputs
     from vrl.trainers.data import PromptExample, load_prompt_manifest
     from vrl.trainers.online import OnlineTrainer
     from vrl.trainers.weight_sync import build_runtime_weight_syncer
@@ -153,7 +137,6 @@ async def _train_janus_pro(
             max_text_length=int(require(cfg, "rollout.max_text_length")),
         ),
     )
-    rollout_backend_config = RolloutBackendConfig.from_cfg(cfg)
     rollout_runtime_inputs = build_rollout_runtime_inputs(
         cfg,
         "janus_pro",
@@ -162,15 +145,9 @@ async def _train_janus_pro(
     collector.set_runtime(
         build_rollout_backend_from_cfg(
             cfg,
-            runtime=rollout_runtime,
-            local_runtime_builder=collector.build_runtime,
-            driver_policy=None if rollout_backend_config.backend == "ray" else policy,
-            runtime_spec=(
-                rollout_runtime_inputs.runtime_spec if rollout_runtime_inputs is not None else None
-            ),
-            gatherer=(
-                rollout_runtime_inputs.gatherer if rollout_runtime_inputs is not None else None
-            ),
+            driver_policy=policy,
+            runtime_spec=rollout_runtime_inputs.runtime_spec,
+            gatherer=rollout_runtime_inputs.gatherer,
         ),
     )
     evaluator = TokenLogProbEvaluator()

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from vrl.engine.generation import OutputBatch
+from vrl.engine import OutputBatch
 from vrl.rollouts.batch import RolloutBatch
 
 

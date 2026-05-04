@@ -6,7 +6,7 @@ from typing import Any
 
 import torch
 
-from vrl.engine.generation import OutputBatch
+from vrl.engine import OutputBatch
 from vrl.rollouts.batch import RolloutBatch
 from vrl.rollouts.packers.base import RolloutPackContext
 

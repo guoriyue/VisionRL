@@ -3,6 +3,7 @@ defaults:
   - /base/algorithm/grpo
   - /base/actor
   - /base/rollout/flow_matching_sde
+  - /base/distributed/ray_rollout_single_gpu
   - /base/trainer
   - /model/sd3_5/sd3_5
   - /sampling/image_512

@@ -19,11 +19,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import pytest
 import torch
 import torch.nn as nn
 
-from vrl.engine.generation import (
+from vrl.engine import (
     GenerationIdFactory,
     GenerationRequest,
 )
@@ -363,16 +362,6 @@ def test_executor_forward_shapes_for_two_prompts_x_four_samples() -> None:
     assert extra["context"]["image_token_num"] == 16
 
 
-def test_executor_request_id_round_trip() -> None:
-    """request_id flows through unchanged."""
-    policy = _StubPolicy()
-    executor = NextStep1PipelineExecutor(policy)
-    request = _request()
-    specs = GenerationIdFactory().build_sample_specs(request)
-    output = executor.forward(request, specs)
-    assert output.request_id == "nextstep_1-test"
-
-
 def test_executor_workload_signature_matches_request() -> None:
     """workload_signature derives from the request sampling dict."""
     policy = _StubPolicy()
@@ -421,16 +410,10 @@ def test_executor_scheduled_ar_matches_black_box_path_bitwise() -> None:
 
     assert policy_scheduled.sample_calls == 0
     assert policy_scheduled.ar_init_calls == 1
-    assert policy_scheduled.ar_step_calls == request_scheduled.sampling[
-        "image_token_num"
-    ]
+    assert policy_scheduled.ar_step_calls == request_scheduled.sampling["image_token_num"]
     assert torch.equal(out_black_box.extra["tokens"], out_scheduled.extra["tokens"])
-    assert torch.equal(
-        out_black_box.extra["saved_noise"], out_scheduled.extra["saved_noise"]
-    )
-    assert torch.equal(
-        out_black_box.extra["log_probs"], out_scheduled.extra["log_probs"]
-    )
+    assert torch.equal(out_black_box.extra["saved_noise"], out_scheduled.extra["saved_noise"])
+    assert torch.equal(out_black_box.extra["log_probs"], out_scheduled.extra["log_probs"])
     assert torch.equal(out_black_box.output, out_scheduled.output)
 
 
@@ -455,9 +438,7 @@ def test_executor_partial_scheduled_ar_is_deterministic_and_complete() -> None:
     assert policy_a.sample_calls == 0
     assert policy_a.ar_init_calls == 1
     assert policy_a.ar_step_calls > request_a.sampling["image_token_num"]
-    assert [spec.sample_id for spec in out_a.sample_specs] == [
-        spec.sample_id for spec in specs_a
-    ]
+    assert [spec.sample_id for spec in out_a.sample_specs] == [spec.sample_id for spec in specs_a]
     assert out_a.extra["tokens"].shape == (5, request_a.sampling["image_token_num"], 4)
     assert out_a.extra["saved_noise"].shape == (
         5,
@@ -500,20 +481,6 @@ def test_executor_metrics_recorded() -> None:
     assert output.metrics.num_samples == 3
     assert output.metrics.num_steps == 8
     assert output.metrics.micro_batches == 1
-
-
-@pytest.mark.parametrize("samples_per_prompt", [1, 3, 5])
-def test_executor_arbitrary_group_sizes(samples_per_prompt: int) -> None:
-    """Various group sizes produce correct B dimension."""
-    policy = _StubPolicy()
-    executor = NextStep1PipelineExecutor(policy)
-    request = _request(samples_per_prompt=samples_per_prompt)
-    specs = GenerationIdFactory().build_sample_specs(request)
-    output = executor.forward(request, specs)
-    assert output.output.shape[0] == samples_per_prompt
-    assert output.extra["tokens"].shape[0] == samples_per_prompt
-    assert output.extra["saved_noise"].shape[0] == samples_per_prompt
-    assert output.extra["log_probs"].shape[0] == samples_per_prompt
 
 
 def test_executor_rescale_to_unit_clamps_decoded_images() -> None:

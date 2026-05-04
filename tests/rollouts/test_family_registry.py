@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from vrl.rollouts.collectors.configs import (
+from vrl.rollouts.collector.configs import (
     CosmosPredict2CollectorConfig,
     JanusProCollectorConfig,
     NextStep1CollectorConfig,
     SD3_5CollectorConfig,
     Wan_2_1CollectorConfig,
 )
-from vrl.rollouts.collectors.registry import COLLECTOR_REGISTRY, collector_config_cls
-from vrl.rollouts.family_registry import (
+from vrl.rollouts.collector.factory import COLLECTOR_REGISTRY, collector_config_cls
+from vrl.rollouts.families.specs import (
     DIFFUSION_COMMON_SAMPLING_FIELDS,
     DIFFUSION_RETURN_ARTIFACTS,
     DIFFUSION_VIDEO_SAMPLING_FIELDS,
@@ -33,18 +33,18 @@ def test_family_registry_covers_current_rollout_families() -> None:
     )
 
     expected_config_cls_path = {
-        "sd3_5": "vrl.rollouts.collectors.configs:SD3_5CollectorConfig",
-        "wan_2_1": "vrl.rollouts.collectors.configs:Wan_2_1CollectorConfig",
-        "cosmos": "vrl.rollouts.collectors.configs:CosmosPredict2CollectorConfig",
-        "janus_pro": "vrl.rollouts.collectors.configs:JanusProCollectorConfig",
-        "nextstep_1": "vrl.rollouts.collectors.configs:NextStep1CollectorConfig",
+        "sd3_5": "vrl.rollouts.collector.configs:SD3_5CollectorConfig",
+        "wan_2_1": "vrl.rollouts.collector.configs:Wan_2_1CollectorConfig",
+        "cosmos": "vrl.rollouts.collector.configs:CosmosPredict2CollectorConfig",
+        "janus_pro": "vrl.rollouts.collector.configs:JanusProCollectorConfig",
+        "nextstep_1": "vrl.rollouts.collector.configs:NextStep1CollectorConfig",
     }
     for family, config_cls_path in expected_config_cls_path.items():
         entry = FAMILY_REGISTRY[family]
         assert entry.family == family
         assert entry.task
         assert entry.collector.config_cls == config_cls_path
-        assert entry.local_executor_cls.startswith("vrl.models.families.")
+        assert entry.executor_cls.startswith("vrl.models.families.")
         assert entry.runtime_builder.startswith("vrl.models.families.")
         assert entry.runtime_spec_extractor.startswith("vrl.models.families.")
         assert ":" in entry.gatherer.import_path
@@ -83,9 +83,7 @@ def test_collector_registry_reuses_family_registry_metadata() -> None:
 
 
 def test_diffusion_request_shape_is_registry_declared() -> None:
-    assert FAMILY_REGISTRY["sd3_5"].collector.sampling_fields == (
-        DIFFUSION_COMMON_SAMPLING_FIELDS
-    )
+    assert FAMILY_REGISTRY["sd3_5"].collector.sampling_fields == (DIFFUSION_COMMON_SAMPLING_FIELDS)
     assert FAMILY_REGISTRY["wan_2_1"].collector.sampling_fields == (
         DIFFUSION_VIDEO_SAMPLING_FIELDS
     )

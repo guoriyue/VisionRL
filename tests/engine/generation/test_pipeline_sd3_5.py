@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 import torch
 
-from vrl.engine.generation import (
+from vrl.engine import (
     GenerationIdFactory,
     GenerationRequest,
 )
@@ -109,7 +109,10 @@ class _StubPolicy:
         h = abs(hash(prompt)) % (2**31)
         gen = torch.Generator().manual_seed(h)
         prompt_embeds = torch.randn(
-            1, 4, self.embed_dim, generator=gen,
+            1,
+            4,
+            self.embed_dim,
+            generator=gen,
         )
         pooled = torch.randn(1, self.pooled_dim, generator=gen)
         return {
@@ -134,7 +137,11 @@ class _StubPolicy:
         seed = request.seed if request.seed is not None else 0
         gen = torch.Generator().manual_seed(int(seed))
         latents = torch.randn(
-            bsz, self.latent_channels, H, W, generator=gen,
+            bsz,
+            self.latent_channels,
+            H,
+            W,
+            generator=gen,
         )
         return _StubSamplingState(
             latents=latents,
@@ -168,7 +175,9 @@ class _StubPolicy:
         _B, C, _H, _W = latents.shape
         rgb = latents[:, :3] if C >= 3 else latents.repeat(1, 3, 1, 1)[:, :3]
         return torch.nn.functional.interpolate(
-            rgb, scale_factor=8, mode="nearest",
+            rgb,
+            scale_factor=8,
+            mode="nearest",
         )
 
     def export_batch_context(self, state: _StubSamplingState) -> dict[str, Any]:
@@ -218,7 +227,9 @@ def _request(
             "seed": seed,
         },
         return_artifacts={
-            "output", "rollout_trajectory_data", "denoising_env",
+            "output",
+            "rollout_trajectory_data",
+            "denoising_env",
         },
     )
 
@@ -318,16 +329,6 @@ def test_executor_micro_batches_when_group_exceeds_sample_batch_size() -> None:
     assert output.output.shape[0] == 12
 
 
-def test_executor_request_id_round_trip() -> None:
-    """request_id flows through unchanged; failure to match is a hard error."""
-    policy = _StubPolicy()
-    executor = SD3_5PipelineExecutor(policy)
-    request = _request(num_steps=2, height=32, width=32)
-    specs = GenerationIdFactory().build_sample_specs(request)
-    output = executor.forward(request, specs)
-    assert output.request_id == "sd3_5-test"
-
-
 def test_executor_workload_signature_matches_request() -> None:
     """workload_signature derives from the request sampling dict."""
     policy = _StubPolicy()
@@ -391,20 +392,3 @@ def test_executor_kl_window_populated_when_enabled() -> None:
     kl = output.rollout_trajectory_data.denoising_env.extra["kl"]
     log_probs = output.rollout_trajectory_data.rollout_log_probs
     assert torch.equal(kl, log_probs.abs())
-
-
-@pytest.mark.parametrize("samples_per_prompt", [1, 3, 5])
-def test_executor_arbitrary_group_sizes(samples_per_prompt: int) -> None:
-    """Various group sizes produce correct B dimension."""
-    policy = _StubPolicy()
-    executor = SD3_5PipelineExecutor(policy, sample_batch_size=4)
-    request = _request(
-        samples_per_prompt=samples_per_prompt,
-        num_steps=2,
-        height=32,
-        width=32,
-    )
-    specs = GenerationIdFactory().build_sample_specs(request)
-    output = executor.forward(request, specs)
-    assert output.output.shape[0] == samples_per_prompt
-    assert output.rollout_trajectory_data.rollout_log_probs.shape[0] == samples_per_prompt

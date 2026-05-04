@@ -10,8 +10,8 @@ from vrl.distributed.ray.dependencies import require_ray
 from vrl.distributed.ray.rollout.executor import DistributedRolloutExecutor
 from vrl.distributed.ray.rollout.types import RayWorkerHandle
 from vrl.distributed.ray.rollout.weight_sync import RolloutWeightSync
-from vrl.engine.generation.runtime import RolloutBackend
-from vrl.engine.generation.types import GenerationRequest, OutputBatch
+from vrl.engine.core.runtime import RolloutBackend
+from vrl.engine.core.types import GenerationRequest, OutputBatch
 
 
 class RayDistributedRuntime(RolloutBackend):

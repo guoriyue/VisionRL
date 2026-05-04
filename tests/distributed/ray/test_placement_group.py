@@ -23,7 +23,7 @@ def ray_local():
 
 def test_placement_group_cpu_only_local_mode(ray_local) -> None:
     from vrl.distributed.ray import create_rollout_placement_group
-    from vrl.rollouts.backend_config import RolloutBackendConfig
+    from vrl.rollouts.runtime.config import RolloutBackendConfig
 
     placement = create_rollout_placement_group(
         RolloutBackendConfig(

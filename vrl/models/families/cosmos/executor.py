@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from vrl.engine.generation.diffusion import (
+from vrl.engine.core.types import GenerationRequest
+from vrl.engine.diffusion import (
     DiffusionGenerationSpec,
     DiffusionPipelineExecutorBase,
     repeat_tensor_batch,
 )
-from vrl.engine.generation.microbatching import MicroBatchPlan
-from vrl.engine.generation.types import GenerationRequest
+from vrl.engine.microbatching import MicroBatchPlan
 from vrl.models.diffusion import VideoGenerationRequest
 
 

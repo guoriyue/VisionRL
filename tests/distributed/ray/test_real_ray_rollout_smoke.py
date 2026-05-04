@@ -44,8 +44,8 @@ async def test_real_sd3_5_ray_rollout_smoke() -> None:
 
     from vrl.config.loader import load_config
     from vrl.distributed.ray import RayRolloutLauncher
-    from vrl.engine.generation import GenerationRequest
-    from vrl.rollouts.runtime_inputs import build_rollout_runtime_inputs
+    from vrl.engine import GenerationRequest
+    from vrl.rollouts.runtime.launch_inputs import build_rollout_runtime_inputs
 
     cfg = load_config(
         "experiment/sd3_5_ocr_grpo",

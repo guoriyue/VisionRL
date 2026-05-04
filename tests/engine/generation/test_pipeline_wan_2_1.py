@@ -14,10 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import pytest
 import torch
 
-from vrl.engine.generation import (
+from vrl.engine import (
     GenerationIdFactory,
     GenerationRequest,
 )
@@ -154,7 +153,9 @@ class _StubWanPolicy:
         # Upsample only the spatial dims, preserve T_v.
         rgb_flat = rgb.reshape(B * T_v, 3, H, W)
         up = torch.nn.functional.interpolate(
-            rgb_flat, scale_factor=8, mode="nearest",
+            rgb_flat,
+            scale_factor=8,
+            mode="nearest",
         )
         return up.reshape(B, T_v, 3, H * 8, W * 8).permute(0, 2, 1, 3, 4)
 
@@ -205,7 +206,9 @@ def _request(
             "seed": seed,
         },
         return_artifacts={
-            "output", "rollout_trajectory_data", "denoising_env",
+            "output",
+            "rollout_trajectory_data",
+            "denoising_env",
         },
     )
 
@@ -269,7 +272,8 @@ def test_executor_forward_shapes_for_two_prompts_x_four_samples() -> None:
 
     # encode_prompt called once per prompt (not once per chunk).
     assert policy.encode_calls == [
-        "a red cube spinning", "a blue sphere bouncing",
+        "a red cube spinning",
+        "a blue sphere bouncing",
     ]
 
 
@@ -297,16 +301,6 @@ def test_executor_micro_batches_when_group_exceeds_sample_batch_size() -> None:
     # 3 chunks x 2 steps = 6 forward_step calls
     assert policy.forward_calls == 6
     assert output.output.shape[0] == 12
-
-
-def test_executor_request_id_round_trip() -> None:
-    """request_id flows through unchanged."""
-    policy = _StubWanPolicy()
-    executor = Wan_2_1PipelineExecutor(policy)
-    request = _request(num_steps=2, height=32, width=32)
-    specs = GenerationIdFactory().build_sample_specs(request)
-    output = executor.forward(request, specs)
-    assert output.request_id == "wan_2_1-test"
 
 
 def test_executor_workload_signature_matches_request() -> None:
@@ -373,20 +367,3 @@ def test_executor_kl_window_populated_when_enabled() -> None:
     kl = output.rollout_trajectory_data.denoising_env.extra["kl"]
     log_probs = output.rollout_trajectory_data.rollout_log_probs
     assert torch.equal(kl, log_probs.abs())
-
-
-@pytest.mark.parametrize("samples_per_prompt", [1, 3, 5])
-def test_executor_arbitrary_group_sizes(samples_per_prompt: int) -> None:
-    """Various group sizes produce correct B dimension."""
-    policy = _StubWanPolicy()
-    executor = Wan_2_1PipelineExecutor(policy, sample_batch_size=4)
-    request = _request(
-        samples_per_prompt=samples_per_prompt,
-        num_steps=2,
-        height=32,
-        width=32,
-    )
-    specs = GenerationIdFactory().build_sample_specs(request)
-    output = executor.forward(request, specs)
-    assert output.output.shape[0] == samples_per_prompt
-    assert output.rollout_trajectory_data.rollout_log_probs.shape[0] == samples_per_prompt

@@ -5,8 +5,8 @@ function — a per-token PPO clipped surrogate that properly broadcasts
 sequence-level advantages across the token dimension and supports a
 ``[B, L]`` mask for "score-only-image-token" semantics.
 
-This is the algorithm half of the Janus-Pro RL closed loop. Pair with
-``vrl.rollouts.collectors.janus_pro.JanusProCollector`` and
+This is the algorithm half of the Janus-Pro RL closed loop. Pair with the
+Janus-Pro collector built by ``vrl.rollouts.collector.build_rollout_collector`` and
 ``vrl.rollouts.evaluators.ar.token_logprob.TokenLogProbEvaluator``.
 
 Why subclass instead of fork?
@@ -85,17 +85,16 @@ class TokenGRPO(GRPO):
     def compute_signal_loss(
         self,
         signals: SignalBatch,
-        advantages: Any,        # [B]
-        old_log_probs: Any,     # [B, L]
+        advantages: Any,  # [B]
+        old_log_probs: Any,  # [B, L]
     ) -> tuple[Any, TrainStepMetrics]:
         cfg = self.config
 
-        new_lp: torch.Tensor = signals.log_prob          # [B, L]
-        old_lp: torch.Tensor = old_log_probs              # [B, L]
+        new_lp: torch.Tensor = signals.log_prob  # [B, L]
+        old_lp: torch.Tensor = old_log_probs  # [B, L]
         if new_lp.shape != old_lp.shape:
             raise ValueError(
-                f"log_prob shape mismatch: new={tuple(new_lp.shape)} "
-                f"old={tuple(old_lp.shape)}"
+                f"log_prob shape mismatch: new={tuple(new_lp.shape)} old={tuple(old_lp.shape)}"
             )
 
         mask = signals.aux.get(cfg.mask_key) if signals.aux else None
@@ -143,9 +142,7 @@ class TokenGRPO(GRPO):
             valid = mask > 0
             if valid.any():
                 ratio_valid = ratio[valid]
-                clip_fraction = (
-                    (torch.abs(ratio_valid - 1.0) > cfg.eps_clip).float().mean().item()
-                )
+                clip_fraction = (torch.abs(ratio_valid - 1.0) > cfg.eps_clip).float().mean().item()
                 approx_kl = 0.5 * ((new_lp - old_lp) ** 2)[valid].mean().item()
             else:
                 clip_fraction = 0.0

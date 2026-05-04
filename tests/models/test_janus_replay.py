@@ -26,7 +26,7 @@ from vrl.models.families.janus_pro.policy import (
     JanusProPolicy,
 )
 from vrl.rollouts.batch import RolloutBatch
-from vrl.rollouts.collectors import (
+from vrl.rollouts.collector import (
     JanusProCollectorConfig,
     build_rollout_collector,
 )

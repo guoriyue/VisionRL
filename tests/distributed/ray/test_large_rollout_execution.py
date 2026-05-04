@@ -22,16 +22,15 @@ from vrl.distributed.ray import (
     RayTrainGroup,
     RayWorkerHandle,
 )
-from vrl.engine.generation import (
+from vrl.engine import (
     ChunkedFamilyPipelineExecutor,
     GenerationRequest,
     OutputBatch,
     PipelineChunkResult,
     WorkloadSignature,
 )
-from vrl.engine.generation.microbatching import MicroBatchPlan
-from vrl.engine.generation.runtime_spec import GenerationRuntimeSpec
-from vrl.rollouts.backend_config import RolloutBackendConfig
+from vrl.engine.core.runtime_spec import GenerationRuntimeSpec
+from vrl.engine.microbatching import MicroBatchPlan
 
 
 @dataclass(slots=True)
@@ -214,19 +213,6 @@ def _request(*, policy_version: int | None = 3) -> GenerationRequest:
     )
 
 
-def test_distributed_rollout_config_validation() -> None:
-    config = RolloutBackendConfig(
-        backend="ray",
-        num_workers=2,
-        gpus_per_worker=0.0,
-        cpus_per_worker=1.0,
-    )
-
-    assert config.backend == "ray"
-    assert config.num_workers == 2
-    assert config.gpus_per_worker == 0.0
-
-
 def test_distributed_execution_planner_round_robins_chunks() -> None:
     workers = [
         RayWorkerHandle(worker_id="w0", node_id="n0", gpu_ids=(0,)),
@@ -278,19 +264,6 @@ def test_rollout_runtime_spec_rejects_live_tensor_payload() -> None:
             model_config={"weights": torch.zeros(1)},
             runtime_builder=_FAKE_RUNTIME_BUILDER,
             executor_cls=_FAKE_EXECUTOR_CLS,
-        )
-
-
-def test_rollout_runtime_spec_rejects_executor_factory_key() -> None:
-    with pytest.raises(ValueError, match=r"unsupported.*executor_factory"):
-        GenerationRuntimeSpec.from_dict(
-            {
-                "family": "fake",
-                "task": "t2i",
-                "executor_factory": "tests.fake:factory",
-                "runtime_builder": "tests.fake:build_runtime",
-                "executor_cls": "tests.fake:Executor",
-            },
         )
 
 

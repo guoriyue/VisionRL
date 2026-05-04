@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vrl.rollouts.engine_requests import RolloutEngineRequestBuilder
+from vrl.rollouts.collector.requests import RolloutEngineRequestBuilder
 
 
 def test_engine_request_builder_reads_declared_sampling_fields() -> None:

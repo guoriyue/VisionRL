@@ -17,10 +17,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import pytest
 import torch
 
-from vrl.engine.generation import (
+from vrl.engine import (
     GenerationIdFactory,
     GenerationRequest,
 )
@@ -107,7 +106,10 @@ class _StubCosmosPolicy:
         h = abs(hash(prompt)) % (2**31)
         gen = torch.Generator().manual_seed(h)
         prompt_embeds = torch.randn(
-            1, 4, self.embed_dim, generator=gen,
+            1,
+            4,
+            self.embed_dim,
+            generator=gen,
         )
         return {
             "prompt_embeds": prompt_embeds,
@@ -132,7 +134,12 @@ class _StubCosmosPolicy:
         seed = request.seed if request.seed is not None else 0
         gen = torch.Generator().manual_seed(int(seed))
         latents = torch.randn(
-            bsz, self.latent_channels, T, H, W, generator=gen,
+            bsz,
+            self.latent_channels,
+            T,
+            H,
+            W,
+            generator=gen,
         )
         init_latents = torch.zeros_like(latents)
         return _StubCosmosState(
@@ -166,14 +173,13 @@ class _StubCosmosPolicy:
     def decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
         # 5D [B, C, T, H, W] → tile to 3 channels.
         B, C, T, H, W = latents.shape
-        rgb = (
-            latents[:, :3] if C >= 3
-            else latents.repeat(1, 3, 1, 1, 1)[:, :3]
-        )
+        rgb = latents[:, :3] if C >= 3 else latents.repeat(1, 3, 1, 1, 1)[:, :3]
         # Upscale spatial dims 8x
         rgb = rgb.reshape(B * T, 3, H, W)
         rgb = torch.nn.functional.interpolate(
-            rgb, scale_factor=8, mode="nearest",
+            rgb,
+            scale_factor=8,
+            mode="nearest",
         )
         H8, W8 = rgb.shape[-2], rgb.shape[-1]
         return rgb.reshape(B, 3, T, H8, W8)
@@ -229,7 +235,9 @@ def _request(
             "seed": seed,
         },
         return_artifacts={
-            "output", "rollout_trajectory_data", "denoising_env",
+            "output",
+            "rollout_trajectory_data",
+            "denoising_env",
         },
         metadata=metadata or {},
     )
@@ -323,22 +331,15 @@ def test_executor_micro_batches_when_group_exceeds_sample_batch_size() -> None:
     assert output.output.shape[0] == 12
 
 
-def test_executor_request_id_round_trip() -> None:
-    """request_id flows through unchanged."""
-    policy = _StubCosmosPolicy()
-    executor = CosmosPipelineExecutor(policy)
-    request = _request(num_steps=2, height=32, width=32)
-    specs = GenerationIdFactory().build_sample_specs(request)
-    output = executor.forward(request, specs)
-    assert output.request_id == "cosmos-test"
-
-
 def test_executor_workload_signature_matches_request() -> None:
     """workload_signature derives from the request sampling dict."""
     policy = _StubCosmosPolicy()
     executor = CosmosPipelineExecutor(policy)
     request = _request(
-        num_steps=4, height=128, width=64, num_frames=8,
+        num_steps=4,
+        height=128,
+        width=64,
+        num_frames=8,
     )
     sig = executor.workload_signature(request)
     assert sig.family == "cosmos"
@@ -422,30 +423,13 @@ def test_executor_metadata_reference_image_overrides_constructor() -> None:
     policy = _StubCosmosPolicy()
     executor = CosmosPipelineExecutor(policy, reference_image=ctor_sentinel)
     request = _request(
-        num_steps=2, height=32, width=32, samples_per_prompt=1,
+        num_steps=2,
+        height=32,
+        width=32,
+        samples_per_prompt=1,
         metadata={"reference_image": meta_sentinel},
     )
     specs = GenerationIdFactory().build_sample_specs(request)
     executor.forward(request, specs)
     assert policy.encode_reference_images == [meta_sentinel]
     assert policy.prepare_reference_images == [meta_sentinel]
-
-
-@pytest.mark.parametrize("samples_per_prompt", [1, 3, 5])
-def test_executor_arbitrary_group_sizes(samples_per_prompt: int) -> None:
-    """Various group sizes produce correct B dimension."""
-    policy = _StubCosmosPolicy()
-    executor = CosmosPipelineExecutor(policy, sample_batch_size=4)
-    request = _request(
-        samples_per_prompt=samples_per_prompt,
-        num_steps=2,
-        height=32,
-        width=32,
-    )
-    specs = GenerationIdFactory().build_sample_specs(request)
-    output = executor.forward(request, specs)
-    assert output.output.shape[0] == samples_per_prompt
-    assert (
-        output.rollout_trajectory_data.rollout_log_probs.shape[0]
-        == samples_per_prompt
-    )

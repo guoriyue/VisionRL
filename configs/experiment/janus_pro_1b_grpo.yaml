@@ -3,6 +3,7 @@ defaults:
   - /base/algorithm/token_grpo
   - /base/actor
   - /base/rollout/ar_discrete
+  - /base/distributed/ray_rollout_single_gpu
   - /base/trainer
   - /model/janus_pro/1b
   - /sampling/janus_384_576tok

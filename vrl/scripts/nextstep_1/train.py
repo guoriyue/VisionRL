@@ -10,8 +10,8 @@ collector, and evaluator differ from ``vrl.scripts.janus_pro``. The
 
 Note: NextStep-1 is pre-smoke-test — see ``# TODO(nextstep-binding)``
 markers in ``vrl/models/families/nextstep_1/policy.py``,
-``vrl/models/families/nextstep_1/flow_step.py``, and
-``vrl/rollouts/collectors/nextstep_1.py``. The driver here is YAML-driven
+``vrl/models/families/nextstep_1/flow_step.py``, and the shared rollout
+collector factory. The driver here is YAML-driven
 scaffolding; binding work is tracked separately.
 """
 
@@ -20,21 +20,13 @@ from __future__ import annotations
 import csv
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from omegaconf import DictConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
 
-if TYPE_CHECKING:
-    from vrl.engine.generation import RolloutBackend
 
-
-async def train_nextstep_1_ocr_grpo(
-    cfg: DictConfig,
-    *,
-    rollout_runtime: RolloutBackend | None = None,
-) -> None:
+async def train_nextstep_1_ocr_grpo(cfg: DictConfig) -> None:
     """Run NextStep-1 OCR GRPO training driven by a merged YAML config."""
     import torch
 
@@ -42,14 +34,13 @@ async def train_nextstep_1_ocr_grpo(
     from vrl.config.loader import build_configs, require
     from vrl.models.families.nextstep_1 import NextStep1Config, NextStep1Policy
     from vrl.rewards.ocr import OCRReward
-    from vrl.rollouts.backend import build_rollout_backend_from_cfg
-    from vrl.rollouts.backend_config import RolloutBackendConfig
-    from vrl.rollouts.collectors import (
+    from vrl.rollouts.collector import (
         NextStep1CollectorConfig,
         build_rollout_collector,
     )
     from vrl.rollouts.evaluators.ar import ContinuousTokenLogProbEvaluator
-    from vrl.rollouts.runtime_inputs import build_rollout_runtime_inputs
+    from vrl.rollouts.runtime.backend import build_rollout_backend_from_cfg
+    from vrl.rollouts.runtime.launch_inputs import build_rollout_runtime_inputs
     from vrl.trainers.data import load_prompt_manifest
     from vrl.trainers.online import OnlineTrainer
     from vrl.trainers.weight_sync import build_runtime_weight_syncer
@@ -123,7 +114,6 @@ async def train_nextstep_1_ocr_grpo(
         reward_fn=reward,
         config=collector_config,
     )
-    rollout_backend_config = RolloutBackendConfig.from_cfg(cfg)
     rollout_runtime_inputs = build_rollout_runtime_inputs(
         cfg,
         "nextstep_1",
@@ -132,15 +122,9 @@ async def train_nextstep_1_ocr_grpo(
     collector.set_runtime(
         build_rollout_backend_from_cfg(
             cfg,
-            runtime=rollout_runtime,
-            local_runtime_builder=collector.build_runtime,
-            driver_policy=None if rollout_backend_config.backend == "ray" else model,
-            runtime_spec=(
-                rollout_runtime_inputs.runtime_spec if rollout_runtime_inputs is not None else None
-            ),
-            gatherer=(
-                rollout_runtime_inputs.gatherer if rollout_runtime_inputs is not None else None
-            ),
+            driver_policy=model,
+            runtime_spec=rollout_runtime_inputs.runtime_spec,
+            gatherer=rollout_runtime_inputs.gatherer,
         ),
     )
 

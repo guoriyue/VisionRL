@@ -1,8 +1,9 @@
-# Cosmos Predict2 2B Video2World + GRPO (single-GPU, diffusers backend)
+# Cosmos Predict2 2B Video2World + GRPO (single-GPU Ray rollout backend)
 defaults:
   - /base/algorithm/grpo
   - /base/actor
   - /base/rollout/diffusion
+  - /base/distributed/ray_rollout_single_gpu
   - /base/trainer
   - /model/cosmos/predict2_2b
   - /sampling/cosmos_v2w_704p_93f

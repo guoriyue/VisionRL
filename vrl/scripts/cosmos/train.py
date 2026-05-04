@@ -9,21 +9,14 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from omegaconf import DictConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
 
-if TYPE_CHECKING:
-    from vrl.engine.generation import RolloutBackend
 
-
-async def train_cosmos_predict2_grpo(
-    cfg: DictConfig,
-    *,
-    rollout_runtime: RolloutBackend | None = None,
-) -> None:
+async def train_cosmos_predict2_grpo(cfg: DictConfig) -> None:
     """Run Cosmos Predict2 GRPO training driven by a merged YAML config."""
     import os
 
@@ -34,14 +27,13 @@ async def train_cosmos_predict2_grpo(
     from vrl.algorithms.stat_tracking import PerPromptStatTracker
     from vrl.config.loader import build_configs, require
     from vrl.rewards.multi import MultiReward
-    from vrl.rollouts.backend import build_rollout_backend_from_cfg
-    from vrl.rollouts.backend_config import RolloutBackendConfig
-    from vrl.rollouts.collectors import (
+    from vrl.rollouts.collector import (
         CosmosPredict2CollectorConfig,
         build_rollout_collector,
     )
     from vrl.rollouts.evaluators.diffusion.flow_matching import FlowMatchingEvaluator
-    from vrl.rollouts.runtime_inputs import build_rollout_runtime_inputs
+    from vrl.rollouts.runtime.backend import build_rollout_backend_from_cfg
+    from vrl.rollouts.runtime.launch_inputs import build_rollout_runtime_inputs
     from vrl.trainers.online import OnlineTrainer
     from vrl.trainers.weight_sync import build_runtime_weight_syncer
 
@@ -125,7 +117,6 @@ async def train_cosmos_predict2_grpo(
         config=collector_config,
         reference_image=reference_image,
     )
-    rollout_backend_config = RolloutBackendConfig.from_cfg(cfg)
     rollout_runtime_inputs = build_rollout_runtime_inputs(
         cfg,
         "cosmos",
@@ -135,15 +126,9 @@ async def train_cosmos_predict2_grpo(
     collector.set_runtime(
         build_rollout_backend_from_cfg(
             cfg,
-            runtime=rollout_runtime,
-            local_runtime_builder=collector.build_runtime,
-            driver_bundle=None if rollout_backend_config.backend == "ray" else bundle,
-            runtime_spec=(
-                rollout_runtime_inputs.runtime_spec if rollout_runtime_inputs is not None else None
-            ),
-            gatherer=(
-                rollout_runtime_inputs.gatherer if rollout_runtime_inputs is not None else None
-            ),
+            driver_bundle=bundle,
+            runtime_spec=rollout_runtime_inputs.runtime_spec,
+            gatherer=rollout_runtime_inputs.gatherer,
         ),
     )
 

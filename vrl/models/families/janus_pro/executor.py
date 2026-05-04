@@ -1,7 +1,7 @@
 """Janus-Pro AR text-to-image pipeline executor.
 
 Owns the autoregressive image-token sampling + VQ decode previously
-inlined in :mod:`vrl.rollouts.collectors.janus_pro`. The collector keeps
+inlined in the Janus-Pro rollout collector. The collector keeps
 reward scoring and ``RolloutBatch`` packing.
 
 Boundary:
@@ -40,7 +40,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from vrl.engine.generation.ar import (
+from vrl.engine.ar import (
     ActiveSequence,
     ARGenerationSpec,
     ARPipelineExecutorBase,
@@ -48,15 +48,15 @@ from vrl.engine.generation.ar import (
     max_peak_memory_mb,
     ordered_chunks,
 )
-from vrl.engine.generation.microbatching import MicroBatchPlan
-from vrl.engine.generation.protocols import PipelineChunkResult
-from vrl.engine.generation.types import (
+from vrl.engine.core.protocols import PipelineChunkResult
+from vrl.engine.core.types import (
     GenerationMetrics,
     GenerationRequest,
     GenerationSampleSpec,
     OutputBatch,
     WorkloadSignature,
 )
+from vrl.engine.microbatching import MicroBatchPlan
 
 logger = logging.getLogger(__name__)
 

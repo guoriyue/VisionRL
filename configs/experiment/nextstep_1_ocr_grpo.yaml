@@ -3,6 +3,7 @@ defaults:
   - /base/algorithm/token_grpo
   - /base/actor
   - /base/rollout/ar_continuous
+  - /base/distributed/ray_rollout_single_gpu
   - /base/trainer
   - /model/nextstep_1/1_1
   - /sampling/nextstep_256_1024tok

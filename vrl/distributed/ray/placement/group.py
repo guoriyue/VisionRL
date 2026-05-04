@@ -8,7 +8,7 @@ from typing import Any
 
 from vrl.distributed.ray.dependencies import require_ray
 from vrl.distributed.ray.placement.network import sort_node_gpu_key
-from vrl.rollouts.backend_config import RolloutBackendConfig
+from vrl.rollouts.runtime.config import RolloutBackendConfig
 
 logger = logging.getLogger(__name__)
 

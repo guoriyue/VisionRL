@@ -15,9 +15,9 @@ from vrl.distributed.ray.rollout.runtime import RayDistributedRuntime
 from vrl.distributed.ray.rollout.types import RayWorkerHandle
 from vrl.distributed.ray.rollout.weight_sync import RayRolloutWeightSync
 from vrl.distributed.ray.rollout.worker import RayRolloutWorker
-from vrl.engine.generation.gather import ChunkGatherer, require_chunk_gatherer
-from vrl.engine.generation.runtime_spec import GenerationRuntimeSpec
-from vrl.rollouts.backend_config import RolloutBackendConfig
+from vrl.engine.core.runtime_spec import GenerationRuntimeSpec
+from vrl.engine.gather import ChunkGatherer, require_chunk_gatherer
+from vrl.rollouts.runtime.config import RolloutBackendConfig
 
 
 @dataclass(slots=True)

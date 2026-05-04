@@ -8,12 +8,15 @@ import pytest
 import torch
 
 from vrl.config.loader import load_config
-from vrl.engine.generation import ChunkedFamilyPipelineExecutor
-from vrl.engine.generation.gather import DiffusionChunkGatherer
+from vrl.engine import ChunkedFamilyPipelineExecutor
+from vrl.engine.gather import DiffusionChunkGatherer
 from vrl.models.families.janus_pro.executor import JanusProChunkGatherer
 from vrl.models.families.nextstep_1.executor import NextStep1ChunkGatherer
-from vrl.rollouts.family_registry import get_rollout_family_entry
-from vrl.rollouts.runtime_inputs import build_rollout_runtime_inputs
+from vrl.rollouts.families.specs import get_rollout_family_entry
+from vrl.rollouts.runtime.launch_inputs import (
+    RolloutRuntimeInputs,
+    build_rollout_runtime_inputs,
+)
 
 
 @pytest.mark.parametrize(
@@ -50,7 +53,7 @@ def test_rollout_runtime_inputs_are_serializable_and_registry_backed(
         executor_kwargs={"sample_batch_size": 2},
     )
 
-    assert inputs is not None
+    assert isinstance(inputs, RolloutRuntimeInputs)
     assert pickle.loads(pickle.dumps(inputs.runtime_spec)) == inputs.runtime_spec
     assert inputs.runtime_spec.family == family
     assert inputs.runtime_spec.task == expected_task
@@ -60,19 +63,6 @@ def test_rollout_runtime_inputs_are_serializable_and_registry_backed(
     assert inputs.runtime_spec.executor_kwargs == {"sample_batch_size": 2}
     assert isinstance(inputs.gatherer, expected_gatherer)
     assert not isinstance(inputs.gatherer, ChunkedFamilyPipelineExecutor)
-
-
-def test_rollout_runtime_inputs_return_none_for_local_backend() -> None:
-    cfg = load_config("experiment/sd3_5_ocr_grpo")
-
-    assert (
-        build_rollout_runtime_inputs(
-            cfg,
-            "sd3_5",
-            weight_dtype=torch.bfloat16,
-        )
-        is None
-    )
 
 
 def test_diffusion_runtime_spec_uses_worker_primitive_device_and_dtype() -> None:
@@ -91,7 +81,7 @@ def test_diffusion_runtime_spec_uses_worker_primitive_device_and_dtype() -> None
         weight_dtype=torch.float16,
     )
 
-    assert inputs is not None
+    assert isinstance(inputs, RolloutRuntimeInputs)
     assert inputs.runtime_spec.build_spec is not None
     assert inputs.runtime_spec.build_spec["device"] == "cuda"
     assert inputs.runtime_spec.build_spec["dtype"] == "float16"
@@ -114,7 +104,7 @@ def test_cosmos_runtime_inputs_include_reference_image_from_cfg() -> None:
         weight_dtype=torch.bfloat16,
     )
 
-    assert inputs is not None
+    assert isinstance(inputs, RolloutRuntimeInputs)
     assert inputs.runtime_spec.family == "cosmos"
     assert inputs.runtime_spec.executor_kwargs["reference_image"] == "/tmp/reference.png"
     assert inputs.runtime_spec.build_spec is not None
@@ -139,5 +129,5 @@ def test_explicit_executor_kwargs_override_registry_defaults() -> None:
         executor_kwargs={"sample_batch_size": 3},
     )
 
-    assert inputs is not None
+    assert isinstance(inputs, RolloutRuntimeInputs)
     assert inputs.runtime_spec.executor_kwargs == {"sample_batch_size": 3}

@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from vrl.engine.generation.microbatching import MicroBatchPlan
-from vrl.engine.generation.protocols import PipelineChunkResult
+from vrl.engine.core.protocols import PipelineChunkResult
+from vrl.engine.microbatching import MicroBatchPlan
 
 
 @dataclass(frozen=True, slots=True)

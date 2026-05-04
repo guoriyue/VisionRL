@@ -9,10 +9,10 @@ from typing import Any
 from vrl.distributed.ray.dependencies import require_ray
 from vrl.distributed.ray.rollout.planner import DistributedExecutionPlanner
 from vrl.distributed.ray.rollout.types import RayChunkResult, RayWorkerHandle
-from vrl.engine.generation.gather import ChunkGatherer, gather_pipeline_chunks
-from vrl.engine.generation.protocols import PipelineChunkResult
-from vrl.engine.generation.types import GenerationRequest, OutputBatch
-from vrl.engine.generation.worker import GenerationIdFactory
+from vrl.engine.core.protocols import PipelineChunkResult
+from vrl.engine.core.types import GenerationRequest, OutputBatch
+from vrl.engine.core.worker import GenerationIdFactory
+from vrl.engine.gather import ChunkGatherer, gather_pipeline_chunks
 
 
 class DistributedRolloutExecutor:

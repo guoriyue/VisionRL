@@ -5,11 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from vrl.distributed.ray.rollout.types import RayWorkerHandle
-from vrl.engine.generation.microbatching import (
+from vrl.engine.core.types import GenerationRequest
+from vrl.engine.microbatching import (
     MicroBatchPlan,
     plan_prompt_group_microbatches,
 )
-from vrl.engine.generation.types import GenerationRequest
 
 
 @dataclass(frozen=True, slots=True)

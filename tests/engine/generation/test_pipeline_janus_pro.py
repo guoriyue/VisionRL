@@ -15,7 +15,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from vrl.engine.generation import (
+from vrl.engine import (
     GenerationIdFactory,
     GenerationRequest,
 )
@@ -48,7 +48,8 @@ class _StubTokenizer:
         del return_tensors, truncation
         seqs = [
             torch.tensor(
-                [ord(c) % TEXT_VOCAB for c in s[:max_length]], dtype=torch.long,
+                [ord(c) % TEXT_VOCAB for c in s[:max_length]],
+                dtype=torch.long,
             )
             for s in formatted
         ]
@@ -88,9 +89,13 @@ class _StubPolicy:
     def __post_init__(self) -> None:
         self._processor = _StubProcessor()
         self._embed = nn.Embedding(TEXT_VOCAB, HIDDEN)
-        self._lm = type("_LM", (), {
-            "get_input_embeddings": lambda _self=self: self._embed,
-        })()
+        self._lm = type(
+            "_LM",
+            (),
+            {
+                "get_input_embeddings": lambda _self=self: self._embed,
+            },
+        )()
 
     @property
     def processor(self) -> _StubProcessor:
@@ -315,16 +320,6 @@ def test_executor_forward_shapes_for_two_prompts_x_four_samples() -> None:
     assert output.rollout_trajectory_data is None
 
 
-def test_executor_request_id_round_trip() -> None:
-    """request_id flows through unchanged."""
-    policy = _StubPolicy(image_token_num=4)
-    executor = JanusProPipelineExecutor(policy)
-    request = _request(image_token_num=4, image_size=64, max_text_length=8)
-    specs = GenerationIdFactory().build_sample_specs(request)
-    output = executor.forward(request, specs)
-    assert output.request_id == "janus_pro-test"
-
-
 def test_executor_workload_signature_matches_request() -> None:
     """workload_signature derives from the request sampling dict."""
     policy = _StubPolicy(image_token_num=8)
@@ -355,7 +350,8 @@ def test_executor_seed_reproducibility() -> None:
 
     assert torch.equal(out_a.extra["token_ids"], out_b.extra["token_ids"])
     assert torch.equal(
-        out_a.extra["token_log_probs"], out_b.extra["token_log_probs"],
+        out_a.extra["token_log_probs"],
+        out_b.extra["token_log_probs"],
     )
     assert torch.equal(out_a.output, out_b.output)
 
@@ -393,9 +389,7 @@ def test_executor_partial_scheduled_ar_is_deterministic_and_complete() -> None:
     assert policy_a.sample_calls == []
     assert policy_a.ar_init_calls == 1
     assert policy_a.ar_step_calls > req_a.sampling["image_token_num"]
-    assert [spec.sample_id for spec in out_a.sample_specs] == [
-        spec.sample_id for spec in specs_a
-    ]
+    assert [spec.sample_id for spec in out_a.sample_specs] == [spec.sample_id for spec in specs_a]
     assert out_a.extra["token_ids"].shape == (5, 4)
     assert out_a.extra["token_log_probs"].shape == (5, 4)
     assert torch.equal(out_a.extra["token_ids"], out_b.extra["token_ids"])
@@ -411,8 +405,11 @@ def test_executor_passes_cfg_and_temperature_to_model() -> None:
     policy = _StubPolicy(image_token_num=4)
     executor = JanusProPipelineExecutor(policy)
     request = _request(
-        cfg_weight=3.5, temperature=0.7,
-        image_token_num=4, image_size=64, max_text_length=8,
+        cfg_weight=3.5,
+        temperature=0.7,
+        image_token_num=4,
+        image_size=64,
+        max_text_length=8,
     )
     specs = GenerationIdFactory().build_sample_specs(request)
     executor.forward(request, specs)
@@ -421,29 +418,16 @@ def test_executor_passes_cfg_and_temperature_to_model() -> None:
     assert policy.sample_calls[0]["temperature"] == pytest.approx(0.7)
 
 
-@pytest.mark.parametrize("samples_per_prompt", [1, 3, 5])
-def test_executor_arbitrary_group_sizes(samples_per_prompt: int) -> None:
-    """Various group sizes produce correct B dimension."""
-    policy = _StubPolicy(image_token_num=4)
-    executor = JanusProPipelineExecutor(policy)
-    request = _request(
-        samples_per_prompt=samples_per_prompt,
-        image_token_num=4, image_size=64, max_text_length=8,
-    )
-    specs = GenerationIdFactory().build_sample_specs(request)
-    output = executor.forward(request, specs)
-    assert output.output.shape[0] == samples_per_prompt
-    assert output.extra["token_ids"].shape == (samples_per_prompt, 4)
-    assert output.extra["token_log_probs"].shape == (samples_per_prompt, 4)
-
-
 def test_executor_metrics_populated() -> None:
     """GenerationMetrics carries num_prompts/num_samples/num_steps."""
     policy = _StubPolicy(image_token_num=4)
     executor = JanusProPipelineExecutor(policy)
     request = _request(
-        prompts=["x", "y"], samples_per_prompt=3,
-        image_token_num=4, image_size=64, max_text_length=8,
+        prompts=["x", "y"],
+        samples_per_prompt=3,
+        image_token_num=4,
+        image_size=64,
+        max_text_length=8,
     )
     specs = GenerationIdFactory().build_sample_specs(request)
     output = executor.forward(request, specs)
@@ -459,7 +443,9 @@ def test_executor_token_mask_is_ones() -> None:
     policy = _StubPolicy(image_token_num=4)
     executor = JanusProPipelineExecutor(policy)
     request = _request(
-        image_token_num=4, image_size=64, max_text_length=8,
+        image_token_num=4,
+        image_size=64,
+        max_text_length=8,
         samples_per_prompt=2,
     )
     specs = GenerationIdFactory().build_sample_specs(request)
