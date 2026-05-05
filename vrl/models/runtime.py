@@ -43,8 +43,13 @@ class RuntimeBundle:
     ``backend_handle`` carries the raw backend object (e.g. diffusers pipeline
     or AR upstream wrapper) and must be treated as builder-internal — scripts
     and trainers must not reach into it. Use ``policy`` as both the rollout
-    adapter and the trainer-facing model. ``trainable_modules`` exposes named
-    trainable submodules for resource checks and state export.
+    adapter and the trainer-facing model.
+
+    ``trainable_modules`` is the training-checkpoint contract. Every module
+    registered here must expose PyTorch-compatible ``state_dict`` and
+    ``load_state_dict`` methods. Generic trainer checkpointing saves and
+    restores only these modules, so family builders must include every
+    trainable adapter/backbone needed for exact resume.
     """
 
     policy: Any

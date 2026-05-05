@@ -21,7 +21,21 @@ import csv
 import logging
 from pathlib import Path
 
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
+
+from vrl.models.runtime import RuntimeBundle
+from vrl.trainers.checkpointing import (
+    LORA_WEIGHTS_NAME,
+    capture_rng_state,
+    load_training_checkpoint_from_config,
+    prepare_metrics_csv,
+    prepare_model_config_for_training_resume,
+    restore_rng_state,
+    restore_training_checkpoint,
+    sample_prompt_indices,
+    save_resolved_config,
+    save_training_checkpoint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +61,12 @@ async def train_nextstep_1_ocr_grpo(cfg: DictConfig) -> None:
 
     built = build_configs(cfg)
     trainer_config = built["trainer"]
+    resume_checkpoint = load_training_checkpoint_from_config(cfg)
+    prepare_model_config_for_training_resume(
+        cfg,
+        resume_checkpoint,
+        strict=trainer_config.resume_strict,
+    )
 
     # ------------------------------------------------------------------
     # 1. Build NextStep-1 policy from cfg.model + cfg.sampling slices.
@@ -81,6 +101,14 @@ async def train_nextstep_1_ocr_grpo(cfg: DictConfig) -> None:
         )
     )
     logger.info("Trainable params: %.2f M", model.trainable_param_count() / 1e6)
+    bundle = RuntimeBundle(
+        policy=model,
+        trainable_modules={"policy": model},
+        scheduler=None,
+        backend_kind="nextstep_1",
+        backend_handle=model,
+        metadata={"family": "nextstep_1"},
+    )
 
     # ------------------------------------------------------------------
     # 2. Reward — OCR only for this recipe (Phase 4 will generalise).
@@ -146,10 +174,27 @@ async def train_nextstep_1_ocr_grpo(cfg: DictConfig) -> None:
         collector=collector,
         evaluator=evaluator,
         model=model,
-        weight_syncer=build_runtime_weight_syncer(collector.runtime),
+        weight_syncer=build_runtime_weight_syncer(
+            collector.runtime,
+            initial_policy_version=resume_checkpoint.next_step
+            if resume_checkpoint is not None
+            else None,
+        ),
         config=trainer_config,
         device=model.device,
     )
+    if resume_checkpoint is not None:
+        restore_training_checkpoint(
+            resume_checkpoint,
+            trainer=trainer,
+            bundle=bundle,
+            strict=trainer_config.resume_strict,
+        )
+        logger.info(
+            "Resuming from %s, start_step=%d",
+            resume_checkpoint.checkpoint_dir,
+            resume_checkpoint.next_epoch,
+        )
 
     # ------------------------------------------------------------------
     # 4. Prompts + loop.
@@ -166,29 +211,35 @@ async def train_nextstep_1_ocr_grpo(cfg: DictConfig) -> None:
 
     output_dir = Path(trainer_config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    OmegaConf.save(cfg, output_dir / "resolved_config.yaml")
+    save_resolved_config(cfg, output_dir, resumed=resume_checkpoint is not None)
 
     rollout_batch_size = int(require(cfg, "rollout.rollout_batch_size"))
     rng = torch.Generator().manual_seed(trainer_config.seed)
+    if resume_checkpoint is not None:
+        restore_rng_state(resume_checkpoint.rng_state, prompt_generator=rng)
 
     csv_path = output_dir / "metrics.csv"
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                "step",
-                "loss",
-                "reward_mean",
-                "reward_std",
-                "approx_kl",
-                "clip_fraction",
-                "target_text",
-                "prompt",
-            ]
+    prepare_metrics_csv(
+        csv_path,
+        "step,loss,reward_mean,reward_std,approx_kl,clip_fraction,target_text,prompt\n",
+        resume=resume_checkpoint is not None,
+    )
+
+    start_step = resume_checkpoint.next_epoch if resume_checkpoint is not None else 0
+    if start_step > trainer_config.total_epochs:
+        raise ValueError(
+            "resume checkpoint starts after configured total_epochs: "
+            f"start_step={start_step}, total_epochs={trainer_config.total_epochs}",
         )
 
-        for step in range(1, trainer_config.total_epochs + 1):
-            idx = torch.randperm(len(examples), generator=rng)[:rollout_batch_size].tolist()
+    with csv_path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        for step in range(start_step + 1, trainer_config.total_epochs + 1):
+            idx = sample_prompt_indices(
+                rng,
+                num_examples=len(examples),
+                rollout_batch_size=rollout_batch_size,
+            )
             batch_examples = [examples[i] for i in idx]
 
             metrics = await trainer.step(batch_examples)
@@ -220,9 +271,36 @@ async def train_nextstep_1_ocr_grpo(cfg: DictConfig) -> None:
 
             if trainer_config.save_freq > 0 and step % trainer_config.save_freq == 0:
                 ckpt = output_dir / f"checkpoint-{step}"
-                ckpt.mkdir(parents=True, exist_ok=True)
-                if use_lora:
-                    model.language_model.save_pretrained(ckpt / "lora_weights")
+                save_training_checkpoint(
+                    ckpt,
+                    trainer=trainer,
+                    bundle=bundle,
+                    family="nextstep_1",
+                    progress={
+                        "completed_epoch": step,
+                        "next_epoch": step,
+                        "global_step": trainer.state.global_step,
+                    },
+                    rng_state=capture_rng_state(prompt_generator=rng),
+                    export_modules={LORA_WEIGHTS_NAME: model.language_model}
+                    if use_lora
+                    else None,
+                )
                 logger.info("Saved checkpoint at step %d -> %s", step, ckpt)
 
+    final_path = output_dir / "checkpoint-final"
+    save_training_checkpoint(
+        final_path,
+        trainer=trainer,
+        bundle=bundle,
+        family="nextstep_1",
+        progress={
+            "completed_epoch": trainer_config.total_epochs,
+            "next_epoch": trainer_config.total_epochs,
+            "global_step": trainer.state.global_step,
+        },
+        rng_state=capture_rng_state(prompt_generator=rng),
+        export_modules={LORA_WEIGHTS_NAME: model.language_model} if use_lora else None,
+    )
+    logger.info("Final checkpoint: %s", final_path)
     logger.info("Training complete -- metrics at %s", csv_path)

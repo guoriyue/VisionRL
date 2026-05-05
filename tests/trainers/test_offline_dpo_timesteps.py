@@ -154,3 +154,30 @@ def test_wan_forward_still_accepts_raw_transformer() -> None:
 
     assert torch.equal(out, noisy * transformer.weight + encoder_hidden_states)
     assert len(transformer.calls) == 1
+
+
+def test_offline_dpo_state_dict_restores_optimizer_and_global_step() -> None:
+    source = _make_trainer(torch.arange(20))
+    source.global_step = 7
+    loss = source.model(torch.ones(1, 4)).sum()
+    loss.backward()
+    source._optimizer.step()
+    source._optimizer.zero_grad()
+    state = source.state_dict()
+
+    restored = _make_trainer(torch.arange(20))
+    restored.load_state_dict(state, strict=True)
+
+    assert restored.global_step == 7
+    assert _adam_exp_avg_values(restored._optimizer) == pytest.approx(
+        _adam_exp_avg_values(source._optimizer),
+    )
+
+
+def _adam_exp_avg_values(optimizer) -> list[float]:
+    values: list[float] = []
+    for slot in optimizer.state.values():
+        exp_avg = slot.get("exp_avg")
+        if exp_avg is not None:
+            values.extend(float(v) for v in exp_avg.reshape(-1).detach().cpu().tolist())
+    return values

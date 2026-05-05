@@ -393,3 +393,27 @@ class OfflineDPOTrainer:
             "no ref_model and policy has no ``disable_adapter`` — "
             "cannot compute reference prediction"
         )
+
+    def state_dict(self) -> dict[str, Any]:
+        """Return resumable trainer state."""
+
+        return {
+            "global_step": self.global_step,
+            "optimizer": self._optimizer.state_dict(),
+        }
+
+    def load_state_dict(self, state: dict[str, Any], *, strict: bool = True) -> None:
+        """Restore resumable trainer state."""
+
+        if not isinstance(state, dict):
+            raise TypeError("OfflineDPOTrainer.load_state_dict expects a dict")
+        self.global_step = int(state.get("global_step", state.get("step", 0)))
+        if "optimizer" in state:
+            try:
+                self._optimizer.load_state_dict(state["optimizer"])
+            except Exception:
+                if strict:
+                    raise
+                logger.warning("Skipping incompatible optimizer state during non-strict load")
+        elif strict:
+            raise ValueError("checkpoint missing optimizer state")

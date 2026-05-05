@@ -14,7 +14,19 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
+
+from vrl.trainers.checkpointing import (
+    LORA_WEIGHTS_NAME,
+    capture_rng_state,
+    load_training_checkpoint_from_config,
+    prepare_metrics_csv,
+    prepare_model_config_for_training_resume,
+    restore_rng_state,
+    restore_training_checkpoint,
+    save_resolved_config,
+    save_training_checkpoint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +116,13 @@ def train_wan_2_1_dpo(cfg: DictConfig) -> None:
         )
 
     mixed_precision = str(require(cfg, "actor.mixed_precision"))
+    resume_checkpoint = load_training_checkpoint_from_config(cfg)
+    prepare_model_config_for_training_resume(
+        cfg,
+        resume_checkpoint,
+        strict=bool(require(cfg, "trainer.resume_strict")),
+    )
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     weight_dtype = torch.bfloat16 if mixed_precision == "bf16" else torch.float16
 
@@ -183,18 +202,32 @@ def train_wan_2_1_dpo(cfg: DictConfig) -> None:
         config=trainer_cfg,
         device=device,
     )
+    if resume_checkpoint is not None:
+        restore_training_checkpoint(
+            resume_checkpoint,
+            trainer=trainer,
+            bundle=bundle,
+            strict=bool(require(cfg, "trainer.resume_strict")),
+        )
+        logger.info(
+            "Resuming from %s, start_step=%d",
+            resume_checkpoint.checkpoint_dir,
+            resume_checkpoint.next_step,
+        )
+        restore_rng_state(resume_checkpoint.rng_state)
 
     # 5. Output dir + CSV log + resolved config snapshot
     out_dir = Path(str(trainer_cfg_yaml.output_dir))
     out_dir.mkdir(parents=True, exist_ok=True)
-    OmegaConf.save(cfg, out_dir / "resolved_config.yaml")
+    save_resolved_config(cfg, out_dir, resumed=resume_checkpoint is not None)
 
     csv_path = out_dir / "metrics.csv"
-    if not csv_path.exists():
-        csv_path.write_text(
-            "step,loss,raw_model_loss,raw_ref_loss,model_diff,ref_diff,"
-            "implicit_acc,sft_loss,grad_norm\n"
-        )
+    prepare_metrics_csv(
+        csv_path,
+        "step,loss,raw_model_loss,raw_ref_loss,model_diff,ref_diff,"
+        "implicit_acc,sft_loss,grad_norm\n",
+        resume=resume_checkpoint is not None,
+    )
 
     # 6. Training loop
     max_train_steps = int(require(cfg, "trainer.max_train_steps"))
@@ -206,7 +239,12 @@ def train_wan_2_1_dpo(cfg: DictConfig) -> None:
         max_train_steps, trainer_cfg.beta, lr, num_frames,
     )
 
-    step = 0
+    step = resume_checkpoint.next_step if resume_checkpoint is not None else 0
+    if step > max_train_steps:
+        raise ValueError(
+            "resume checkpoint starts after configured max_train_steps: "
+            f"start_step={step}, max_train_steps={max_train_steps}",
+        )
     data_iter = iter(dataloader)
     while step < max_train_steps:
         try:
@@ -233,11 +271,40 @@ def train_wan_2_1_dpo(cfg: DictConfig) -> None:
 
         if checkpointing_steps > 0 and (step + 1) % checkpointing_steps == 0:
             ckpt = out_dir / f"checkpoint-{step+1}"
-            ckpt.mkdir(parents=True, exist_ok=True)
-            if hasattr(transformer, "save_pretrained"):
-                transformer.save_pretrained(ckpt / "lora_weights")
+            save_training_checkpoint(
+                ckpt,
+                trainer=trainer,
+                bundle=bundle,
+                family="wan_2_1",
+                progress={
+                    "completed_step": step + 1,
+                    "next_step": step + 1,
+                    "global_step": trainer.global_step,
+                },
+                rng_state=capture_rng_state(),
+                export_modules={LORA_WEIGHTS_NAME: transformer}
+                if bool(require(cfg, "model.use_lora")) and hasattr(transformer, "save_pretrained")
+                else None,
+            )
             logger.info("Saved checkpoint -> %s", ckpt)
 
         step += 1
 
+    final_path = out_dir / "checkpoint-final"
+    save_training_checkpoint(
+        final_path,
+        trainer=trainer,
+        bundle=bundle,
+        family="wan_2_1",
+        progress={
+            "completed_step": max_train_steps,
+            "next_step": max_train_steps,
+            "global_step": trainer.global_step,
+        },
+        rng_state=capture_rng_state(),
+        export_modules={LORA_WEIGHTS_NAME: transformer}
+        if bool(require(cfg, "model.use_lora")) and hasattr(transformer, "save_pretrained")
+        else None,
+    )
+    logger.info("Final checkpoint -> %s", final_path)
     logger.info("DPO training complete.")

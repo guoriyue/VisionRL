@@ -26,7 +26,21 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
+
+from vrl.models.runtime import RuntimeBundle
+from vrl.trainers.checkpointing import (
+    LORA_WEIGHTS_NAME,
+    capture_rng_state,
+    load_training_checkpoint_from_config,
+    prepare_metrics_csv,
+    prepare_model_config_for_training_resume,
+    restore_rng_state,
+    restore_training_checkpoint,
+    sample_prompt_indices,
+    save_resolved_config,
+    save_training_checkpoint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +98,13 @@ async def _train_janus_pro(
     trainer_config.n = int(cfg.rollout.n_samples_per_prompt)
     trainer_config.rollout_batch_size = int(cfg.rollout.rollout_batch_size)
 
+    resume_checkpoint = load_training_checkpoint_from_config(cfg)
+    prepare_model_config_for_training_resume(
+        cfg,
+        resume_checkpoint,
+        strict=trainer_config.resume_strict,
+    )
+
     torch.manual_seed(trainer_config.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -108,6 +129,14 @@ async def _train_janus_pro(
         )
     )
     logger.info("Trainable params: %.2f M", policy.trainable_param_count() / 1e6)
+    bundle = RuntimeBundle(
+        policy=policy,
+        trainable_modules={"policy": policy},
+        scheduler=None,
+        backend_kind="janus_pro",
+        backend_handle=policy,
+        metadata={"family": "janus_pro"},
+    )
 
     # 2. Reward ----------------------------------------------------------
     reward_weights, reward_kwargs = built["reward"]
@@ -170,11 +199,28 @@ async def _train_janus_pro(
         collector=collector,
         evaluator=evaluator,
         model=policy,
-        weight_syncer=build_runtime_weight_syncer(collector.runtime),
+        weight_syncer=build_runtime_weight_syncer(
+            collector.runtime,
+            initial_policy_version=resume_checkpoint.next_step
+            if resume_checkpoint is not None
+            else None,
+        ),
         config=trainer_config,
         device=policy.device,
         stat_tracker=stat_tracker,
     )
+    if resume_checkpoint is not None:
+        restore_training_checkpoint(
+            resume_checkpoint,
+            trainer=trainer,
+            bundle=bundle,
+            strict=trainer_config.resume_strict,
+        )
+        logger.info(
+            "Resuming from %s, start_epoch=%d",
+            resume_checkpoint.checkpoint_dir,
+            resume_checkpoint.next_epoch,
+        )
 
     # 4. Prompts ---------------------------------------------------------
     manifest_path = Path(cfg.data.manifest)
@@ -191,37 +237,49 @@ async def _train_janus_pro(
 
     output_dir = Path(trainer_config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    OmegaConf.save(cfg, output_dir / "resolved_config.yaml")
+    save_resolved_config(cfg, output_dir, resumed=resume_checkpoint is not None)
 
     csv_path = output_dir / "metrics.csv"
     component_names = list(reward_weights.keys())
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                "epoch",
-                "loss",
-                "policy_loss",
-                "kl_penalty",
-                "reward_mean",
-                "reward_std",
-                "approx_kl",
-                "clip_fraction",
-                "advantage_mean",
-                "grad_norm",
-                "adv_saturation",
-                "adv_zero_rate",
-                "group_size",
-                "trained_prompt_num",
-            ]
-            + [f"r_{n}" for n in component_names]
-        )
+    header = ",".join(
+        [
+            "epoch",
+            "loss",
+            "policy_loss",
+            "kl_penalty",
+            "reward_mean",
+            "reward_std",
+            "approx_kl",
+            "clip_fraction",
+            "advantage_mean",
+            "grad_norm",
+            "adv_saturation",
+            "adv_zero_rate",
+            "group_size",
+            "trained_prompt_num",
+            *(f"r_{n}" for n in component_names),
+        ],
+    )
+    prepare_metrics_csv(csv_path, header + "\n", resume=resume_checkpoint is not None)
 
-        rng = torch.Generator().manual_seed(trainer_config.seed)
-        for epoch in range(trainer_config.total_epochs):
-            idx = torch.randperm(len(examples), generator=rng)[
-                : trainer_config.rollout_batch_size
-            ].tolist()
+    rng = torch.Generator().manual_seed(trainer_config.seed)
+    start_epoch = resume_checkpoint.next_epoch if resume_checkpoint is not None else 0
+    if start_epoch > trainer_config.total_epochs:
+        raise ValueError(
+            "resume checkpoint starts after configured total_epochs: "
+            f"start_epoch={start_epoch}, total_epochs={trainer_config.total_epochs}",
+        )
+    if resume_checkpoint is not None:
+        restore_rng_state(resume_checkpoint.rng_state, prompt_generator=rng)
+
+    with csv_path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        for epoch in range(start_epoch, trainer_config.total_epochs):
+            idx = sample_prompt_indices(
+                rng,
+                num_examples=len(examples),
+                rollout_batch_size=trainer_config.rollout_batch_size,
+            )
             example_batch = [examples[i] for i in idx]
             reward_fn.reset_components()
             metrics = await trainer.step(example_batch)
@@ -270,15 +328,35 @@ async def _train_janus_pro(
 
             if trainer_config.save_freq > 0 and (epoch + 1) % trainer_config.save_freq == 0:
                 ckpt_path = output_dir / f"checkpoint-{epoch + 1}"
-                ckpt_path.mkdir(parents=True, exist_ok=True)
-                if use_lora:
-                    policy.language_model.save_pretrained(ckpt_path / "lora_weights")
-                torch.save(trainer.state_dict(), ckpt_path / "trainer_state.pt")
+                save_training_checkpoint(
+                    ckpt_path,
+                    trainer=trainer,
+                    bundle=bundle,
+                    family="janus_pro",
+                    progress={
+                        "completed_epoch": epoch + 1,
+                        "next_epoch": epoch + 1,
+                        "global_step": trainer.state.global_step,
+                    },
+                    rng_state=capture_rng_state(prompt_generator=rng),
+                    export_modules={LORA_WEIGHTS_NAME: policy.language_model}
+                    if use_lora
+                    else None,
+                )
                 logger.info("Saved checkpoint to %s", ckpt_path)
 
     final_path = output_dir / "checkpoint-final"
-    final_path.mkdir(parents=True, exist_ok=True)
-    torch.save(trainer.state_dict(), final_path / "trainer_state.pt")
-    if use_lora:
-        policy.language_model.save_pretrained(final_path / "lora_weights")
+    save_training_checkpoint(
+        final_path,
+        trainer=trainer,
+        bundle=bundle,
+        family="janus_pro",
+        progress={
+            "completed_epoch": trainer_config.total_epochs,
+            "next_epoch": trainer_config.total_epochs,
+            "global_step": trainer.state.global_step,
+        },
+        rng_state=capture_rng_state(prompt_generator=rng),
+        export_modules={LORA_WEIGHTS_NAME: policy.language_model} if use_lora else None,
+    )
     logger.info("Training complete. Final checkpoint: %s", final_path)

@@ -10,7 +10,20 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
+
+from vrl.trainers.checkpointing import (
+    LORA_WEIGHTS_NAME,
+    capture_rng_state,
+    load_training_checkpoint_from_config,
+    prepare_metrics_csv,
+    prepare_model_config_for_training_resume,
+    restore_rng_state,
+    restore_training_checkpoint,
+    sample_prompt_indices,
+    save_resolved_config,
+    save_training_checkpoint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +60,13 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
 
     if trainer_config.profile:
         os.environ["VRL_PROFILE_COLLECT"] = "1"
+
+    resume_checkpoint = load_training_checkpoint_from_config(cfg)
+    prepare_model_config_for_training_resume(
+        cfg,
+        resume_checkpoint,
+        strict=trainer_config.resume_strict,
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     weight_dtype = torch.bfloat16 if trainer_config.bf16 else torch.float16
@@ -131,11 +151,28 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
         evaluator=evaluator,
         model=wan_model,
         ref_model=ref_model,
-        weight_syncer=build_runtime_weight_syncer(collector.runtime),
+        weight_syncer=build_runtime_weight_syncer(
+            collector.runtime,
+            initial_policy_version=resume_checkpoint.next_step
+            if resume_checkpoint is not None
+            else None,
+        ),
         config=trainer_config,
         device=device,
         stat_tracker=stat_tracker,
     )
+    if resume_checkpoint is not None:
+        restore_training_checkpoint(
+            resume_checkpoint,
+            trainer=trainer,
+            bundle=bundle,
+            strict=trainer_config.resume_strict,
+        )
+        logger.info(
+            "Resuming from %s, start_epoch=%d",
+            resume_checkpoint.checkpoint_dir,
+            resume_checkpoint.next_epoch,
+        )
 
     # 4. Prompts
     manifest_path = Path(cfg.data.manifest)
@@ -151,24 +188,36 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
 
     output_dir = Path(trainer_config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    OmegaConf.save(cfg, output_dir / "resolved_config.yaml")
+    save_resolved_config(cfg, output_dir, resumed=resume_checkpoint is not None)
 
     csv_path = output_dir / "metrics.csv"
     component_names = list(reward_weights.keys())
     component_cols = ",".join(f"r_{n}" for n in component_names)
-    csv_path.write_text(
+    prepare_metrics_csv(
+        csv_path,
         "epoch,loss,policy_loss,kl_penalty,reward_mean,reward_std,"
         "clip_fraction,approx_kl,advantage_mean,grad_norm,adv_saturation,"
-        "adv_zero_rate,group_size,trained_prompt_num," + component_cols + "\n"
+        "adv_zero_rate,group_size,trained_prompt_num," + component_cols + "\n",
+        resume=resume_checkpoint is not None,
     )
 
     rng = torch.Generator().manual_seed(trainer_config.seed)
+    start_epoch = resume_checkpoint.next_epoch if resume_checkpoint is not None else 0
+    if start_epoch > trainer_config.total_epochs:
+        raise ValueError(
+            "resume checkpoint starts after configured total_epochs: "
+            f"start_epoch={start_epoch}, total_epochs={trainer_config.total_epochs}",
+        )
+    if resume_checkpoint is not None:
+        restore_rng_state(resume_checkpoint.rng_state, prompt_generator=rng)
 
     # 5. Training loop
-    for epoch in range(trainer_config.total_epochs):
-        idx = torch.randperm(len(examples), generator=rng)[
-            : trainer_config.rollout_batch_size
-        ].tolist()
+    for epoch in range(start_epoch, trainer_config.total_epochs):
+        idx = sample_prompt_indices(
+            rng,
+            num_examples=len(examples),
+            rollout_batch_size=trainer_config.rollout_batch_size,
+        )
         example_batch = [examples[i] for i in idx]
 
         reward_fn.reset_components()
@@ -211,15 +260,37 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
 
         if trainer_config.save_freq > 0 and (epoch + 1) % trainer_config.save_freq == 0:
             ckpt_path = output_dir / f"checkpoint-{epoch + 1}"
-            ckpt_path.mkdir(parents=True, exist_ok=True)
-            torch.save(trainer.state_dict(), ckpt_path / "trainer_state.pt")
-            if hasattr(transformer, "save_pretrained"):
-                transformer.save_pretrained(ckpt_path / "lora_weights")
+            save_training_checkpoint(
+                ckpt_path,
+                trainer=trainer,
+                bundle=bundle,
+                family="wan_2_1",
+                progress={
+                    "completed_epoch": epoch + 1,
+                    "next_epoch": epoch + 1,
+                    "global_step": trainer.state.global_step,
+                },
+                rng_state=capture_rng_state(prompt_generator=rng),
+                export_modules={LORA_WEIGHTS_NAME: transformer}
+                if bool(cfg.model.use_lora) and hasattr(transformer, "save_pretrained")
+                else None,
+            )
             logger.info("Saved checkpoint to %s", ckpt_path)
 
     final_path = output_dir / "checkpoint-final"
-    final_path.mkdir(parents=True, exist_ok=True)
-    torch.save(trainer.state_dict(), final_path / "trainer_state.pt")
-    if hasattr(transformer, "save_pretrained"):
-        transformer.save_pretrained(final_path / "lora_weights")
+    save_training_checkpoint(
+        final_path,
+        trainer=trainer,
+        bundle=bundle,
+        family="wan_2_1",
+        progress={
+            "completed_epoch": trainer_config.total_epochs,
+            "next_epoch": trainer_config.total_epochs,
+            "global_step": trainer.state.global_step,
+        },
+        rng_state=capture_rng_state(prompt_generator=rng),
+        export_modules={LORA_WEIGHTS_NAME: transformer}
+        if bool(cfg.model.use_lora) and hasattr(transformer, "save_pretrained")
+        else None,
+    )
     logger.info("Training complete. Final checkpoint: %s", final_path)
