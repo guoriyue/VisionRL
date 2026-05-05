@@ -6,6 +6,8 @@ trainer:
   output_dir: outputs/
   seed: 0
   profile: false
+  resume_from: ""
+  resume_strict: true
 
   debug:
     first_step: false

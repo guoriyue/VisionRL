@@ -167,7 +167,7 @@ class SD3_5Policy(DiffusionPolicy):
         Returns prompt_embeds (joint T5+CLIP sequence), pooled_prompt_embeds
         (CLIP pooled), and their negative counterparts when CFG is active.
         """
-        max_seq = kwargs.get("max_sequence_length", 256)
+        max_seq = kwargs.get("max_sequence_length", 128)
         guidance_scale = kwargs.get("guidance_scale", 4.5)
         do_cfg = guidance_scale > 1.0
         neg = negative_prompt if negative_prompt is not None else ""

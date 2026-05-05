@@ -1,11 +1,12 @@
-"""OCR reward function, behavior mirrors flow_grpo ``OcrScorer_video_or_image``.
+"""OCR reward function, behavior mirrors flow_grpo OCR scorers.
 
-Scores generated video by how well OCR-detected text matches a target
-string provided in rollout metadata. Engine and aggregation are aligned
-with flow_grpo (paddleocr==2.9.1, frame_interval=4, mean of non-zero
-per-frame rewards) so training curves are directly comparable.
+Scores generated image/video outputs by how well OCR-detected text matches a
+target string provided in rollout metadata. Single-image SD3 rewards mirror
+``OcrScorer``; video/multi-frame rewards mirror ``OcrScorer_video_or_image``.
 
-flow_grpo reference: ``flow_grpo/ocr.py::OcrScorer_video_or_image``.
+flow_grpo references:
+- ``flow_grpo/ocr.py::OcrScorer``
+- ``flow_grpo/ocr.py::OcrScorer_video_or_image``
 """
 
 from __future__ import annotations
@@ -115,10 +116,11 @@ class OCRReward(RewardFunction):
         output = rollout.trajectory.output
 
         # ---- extract frames as list of numpy uint8 [H, W, C] ----
-        # flow_grpo expects video as np.ndarray (F, H, W, C); sample every
-        # ``frame_interval`` frames. We normalize the collector's tensor
-        # output (Wan decodes to [C, T, H, W]) into that layout then sample.
+        # SD3 image OCR in flow_grpo uses OcrScorer, while video OCR uses
+        # OcrScorer_video_or_image. The substring full-credit shortcut is
+        # image-only, so keep track of whether this output is a single image.
         frames: list[np.ndarray] = []
+        single_image = False
 
         if isinstance(output, torch.Tensor):
             raw = (output * 255).round().clamp(0, 255).to(torch.uint8)
@@ -134,13 +136,16 @@ class OCRReward(RewardFunction):
             elif raw.ndim == 3:
                 # [C, H, W] single image
                 frames = [raw.permute(1, 2, 0).cpu().numpy()]
+                single_image = True
             else:
                 raise ValueError(
                     f"OCRReward expected image/video tensor with 3 or 4 dims, got {raw.ndim}",
                 )
         else:
             # Assume PIL or numpy already; single image path
-            frames = [np.asarray(output)]
+            array = np.asarray(output)
+            frames = [array]
+            single_image = array.ndim == 3
 
         # ---- per-frame OCR + Levenshtein, matches flow_grpo ----
         from Levenshtein import distance
@@ -160,7 +165,7 @@ class OCRReward(RewardFunction):
             else:
                 text_raw = ""
             text = _normalize_ocr_text(text_raw)
-            dist = distance(text, target_text)
+            dist = 0 if single_image and target_text in text else distance(text, target_text)
             dist = min(dist, target_len)
 
             reward = 1.0 - dist / target_len

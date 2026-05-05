@@ -72,6 +72,8 @@ def build_rollout_backend_from_cfg(
     if runtime_spec is not None and gatherer is not None:
         from vrl.distributed.ray.rollout.launcher import RayRolloutLauncher
 
+        if config.release_after_collect:
+            return ReleasableRayRolloutBackend(config, runtime_spec, gatherer)
         return RayRolloutLauncher().launch(config.to_dict(), runtime_spec, gatherer)
 
     raise ValueError(
@@ -154,6 +156,84 @@ def _is_cuda_device(device: Any) -> bool:
     return str(device).lower().startswith("cuda")
 
 
+class ReleasableRayRolloutBackend(RolloutBackend):
+    """Ray backend wrapper that can drop rollout actors between train phases.
+
+    Single-GPU Ray debugging colocates the trainer and one rollout worker on the
+    same CUDA device. Keeping the rollout worker alive after collection leaves
+    the full generation pipeline resident while the trainer replays the batch,
+    which is too much for large diffusion models. This wrapper keeps the public
+    runtime object stable for the trainer/weight-syncer, but tears down and
+    recreates the underlying Ray actors when ``release_memory()`` is called.
+    """
+
+    def __init__(
+        self,
+        config: RolloutBackendConfig,
+        runtime_spec: Any,
+        gatherer: Any,
+    ) -> None:
+        self.config = config
+        self.runtime_spec = runtime_spec
+        self.gatherer = gatherer
+        self.weight_sync = object() if config.sync_trainable_state != "disabled" else None
+        self.requires_driver_model_offload = config.gpus_per_worker > 0
+        self.current_policy_version = _runtime_spec_policy_version(runtime_spec)
+        self._runtime: Any | None = None
+        self._last_state: Any | None = None
+
+    async def generate(self, request: Any) -> Any:
+        runtime = await self._ensure_runtime()
+        return await runtime.generate(request)
+
+    async def update_weights(self, state_ref: Any, policy_version: int) -> None:
+        if self.weight_sync is None:
+            raise RuntimeError("ReleasableRayRolloutBackend has no rollout weight sync")
+        self._last_state = state_ref
+        self.current_policy_version = int(policy_version)
+        if self._runtime is not None:
+            await self._runtime.update_weights(state_ref, self.current_policy_version)
+
+    async def release_memory(self) -> None:
+        runtime = self._runtime
+        if runtime is None:
+            return
+        self._runtime = None
+        await runtime.shutdown()
+
+    async def shutdown(self) -> None:
+        await self.release_memory()
+
+    async def _ensure_runtime(self) -> Any:
+        if self._runtime is None:
+            from vrl.distributed.ray.rollout.launcher import RayRolloutLauncher
+
+            runtime = RayRolloutLauncher().launch(
+                self.config.to_dict(),
+                self.runtime_spec,
+                self.gatherer,
+            )
+            self._runtime = runtime
+            if self._last_state is not None:
+                await runtime.update_weights(
+                    self._last_state,
+                    int(self.current_policy_version),
+                )
+        return self._runtime
+
+
+def _runtime_spec_policy_version(runtime_spec: Any) -> int | None:
+    try:
+        from vrl.engine.core.runtime_spec import GenerationRuntimeSpec
+
+        spec = GenerationRuntimeSpec.from_value(runtime_spec)
+    except Exception:
+        return None
+    if spec.policy_version is None:
+        return None
+    return int(spec.policy_version)
+
+
 def _cfg_path(cfg: Any, path: str, default: Any) -> Any:
     node = cfg
     for key in path.split("."):
@@ -181,6 +261,7 @@ def _cfg_get(node: Any, key: str, default: Any) -> Any:
 
 __all__ = [
     "DRIVER_CUDA_OWNERSHIP_ERROR",
+    "ReleasableRayRolloutBackend",
     "build_rollout_backend_from_cfg",
     "validate_rollout_backend_config",
 ]

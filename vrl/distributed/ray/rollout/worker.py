@@ -37,6 +37,22 @@ class RayRolloutWorker:
             return
         self.executor = _build_executor(self.runtime_spec)
 
+    def release_policy(self) -> None:
+        """Drop loaded model state so the actor releases CUDA memory before exit."""
+
+        self.executor = None
+        import gc
+
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+        except Exception:
+            pass
+
     def update_weights(self, state_ref: Any, policy_version: int) -> None:
         """Update rollout weights, then record the active policy version."""
 

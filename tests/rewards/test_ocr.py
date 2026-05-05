@@ -45,6 +45,16 @@ class TestNormalizedEditDistance:
         assert d1 == pytest.approx(d2, abs=0.01)
 
 
+class _FakePaddleOCR:
+    def __init__(self, texts: list[str]) -> None:
+        self.texts = list(texts)
+
+    def ocr(self, frame, cls=False):
+        del frame, cls
+        text = self.texts.pop(0)
+        return [[(None, (text, 1.0))]]
+
+
 # ---------------------------------------------------------------------------
 # OCRReward scoring tests (require rapidocr_onnxruntime)
 # ---------------------------------------------------------------------------
@@ -97,3 +107,35 @@ class TestOCRRewardScoring:
         rollouts = [_make_ocr_rollout("A"), _make_ocr_rollout("B")]
         scores = await reward.score_batch(rollouts)
         assert len(scores) == 2
+
+
+@pytest.mark.asyncio
+async def test_image_ocr_substring_match_gets_full_credit() -> None:
+    import torch
+
+    reward = OCRReward(device="cpu")
+    reward._engine = _FakePaddleOCR(["Cafe Free WiFi Open"])
+    rollout = _make_ocr_rollout(
+        "Free WiFi",
+        video_tensor=torch.zeros(3, 64, 64),
+    )
+
+    score = await reward.score(rollout)
+
+    assert score == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_video_ocr_keeps_flow_grpo_video_edit_distance_behavior() -> None:
+    import torch
+
+    reward = OCRReward(device="cpu")
+    reward._engine = _FakePaddleOCR(["Free WiFiX", "Free WiFiX"])
+    rollout = _make_ocr_rollout(
+        "Free WiFi",
+        video_tensor=torch.zeros(3, 8, 64, 64),
+    )
+
+    score = await reward.score(rollout)
+
+    assert 0.0 < score < 1.0

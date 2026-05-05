@@ -71,6 +71,11 @@ class RolloutCollector:
             await shutdown()
         self._runtime = None
 
+    async def release_runtime_memory(self) -> None:
+        release = getattr(self._runtime, "release_memory", None)
+        if release is not None:
+            await release()
+
     async def collect(
         self,
         prompts: list[str],

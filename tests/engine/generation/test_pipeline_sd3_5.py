@@ -220,6 +220,7 @@ def _request(
             "noise_level": 0.7,
             "cfg": True,
             "sample_batch_size": sample_batch_size,
+            "sde_type": "sde",
             "sde_window_size": 0,
             "sde_window_range": [0, num_steps],
             "same_latent": False,
@@ -232,6 +233,29 @@ def _request(
             "denoising_env",
         },
     )
+
+
+def test_sd3_parse_spec_uses_request_sde_type() -> None:
+    from vrl.engine.microbatching import MicroBatchPlan
+
+    executor = SD3_5PipelineExecutor(object())
+    request = _request()
+    request.sampling["sde_type"] = "cps"
+
+    spec = executor.parse_spec(request)
+    denoise_config = executor.build_denoise_config(
+        spec,
+        MicroBatchPlan(
+            prompt_index=0,
+            prompt="prompt",
+            sample_start=0,
+            sample_count=1,
+        ),
+    )
+
+    assert spec.sde is not None
+    assert spec.sde.sde_type == "cps"
+    assert denoise_config.sde_type == "cps"
 
 
 # ---------------------------------------------------------------------------

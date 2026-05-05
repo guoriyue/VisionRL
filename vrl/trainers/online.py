@@ -167,6 +167,64 @@ def _remap_group_ids_(batch: RolloutBatch, global_prompt_indices: list[int]) -> 
     batch.group_ids = remapped
 
 
+def _move_tensor_tree(value: Any, device: torch.device) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value.to(device)
+    if isinstance(value, dict):
+        return {k: _move_tensor_tree(v, device) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_move_tensor_tree(v, device) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_move_tensor_tree(v, device) for v in value)
+    return value
+
+
+def _move_training_batch_to_device(batch: RolloutBatch, device: torch.device) -> RolloutBatch:
+    """Move replay tensors to the trainer device.
+
+    Ray rollout workers return CPU tensors so the driver can gather chunks
+    without owning the worker GPU memory. Training replay runs on the driver
+    policy, so latent trajectories, actions, log-probs, embeds, and timesteps
+    must move to the trainer device before evaluator/model forward. Videos stay
+    on CPU because reward scoring already consumed them and replay does not use
+    decoded frames.
+    """
+
+    return RolloutBatch(
+        observations=batch.observations.to(device),
+        actions=batch.actions.to(device),
+        rewards=batch.rewards.to(device),
+        dones=batch.dones.to(device),
+        group_ids=batch.group_ids.to(device),
+        extras=_move_tensor_tree(batch.extras, device),
+        context=_move_tensor_tree(batch.context, device),
+        videos=batch.videos,
+        prompts=batch.prompts,
+    )
+
+
+async def _release_collector_runtime_memory(collector: Any) -> None:
+    release = getattr(collector, "release_runtime_memory", None)
+    if callable(release):
+        await release()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def _collector_runtime_requires_driver_model_offload(collector: Any) -> bool:
+    try:
+        runtime = collector.runtime
+    except Exception:
+        runtime = getattr(collector, "_runtime", None)
+    return bool(getattr(runtime, "requires_driver_model_offload", False))
+
+
+def _move_model_to_device(model: nn.Module, device: torch.device | str) -> None:
+    model.to(device)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 # ---------------------------------------------------------------------------
 # OnlineTrainer
 # ---------------------------------------------------------------------------
@@ -210,6 +268,7 @@ class OnlineTrainer(Trainer):
 
         self._optimizer: torch.optim.Optimizer | None = None
         self._ema: EMAModuleWrapper | None = None
+        self._rollout_weights_initialized = False
 
         if self.config.optim.allow_tf32:
             torch.backends.cuda.matmul.allow_tf32 = True
@@ -236,6 +295,19 @@ class OnlineTrainer(Trainer):
                 device=self.device,
             )
         return self._ema
+
+    async def _ensure_rollout_weights_initialized(self) -> None:
+        """Synchronize driver weights before the first remote rollout.
+
+        Ray workers build their own model/adapters. Without an explicit initial
+        sync, rollout old log-probs can come from a different random adapter
+        initialization than the driver replay path.
+        """
+
+        if self._rollout_weights_initialized or self.weight_syncer is None:
+            return
+        await self.weight_syncer.push(self.model.state_dict())
+        self._rollout_weights_initialized = True
 
     # ------------------------------------------------------------------
     # Accelerator-aware backward/step helpers
@@ -285,6 +357,16 @@ class OnlineTrainer(Trainer):
         ema = self._ensure_ema()
 
         timer = PhaseTimer(enabled=cfg.profile)
+
+        await self._ensure_rollout_weights_initialized()
+
+        offload_driver_model_for_rollout = (
+            self.device.type == "cuda"
+            and _collector_runtime_requires_driver_model_offload(self.collector)
+        )
+        if offload_driver_model_for_rollout:
+            with timer.time("offload_driver_model"):
+                _move_model_to_device(self.model, "cpu")
 
         # 1. Collect group_size samples per prompt.
         # Plain string prompts are batched into one rollout request so the
@@ -337,6 +419,13 @@ class OnlineTrainer(Trainer):
             # large rollout request, then this trainer splits by group so each
             # forward/backward still sees only one prompt group. That keeps
             # training memory bounded while rollout gets a larger execution plan.
+
+        with timer.time("release_rollout"):
+            await _release_collector_runtime_memory(self.collector)
+
+        if offload_driver_model_for_rollout:
+            with timer.time("restore_driver_model"):
+                _move_model_to_device(self.model, self.device)
 
         # 2. Compute advantages (per-prompt normalization).
         # Rewards + prompts are concatenated across all collected batches so
@@ -439,6 +528,12 @@ class OnlineTrainer(Trainer):
                 adv_zero_rate=adv_zero_rate,
                 phase_times=dict(timer.times),
             )
+
+        filtered_batches = [
+            _move_training_batch_to_device(batch, self.device)
+            for batch in filtered_batches
+        ]
+        filtered_advs = [adv.to(self.device) for adv in filtered_advs]
 
         # Timestep schedule — same num_timesteps across all batches (collector
         # uses the same scheduler), so pick from first filtered batch.
@@ -593,6 +688,8 @@ class OnlineTrainer(Trainer):
                     with timer.time("backward"):
                         self._backward(loss)
 
+                    self._clear_algorithm_diagnostics()
+
                     agg_metrics["loss"].append(metrics.loss)
                     agg_metrics["policy_loss"].append(metrics.policy_loss)
                     agg_metrics["kl_penalty"].append(metrics.kl_penalty)
@@ -686,6 +783,11 @@ class OnlineTrainer(Trainer):
 
         return metrics
 
+    def _clear_algorithm_diagnostics(self) -> None:
+        for attr in ("_last_policy_loss_tensor", "_last_kl_term_tensor"):
+            if hasattr(self.algorithm, attr):
+                setattr(self.algorithm, attr, None)
+
     # ------------------------------------------------------------------
     # State dict
     # ------------------------------------------------------------------
@@ -703,12 +805,81 @@ class OnlineTrainer(Trainer):
             d["ema"] = self._ema.state_dict()
         return d
 
-    def load_state_dict(self, state: dict) -> None:
-        self.state.step = state.get("step", 0)
-        self.state.global_step = state.get("global_step", 0)
-        self.state.total_reward = state.get("total_reward", 0.0)
-        self.state.total_loss = state.get("total_loss", 0.0)
-        if "optimizer" in state and self._optimizer is not None:
-            self._optimizer.load_state_dict(state["optimizer"])
-        if "ema" in state and self._ema is not None:
-            self._ema.load_state_dict(state["ema"])
+    def load_state_dict(self, state: dict, *, strict: bool = True) -> None:
+        if not isinstance(state, dict):
+            raise TypeError("OnlineTrainer.load_state_dict expects a dict")
+
+        self.state.step = int(state.get("step", 0))
+        self.state.global_step = int(state.get("global_step", 0))
+        self.state.total_reward = float(state.get("total_reward", 0.0))
+        self.state.total_loss = float(state.get("total_loss", 0.0))
+
+        if "optimizer" in state:
+            optimizer = self._ensure_optimizer()
+            try:
+                optimizer.load_state_dict(state["optimizer"])
+            except Exception:
+                if strict:
+                    raise
+                logger.warning("Skipping incompatible optimizer state during non-strict load")
+
+        if "ema" in state:
+            if not self.config.ema.enable:
+                if strict:
+                    raise ValueError("checkpoint contains EMA state but trainer.ema.enable=false")
+                logger.warning("Skipping EMA state because trainer.ema.enable=false")
+            else:
+                ema = self._ensure_ema()
+                assert ema is not None
+                _validate_ema_state_shapes(
+                    state["ema"],
+                    self.model,
+                    strict=strict,
+                )
+                try:
+                    ema.load_state_dict(state["ema"])
+                except Exception:
+                    if strict:
+                        raise
+                    logger.warning("Skipping incompatible EMA state during non-strict load")
+        elif strict and self.config.ema.enable:
+            raise ValueError("checkpoint missing EMA state but trainer.ema.enable=true")
+
+        # A resumed trainer must push the restored driver weights before the
+        # next Ray rollout. The policy version and worker state are runtime
+        # concerns, not persisted as an initialized rollout flag.
+        self._rollout_weights_initialized = False
+
+
+def _validate_ema_state_shapes(
+    ema_state: dict[str, Any],
+    model: nn.Module,
+    *,
+    strict: bool,
+) -> None:
+    ema_parameters = ema_state.get("ema_parameters") if isinstance(ema_state, dict) else None
+    if not isinstance(ema_parameters, list):
+        if strict:
+            raise ValueError("checkpoint EMA state missing ema_parameters")
+        return
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    if len(ema_parameters) != len(trainable):
+        if strict:
+            raise ValueError(
+                "checkpoint EMA parameter count mismatch: "
+                f"checkpoint={len(ema_parameters)} current={len(trainable)}",
+            )
+        return
+    for idx, (ema_param, param) in enumerate(zip(ema_parameters, trainable, strict=True)):
+        if not isinstance(ema_param, torch.Tensor):
+            if strict:
+                raise ValueError(f"checkpoint EMA parameter {idx} is not a tensor")
+            return
+        if tuple(ema_param.shape) != tuple(param.shape):
+            if strict:
+                raise ValueError(
+                    "checkpoint EMA parameter shape mismatch at index "
+                    f"{idx}: checkpoint={tuple(ema_param.shape)} "
+                    f"current={tuple(param.shape)}",
+                )
+            return

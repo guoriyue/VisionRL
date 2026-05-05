@@ -223,6 +223,7 @@ async def _train_janus_pro(
                 : trainer_config.rollout_batch_size
             ].tolist()
             example_batch = [examples[i] for i in idx]
+            reward_fn.reset_components()
             metrics = await trainer.step(example_batch)
 
             if epoch % trainer_config.log_freq == 0:

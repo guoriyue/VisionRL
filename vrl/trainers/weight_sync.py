@@ -63,14 +63,21 @@ class RayRuntimeWeightSyncer(WeightSyncer):
         return dict(self._last_state)
 
 
-def build_runtime_weight_syncer(runtime: Any) -> WeightSyncer | None:
+def build_runtime_weight_syncer(
+    runtime: Any,
+    *,
+    initial_policy_version: int | None = None,
+) -> WeightSyncer | None:
     """Return a syncer when a rollout runtime supports weight updates."""
 
     if not callable(getattr(runtime, "update_weights", None)):
         return None
     if getattr(runtime, "weight_sync", None) is None:
         return None
-    return RayRuntimeWeightSyncer(runtime)
+    return RayRuntimeWeightSyncer(
+        runtime,
+        initial_policy_version=initial_policy_version,
+    )
 
 
 def _resolve_next_policy_version(

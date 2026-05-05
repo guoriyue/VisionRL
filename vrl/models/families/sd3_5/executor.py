@@ -20,8 +20,7 @@ class SD3_5PipelineExecutor(DiffusionPipelineExecutorBase):
     family: str = "sd3_5"
     task: str = "t2i"
     default_num_frames: int = 1
-    default_max_sequence_length: int = 256
-    sde_type: str = "cps"
+    default_max_sequence_length: int = 128
 
     def __init__(
         self,

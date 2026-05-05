@@ -126,7 +126,14 @@ def load_config(
     return cfg
 
 
-_GRPO_FIELDS = {"eps_clip", "init_kl_coef", "eps", "adv_clip_max", "global_std"}
+_GRPO_FIELDS = {
+    "eps_clip",
+    "init_kl_coef",
+    "eps",
+    "adv_clip_max",
+    "global_std",
+    "flow_kl_use_dt",
+}
 _TOKEN_GRPO_EXTRA_FIELDS = {"mask_key", "kl_estimator"}
 _DPO_FIELDS = {"beta", "sft_weight"}
 
@@ -293,6 +300,8 @@ _COMMON_REQUIRED_FIELDS: tuple[str, ...] = (
     "trainer.output_dir",
     "trainer.seed",
     "trainer.profile",
+    "trainer.resume_from",
+    "trainer.resume_strict",
     "trainer.debug.first_step",
     "trainer.debug.grad_split",
 )
@@ -303,6 +312,7 @@ _GRPO_DIFFUSION_REQUIRED: tuple[str, ...] = (
     "rollout.rollout_batch_size",
     "rollout.noise_level",
     "rollout.sample_batch_size",
+    "rollout.sde.type",
     "rollout.sde.window_size",
     "rollout.sde.window_range",
     "rollout.same_latent",
@@ -395,6 +405,9 @@ def validate_training_config(cfg: DictConfig) -> None:
     if kind == "grpo":
         for path in _GRPO_DIFFUSION_REQUIRED:
             _require_path_present(cfg, path)
+        sde_type = require(cfg, "rollout.sde.type")
+        if str(sde_type) not in {"sde", "cps"}:
+            raise ValueError("rollout.sde.type must be 'sde' or 'cps'")
     elif kind == "token_grpo":
         for path in _TOKEN_GRPO_REQUIRED:
             _require_path_present(cfg, path)
@@ -484,6 +497,8 @@ def build_trainer_config(cfg: DictConfig):
         log_freq=require(cfg, "trainer.log_freq"),
         output_dir=require(cfg, "trainer.output_dir"),
         seed=require(cfg, "trainer.seed"),
+        resume_from=require(cfg, "trainer.resume_from"),
+        resume_strict=require(cfg, "trainer.resume_strict"),
         profile=require(cfg, "trainer.profile"),
     )
 

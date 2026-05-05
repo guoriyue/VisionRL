@@ -67,6 +67,8 @@ class TrainerConfig:
     log_freq: int = 1
     output_dir: str = "outputs/"
     seed: int = 0
+    resume_from: str = ""
+    resume_strict: bool = True
 
     # --- profiling ---
     profile: bool = False

@@ -76,6 +76,7 @@ DIFFUSION_COMMON_SAMPLING_FIELDS = (
     "width",
     "cfg",
     "sample_batch_size",
+    "sde_type",
     "sde_window_size",
     "sde_window_range",
     "same_latent",

@@ -6,6 +6,7 @@ algorithm:
   eps: 1.0e-8                   # numerical stability for advantage division
   adv_clip_max: 5.0
   global_std: false             # per-prompt std (false) vs global-batch std
+  flow_kl_use_dt: false         # false matches flow_grpo SD3 KL denominator
   per_prompt_stat_tracking: true
 
   # Subtract kl_reward * per-step KL from reward before computing advantages.

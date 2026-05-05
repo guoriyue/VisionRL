@@ -1,155 +1,175 @@
 # visual-rl
 
-> visual-rl is a visual generation RL infrastructure stack spanning
-> autoregressive image generation, diffusion models, and world models.
-> It focuses on training/rollout interfaces that remain honest to the
-> compute regime of each family, instead of pretending one scheduler
-> story fits all.
+`visual-rl` (Python package: `vrl`) is a research infrastructure stack for
+RL-style post-training of visual generative models.
 
-`visual-rl` (package import name: `vrl`) is a research codebase for
-reinforcement-learning-style post-training of visual generative models. It
-treats AR token generators, flow / diffusion samplers, and video world models
-as three distinct compute regimes, and provides shared trainer / collector /
-evaluator abstractions across them without forcing a single scheduler
-narrative on top.
+The codebase covers three rollout regimes:
 
-The repo was previously named `wm-infra` → `vision-rl` → `visual-rl`.
+- Autoregressive image generation: Janus-Pro and NextStep-1.
+- Diffusion / flow generation: SD3.5 and Wan 2.1.
+- Video2World generation: Cosmos Predict2.
 
----
-
-## Positioning
-
-What this codebase actually is, today:
-
-- A **multi-paradigm visual RL stack**: AR image generation (Janus-Pro,
-  NextStep), flow / diffusion (SD3.5, Wan 2.1), and world models
-  (Cosmos Predict 1 / 2 / 2.5).
-- A **clean trainer / collector / evaluator boundary** so the same GRPO /
-  DPO loop can drive token-level RL and step-level RL from one codebase.
-- An **engine skeleton** (`vrl/engine/`) — scheduler, batch planner, and
-  generation runtime — staged for AR continuous batching and multi-GPU
-  rollout/train separation.
-
-What this codebase is **not** trying to be:
-
-- Not a Flow-Factory replacement. Flow-Factory wins on supported model
-  count and algorithm checklist coverage; this repo does not compete on
-  that axis.
-- Not a "vLLM-for-RL paradigm applied to diffusion" story. Single-GPU
-  diffusion is GPU-saturated under our 2026-04-27 profiles, so there is
-  no batching headroom to harvest there.
-- Not a "diffusion engine moat" project. Diffusion family code is a
-  baseline coverage asset, not the marketing front line.
-
-We do not currently claim **single-GPU continuous batching speedups for
-diffusion**, **engine-as-moat for diffusion**, or **SKU parity with
-Flow-Factory**. If those land, they will land with benchmarks, not with
-README copy.
+The main design goal is to keep the training loop shared while keeping each
+family's execution semantics explicit. AR token rollout, continuous-token AR
+rollout, diffusion denoising, and Video2World generation do not pretend to be
+the same runtime problem.
 
 ---
 
-## Three real bets
+## Current Positioning
 
-### Bet A — AR image generation RL (Janus-Pro, primary)
+This codebase currently is:
 
-Token-level GRPO over an AR image generator. This is the line closest to
-"already tells a story":
+- A multi-family visual RL stack with GRPO, TokenGRPO, DPO, flow-matching
+  replay utilities, reward composition, rollout collection, and online/offline
+  trainers.
+- A YAML-driven training entrypoint. `vrl.scripts.train` loads one experiment
+  config, reads `trainer.entrypoint`, imports that callable, and runs it.
+- A registry-driven rollout adapter. `vrl.rollouts.families.specs` binds each
+  family to its collector config, request sampling fields, runtime builder,
+  executor class, and chunk gatherer.
+- A Ray-only online rollout backend. Single-GPU and multi-GPU online rollout
+  jobs both use the same Ray launcher and actor path; only `num_workers` and
+  resource config change.
+- A small generation engine layer. `vrl.engine` owns typed requests, output
+  payloads, executor protocols, microbatching, chunk gather, AR scheduling
+  helpers, and diffusion denoising helpers. It is not a standalone serving
+  engine.
 
-- `vrl/algorithms/grpo_token.py` — `TokenGRPO` (token-level RL, distinct
-  from diffusion step-level RL)
-- `vrl/rollouts/evaluators/ar/token_logprob.py` — token logprob
-  evaluator
-- `vrl/rollouts/collectors/janus_pro.py` — Janus-Pro rollout collector
-- `vrl/models/families/janus_pro/model.py` — Janus-Pro model wrapper
-- `vrl/scripts/train.py` plus `configs/experiment/janus_pro_1b_ocr_grpo.yaml`
-  — first end-to-end task (OCR reward)
-- `vrl/scripts/janus_pro/train.py` — Janus-Pro family training implementation
-- `vrl/scripts/nextstep_1/train.py` — second AR family (NextStep) under the
-  same TokenGRPO contract
-- `tests/algorithms/test_grpo_token.py`,
-  `tests/rollouts/test_janus_pro_collector.py`,
-  `tests/models/test_janus_wrapper.py` — covering the path
+This codebase currently is not:
 
-Goal of this line is **not** "also support a Janus model"; it is to
-make AR visual RL a first-class path with a clean separation between
-token-level and step-level RL.
-
-### Bet B — Video2World / World Model RL (Cosmos, early-stage)
-
-World-model-style RL on top of NVIDIA Cosmos Predict 2. This line is
-real but early — there is one experiment script today, and it is staged
-as a research thrust, not a polished product:
-
-- `vrl/models/families/cosmos/{model,predict1,predict2,predict25,variants}.py`
-- `vrl/rollouts/collectors/cosmos_predict2.py`
-- `vrl/scripts/train.py` plus `configs/experiment/cosmos_predict2_2b_grpo.yaml`
-  — single GRPO recipe
-- `tests/models/test_cosmos_predict2_step.py`,
-  `tests/rollouts/test_cosmos_predict2_collector.py`,
-  `tests/engine/generation/test_cosmos_executor_parity.py`
-
-The intent is to push visual RL from image / video aesthetics toward
-world-model control. The honest current state: skeleton + one recipe.
-Calling it production-ready would be lying.
-
-### Bet C — Selective throughput infra (only where it actually pays)
-
-Throughput work is scoped to workloads where it can produce a real
-number, not painted across the whole codebase:
-
-- AR continuous batching (Janus-Pro token generation) — engine
-  skeleton at `vrl/engine/batch_planner.py`
-  (`ContinuousBatchPlanner`, currently a FIFO baseline, not a moat).
-- Multi-GPU rollout / train physical separation — Ray rollout placement
-  and actor runtime under `vrl/distributed/ray/`.
-- Request-level scheduling — `vrl/engine/` (`loop.py`, `scheduler.py`,
-  `batch_planner.py`).
-
-Until these are backed by a measured benchmark, the engine is a
-**thesis asset**, not a marketing asset.
+- A vLLM or SGLang replacement.
+- A Flow-Factory replacement with broad diffusion model coverage.
+- A benchmarked diffusion throughput engine. Do not claim diffusion speedups
+  here without measured results.
+- A local-backend rollout stack. Online rollout is Ray-only; the in-process
+  `GenerationRuntime` is still useful as the worker facade inside Ray actors
+  and for narrow runtime tests.
 
 ---
 
-## Repository layout
+## Main Workflows
 
-```
+### Autoregressive Image RL
+
+AR rollout is the path for Janus-Pro and NextStep-1. It uses TokenGRPO and
+family-local executors for model-specific stepping.
+
+Key files:
+
+- `vrl/algorithms/grpo_token.py`
+- `vrl/models/families/janus_pro/{builder.py,policy.py,executor.py}`
+- `vrl/models/families/nextstep_1/{builder.py,policy.py,executor.py,flow_step.py}`
+- `vrl/engine/ar/{sequence.py,spec.py,token_scheduler.py,executor_base.py}`
+- `vrl/rollouts/packers/{ar_discrete.py,ar_continuous.py}`
+- `vrl/rollouts/evaluators/ar/{token_logprob.py,continuous_token_logprob.py}`
+- `vrl/scripts/{janus_pro,nextstep_1}/train.py`
+
+Active experiment configs:
+
+- `configs/experiment/janus_pro_1b_grpo.yaml`
+- `configs/experiment/janus_pro_1b_ocr_grpo.yaml`
+- `configs/experiment/nextstep_1_ocr_grpo.yaml`
+
+### Diffusion / Flow RL
+
+Diffusion rollout covers SD3.5 and Wan 2.1. It uses diffusion policy modules,
+family-local executors, flow-matching replay evaluation, and diffusion rollout
+packers.
+
+Key files:
+
+- `vrl/algorithms/{grpo.py,dpo.py,flow_matching.py}`
+- `vrl/models/diffusion.py`
+- `vrl/models/families/sd3_5/{builder.py,policy.py,executor.py}`
+- `vrl/models/families/wan_2_1/{builder.py,diffusers_policy.py,official_policy.py,executor.py}`
+- `vrl/engine/diffusion/{spec.py,denoise.py,executor_base.py}`
+- `vrl/rollouts/packers/diffusion.py`
+- `vrl/rollouts/evaluators/diffusion/flow_matching.py`
+- `vrl/scripts/{sd3_5,wan_2_1}/train.py`
+- `vrl/scripts/wan_2_1/train_dpo.py`
+
+Active experiment configs:
+
+- `configs/experiment/sd3_5_ocr_grpo.yaml`
+- `configs/experiment/wan_2_1_1_3b_grpo.yaml`
+- `configs/experiment/wan_2_1_1_3b_ocr_grpo.yaml`
+- `configs/experiment/wan_2_1_1_3b_multi_reward_grpo.yaml`
+- `configs/experiment/wan_2_1_14b_grpo.yaml`
+- `configs/experiment/wan_2_1_1_3b_dpo.yaml`
+
+### Video2World RL
+
+Cosmos Predict2 is wired as a Video2World diffusion-style family. The current
+scope is Predict2, not Predict1 or Predict2.5.
+
+Key files:
+
+- `vrl/models/families/cosmos/{builder.py,policy.py,executor.py}`
+- `configs/model/cosmos/predict2_2b.yaml`
+- `configs/sampling/cosmos_v2w_704p_93f.yaml`
+- `configs/experiment/cosmos_predict2_2b_grpo.yaml`
+- `vrl/scripts/cosmos/train.py`
+
+### Ray Online Rollout
+
+Online rollout uses Ray for both one GPU and many GPUs. The trainer constructs
+serializable runtime inputs, launches Ray rollout workers, sends generation
+requests, gathers chunked outputs, and optionally syncs LoRA trainable state.
+
+Key files:
+
+- `vrl/rollouts/runtime/{config.py,backend.py,launch_inputs.py}`
+- `vrl/distributed/ray/placement/{group.py,network.py}`
+- `vrl/distributed/ray/rollout/{launcher.py,worker.py,executor.py,planner.py,runtime.py,types.py,weight_sync.py}`
+- `configs/base/distributed/{ray_rollout_single_gpu.yaml,ray_rollout.yaml}`
+
+Use `ray_rollout_single_gpu` for local single-GPU smoke/debug jobs and
+`ray_rollout` or config overrides for multi-worker rollout. The launch path is
+the same in both cases.
+
+---
+
+## Repository Layout
+
+```text
 vrl/
-├── algorithms/        GRPO, TokenGRPO, DPO, flow-matching, stat tracking
-├── rewards/           aesthetic, CLIP, OCR, PickScore, composite, multi, remote
-├── trainers/          online, offline DPO, EMA, FSDP, weight sync, K-repeat data
-├── rollouts/
-│   ├── collectors/    janus_pro, nextstep_1, sd3_5, wan_2_1, cosmos_predict2
-│   └── evaluators/    lm/{token_logprob, continuous_token_logprob},
-│                      diffusion/flow_matching
-├── models/families/   janus_pro, nextstep_1, sd3_5, wan_2_1, cosmos
-├── engine/            loop, scheduler, batch planner, generation runtime
-└── scripts/           per-family training entry points
-configs/               base, model, sampling, experiment
-tests/                 algorithms, rollouts, models, e2e
++-- algorithms/          GRPO, TokenGRPO, DPO, flow matching, stat tracking
++-- config/              YAML loading, validation, CLI helpers
++-- distributed/ray/     Ray placement, rollout actors, train actor primitives
++-- engine/              Generation request contracts and executor primitives
+|   +-- ar/              AR sequence scheduling and executor base classes
+|   +-- core/            Runtime, worker, registry, protocols, typed payloads
+|   +-- diffusion/       Diffusion executor base and denoising helpers
++-- models/              Shared policy interfaces and family implementations
+|   +-- families/        cosmos, janus_pro, nextstep_1, sd3_5, wan_2_1
++-- rewards/             Aesthetic, CLIP, OCR, PickScore, composite rewards
++-- rollouts/            Collector, request adapter, evaluators, packers, runtime
+|   +-- collector/
+|   +-- evaluators/
+|   +-- families/
+|   +-- packers/
+|   +-- runtime/
++-- scripts/             YAML-selected per-family training entrypoints
++-- trainers/            Online trainer, offline DPO trainer, weight sync helpers
+
+configs/
++-- base/                Shared algorithm, actor, rollout, distributed, trainer
++-- dataset/             Offline preference datasets
++-- experiment/          Fully composed experiment recipes
++-- model/               Family/model-specific config slices
++-- sampling/            Sampling shape and rollout sampling config
+
+tests/
++-- algorithms/
++-- config/
++-- distributed/ray/
++-- engine/generation/
++-- models/
++-- rewards/
++-- rollouts/
++-- trainers/
 ```
-
----
-
-## Differentiation vs Flow-Factory
-
-Flow-Factory is "Easy RL for Diffusion and Flow-Matching Models." It
-wins on diffusion SKU breadth, algorithm checklist (DPO / GRPO /
-DiffusionNFT / AWM / DGPO / GRPO-Guard), and verified configs.
-
-`visual-rl` does not try to out-cover it on that axis. The intended
-delta is:
-
-| Axis                              | Flow-Factory | visual-rl                            |
-| --------------------------------- | ------------ | ------------------------------------ |
-| Diffusion / flow model SKUs       | broader      | smaller, baseline coverage           |
-| Diffusion algorithm checklist     | broader      | GRPO + DPO baseline                  |
-| AR image generation RL            | not in scope | first-class (Janus-Pro, NextStep)    |
-| World model / Video2World RL      | not in scope | early-stage (Cosmos Predict 2)       |
-| Engine / multi-GPU rollout infra  | not in scope | skeleton, benchmark-gated as it ships|
-
-If you want the most diffusion SKUs and the most algorithm parity, use
-Flow-Factory. If you want AR visual RL or world-model RL with a shared
-trainer abstraction, use this repo.
 
 ---
 
@@ -157,78 +177,128 @@ trainer abstraction, use this repo.
 
 ```bash
 pip install -e .
-# optional extras
-pip install -e ".[cosmos]"   # diffusers + transformers + accelerate
+
+# Online rollout jobs require Ray. It is imported lazily and is not part of
+# the base package dependency set.
+pip install ray
+
+# Optional extras
+pip install -e ".[cosmos]"   # diffusers, transformers, accelerate
 pip install -e ".[ocr]"      # rapidocr-onnxruntime for OCR rewards
-pip install -e ".[bench]"    # matplotlib + tabulate
+pip install -e ".[bench]"    # matplotlib, tabulate
 pip install -e ".[dev]"      # pytest, ruff, httpx
-```
-
-## Run
-
-Training entrypoints are declared in each experiment YAML under
-`trainer.entrypoint`; `vrl.scripts.train` only loads YAML and imports that
-callable.
-
-```bash
-# AR image RL (Janus-Pro, OCR reward)
-python -m vrl.scripts.train --config experiment/janus_pro_1b_ocr_grpo
-
-# AR image RL (NextStep, OCR reward)
-python -m vrl.scripts.train --config experiment/nextstep_1_ocr_grpo
-
-# World model RL (Cosmos Predict 2, GRPO)
-python -m vrl.scripts.train --config experiment/cosmos_predict2_2b_grpo
-
-# Diffusion baselines
-python -m vrl.scripts.train --config experiment/sd3_5_ocr_grpo
-python -m vrl.scripts.train --config experiment/wan_2_1_1_3b_grpo
-
 ```
 
 ---
 
-## Honesty checklist (what every claim above is grounded in)
+## Run
 
-This README is **fact-driven**: every feature claim is verifiable with
-`grep` or `ls` against the current tree. If you cloned this repo today,
-the following commands all return non-empty output:
+Training jobs are selected by YAML. The unified CLI does not branch on
+model family or algorithm kind; it imports the callable declared by
+`trainer.entrypoint`.
 
 ```bash
-# Bet A — AR image RL
-ls vrl/algorithms/grpo_token.py
-ls vrl/rollouts/evaluators/ar/token_logprob.py
-ls vrl/rollouts/collectors/janus_pro.py
-ls vrl/models/families/janus_pro/model.py
-ls vrl/scripts/train.py
-ls vrl/scripts/janus_pro/train.py
-ls vrl/scripts/nextstep_1/train.py
-ls tests/algorithms/test_grpo_token.py
-grep -nE "^class TokenGRPO" vrl/algorithms/grpo_token.py
+# Janus-Pro TokenGRPO
+python -m vrl.scripts.train --config experiment/janus_pro_1b_grpo
+python -m vrl.scripts.train --config experiment/janus_pro_1b_ocr_grpo
 
-# Bet B — World model RL (early-stage)
-ls vrl/models/families/cosmos/predict2.py
-ls vrl/rollouts/collectors/cosmos_predict2.py
-ls vrl/scripts/cosmos/train.py
-ls configs/experiment/cosmos_predict2_2b_grpo.yaml
-ls tests/engine/generation/test_cosmos_executor_parity.py
+# NextStep-1 TokenGRPO
+python -m vrl.scripts.train --config experiment/nextstep_1_ocr_grpo
 
-# Bet C — Engine skeleton (benchmark-gated)
-ls vrl/engine/protocols.py
-ls vrl/engine/loop.py
-ls vrl/engine/batch_planner.py
-grep -nE "^class ContinuousBatchPlanner" vrl/engine/batch_planner.py
+# SD3.5 and Wan 2.1 GRPO
+python -m vrl.scripts.train --config experiment/sd3_5_ocr_grpo
+python -m vrl.scripts.train --config experiment/wan_2_1_1_3b_grpo
+python -m vrl.scripts.train --config experiment/wan_2_1_1_3b_ocr_grpo
+python -m vrl.scripts.train --config experiment/wan_2_1_1_3b_multi_reward_grpo
+python -m vrl.scripts.train --config experiment/wan_2_1_14b_grpo
 
-# Diffusion baseline coverage
-ls vrl/models/families/sd3_5 vrl/models/families/wan_2_1
-ls vrl/algorithms/grpo.py vrl/algorithms/dpo.py vrl/algorithms/flow_matching.py
+# Wan 2.1 offline DPO
+python -m vrl.scripts.train --config experiment/wan_2_1_1_3b_dpo
 
-# Console entry point
-grep -nE "vrl-train" pyproject.toml
+# Cosmos Predict2 Video2World GRPO
+python -m vrl.scripts.train --config experiment/cosmos_predict2_2b_grpo
 ```
 
-If any of these stop returning, the README is wrong and should be
-updated before the code.
+Equivalent console entrypoint:
+
+```bash
+vrl-train --config experiment/janus_pro_1b_ocr_grpo
+```
+
+Multi-worker rollout is a config change, not a different launch path:
+
+```bash
+python -m vrl.scripts.train \
+  --config experiment/wan_2_1_1_3b_grpo \
+  distributed.rollout.num_workers=4 \
+  distributed.rollout.placement_strategy=SPREAD \
+  distributed.rollout.allow_driver_gpu_overlap=false \
+  distributed.rollout.release_after_collect=false
+```
+
+---
+
+## Verification
+
+Fast structural checks:
+
+```bash
+python -m pytest -q tests/config/test_load_all_experiments.py
+python -m pytest -q tests/rollouts/test_family_registry.py
+python -m pytest -q tests/distributed/ray/test_rollout_launcher.py
+```
+
+Broader local checks:
+
+```bash
+python -m pytest -q tests/algorithms tests/config tests/rollouts tests/models tests/rewards tests/trainers
+python -m pytest -q tests/engine/generation
+```
+
+Real model / GPU smoke tests are opt-in and may require model weights:
+
+```bash
+WM_RUN_REAL_MODEL_TESTS=1 python -m pytest -q tests/distributed/ray/test_real_ray_rollout_smoke.py
+```
+
+---
+
+## Honesty Checklist
+
+The claims above should stay tied to real files. If any command below stops
+returning output, update the README or the code in the same change.
+
+```bash
+# YAML-driven entrypoint
+grep -nE "trainer.entrypoint|resolve_train_target" vrl/scripts/train.py
+grep -nE "entrypoint:" configs/experiment/*.yaml
+
+# Family registry and rollout request adapter
+grep -nE "^FAMILY_REGISTRY" vrl/rollouts/families/specs.py
+grep -nE "^class RolloutEngineRequestBuilder" vrl/rollouts/collector/requests.py
+ls vrl/rollouts/collector/{core.py,factory.py,configs.py,requests.py,rewards.py}
+ls vrl/rollouts/packers/{ar_discrete.py,ar_continuous.py,diffusion.py}
+
+# AR rollout
+grep -nE "^class TokenGRPO" vrl/algorithms/grpo_token.py
+grep -nE "^class JanusProPolicy" vrl/models/families/janus_pro/policy.py
+grep -nE "^class NextStep1Policy" vrl/models/families/nextstep_1/policy.py
+ls vrl/engine/ar/{sequence.py,spec.py,token_scheduler.py,executor_base.py}
+ls vrl/rollouts/evaluators/ar/{token_logprob.py,continuous_token_logprob.py}
+
+# Diffusion and Video2World rollout
+grep -nE "^class SD3_5Policy" vrl/models/families/sd3_5/policy.py
+grep -nE "^class WanT2V" vrl/models/families/wan_2_1/{diffusers_policy.py,official_policy.py}
+grep -nE "^class CosmosPredict2Policy" vrl/models/families/cosmos/policy.py
+grep -nE "^class FlowMatchingEvaluator" vrl/rollouts/evaluators/diffusion/flow_matching.py
+ls vrl/engine/diffusion/{spec.py,denoise.py,executor_base.py}
+
+# Ray-only online rollout
+grep -nE "backend must be 'ray'" vrl/rollouts/runtime/config.py
+grep -nE "^class RayRolloutLauncher" vrl/distributed/ray/rollout/launcher.py
+grep -nE "^class RayRolloutWorker" vrl/distributed/ray/rollout/worker.py
+ls configs/base/distributed/{ray_rollout_single_gpu.yaml,ray_rollout.yaml}
+```
 
 ---
 

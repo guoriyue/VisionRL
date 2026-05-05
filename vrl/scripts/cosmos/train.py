@@ -106,6 +106,7 @@ async def train_cosmos_predict2_grpo(cfg: DictConfig) -> None:
         cfg=cfg.sampling.cfg,
         sample_batch_size=int(require(cfg, "rollout.sample_batch_size")),
         kl_reward=cfg.algorithm.kl_reward,
+        sde_type=str(require(cfg, "rollout.sde.type")),
         sde_window_size=cfg.rollout.sde.window_size,
         sde_window_range=tuple(cfg.rollout.sde.window_range),
         same_latent=cfg.rollout.same_latent,
@@ -135,7 +136,7 @@ async def train_cosmos_predict2_grpo(cfg: DictConfig) -> None:
     evaluator = FlowMatchingEvaluator(
         bundle.scheduler,
         noise_level=noise_level,
-        sde_type="sde",
+        sde_type=collector_config.sde_type,
     )
     algorithm = GRPO(grpo_config)
 
@@ -241,6 +242,7 @@ async def train_cosmos_predict2_grpo(cfg: DictConfig) -> None:
         ].tolist()
         prompt_batch = [prompts[i] for i in idx]
 
+        reward_fn.reset_components()
         metrics = await trainer.step(prompt_batch)
 
         # Epoch-0 on-policy sanity check.

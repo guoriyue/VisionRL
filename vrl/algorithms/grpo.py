@@ -19,6 +19,7 @@ class GRPOConfig:
     eps: float = 1e-8
     adv_clip_max: float = 5.0
     global_std: bool = False
+    flow_kl_use_dt: bool = False
 
 
 class GRPO(Algorithm):
@@ -129,7 +130,7 @@ class GRPO(Algorithm):
                     signals.prev_sample_mean,
                     signals.ref_prev_sample_mean,
                     signals.std_dev_t,
-                    signals.dt,
+                    dt=signals.dt if cfg.flow_kl_use_dt else None,
                 )
                 kl_loss = torch.mean(kl)
             else:

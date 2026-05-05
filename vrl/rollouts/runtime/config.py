@@ -18,6 +18,7 @@ class RolloutBackendConfig:
     allow_driver_gpu_overlap: bool = False
     max_inflight_chunks_per_worker: int = 1
     sync_trainable_state: str = "disabled"
+    release_after_collect: bool = False
 
     def __post_init__(self) -> None:
         if self.backend != "ray":
@@ -86,6 +87,9 @@ class RolloutBackendConfig:
             sync_trainable_state=str(
                 _rollout_get(distributed, rollout, "sync_trainable_state", "disabled"),
             ),
+            release_after_collect=bool(
+                _rollout_get(distributed, rollout, "release_after_collect", False),
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -99,6 +103,7 @@ class RolloutBackendConfig:
             "allow_driver_gpu_overlap": self.allow_driver_gpu_overlap,
             "max_inflight_chunks_per_worker": self.max_inflight_chunks_per_worker,
             "sync_trainable_state": self.sync_trainable_state,
+            "release_after_collect": self.release_after_collect,
         }
 
 

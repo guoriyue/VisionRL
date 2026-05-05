@@ -6,9 +6,17 @@ The unified ``vrl.scripts.train`` entry point dispatches SD3.5 configs here.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from omegaconf import DictConfig, OmegaConf
+
+from vrl.trainers.checkpointing import (
+    ResumeCheckpoint,
+    resolve_resume_checkpoint,
+    save_online_checkpoint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +54,8 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
     if trainer_config.profile:
         os.environ["VRL_PROFILE_COLLECT"] = "1"
 
+    resume_checkpoint = _resolve_sd3_resume_checkpoint(cfg, trainer_config)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     weight_dtype = torch.bfloat16 if trainer_config.bf16 else torch.float16
 
@@ -58,6 +68,8 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
 
     if trainer_config.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
+
+    _offload_driver_frozen_modules(sd3_5_model)
 
     # 2. Reward
     reward_weights, reward_kwargs = built["reward"]
@@ -77,12 +89,15 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
         guidance_scale=cfg.sampling.guidance_scale,
         height=cfg.sampling.height,
         width=cfg.sampling.width,
+        max_sequence_length=int(getattr(cfg.sampling, "max_sequence_length", 128)),
         noise_level=noise_level,
         cfg=cfg.sampling.cfg,
         sample_batch_size=int(require(cfg, "rollout.sample_batch_size")),
         kl_reward=cfg.algorithm.kl_reward,
+        sde_type=str(require(cfg, "rollout.sde.type")),
         sde_window_size=cfg.rollout.sde.window_size,
         sde_window_range=tuple(cfg.rollout.sde.window_range),
+        same_latent=cfg.rollout.same_latent,
     )
     collector = build_rollout_collector(
         "sd3_5",
@@ -108,7 +123,7 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
     evaluator = FlowMatchingEvaluator(
         bundle.scheduler,
         noise_level=noise_level,
-        sde_type="sde",
+        sde_type=collector_config.sde_type,
     )
     algorithm = GRPO(grpo_config)
 
@@ -126,11 +141,24 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
         evaluator=evaluator,
         model=sd3_5_model,
         ref_model=ref_model,
-        weight_syncer=build_runtime_weight_syncer(collector.runtime),
+        weight_syncer=build_runtime_weight_syncer(
+            collector.runtime,
+            initial_policy_version=_resume_policy_version(resume_checkpoint),
+        ),
         config=trainer_config,
         device=device,
         stat_tracker=stat_tracker,
     )
+    if resume_checkpoint is not None:
+        trainer.load_state_dict(
+            resume_checkpoint.trainer_state,
+            strict=trainer_config.resume_strict,
+        )
+        logger.info(
+            "Resuming from %s, start_epoch=%d",
+            resume_checkpoint.checkpoint_dir,
+            resume_checkpoint.next_epoch,
+        )
 
     # 4. Prompts + loop
     manifest_path = Path(cfg.data.manifest)
@@ -144,25 +172,42 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
         trainer_config.n,
     )
 
+    start_epoch = resume_checkpoint.next_epoch if resume_checkpoint is not None else 0
+    if start_epoch > trainer_config.total_epochs:
+        raise ValueError(
+            "resume checkpoint starts after configured total_epochs: "
+            f"start_epoch={start_epoch}, total_epochs={trainer_config.total_epochs}",
+        )
+
     output_dir = Path(trainer_config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    OmegaConf.save(cfg, output_dir / "resolved_config.yaml")
+    _save_resolved_config(cfg, output_dir, resumed=resume_checkpoint is not None)
 
     csv_path = output_dir / "metrics.csv"
     component_names = list(reward_weights.keys())
     component_cols = ",".join(f"r_{n}" for n in component_names)
-    csv_path.write_text(
+    metrics_header = (
         "epoch,loss,policy_loss,kl_penalty,reward_mean,reward_std,"
         "clip_fraction,approx_kl,advantage_mean,grad_norm,adv_saturation,"
         "adv_zero_rate,group_size,trained_prompt_num," + component_cols + "\n"
     )
+    _prepare_metrics_csv(csv_path, metrics_header, resume=resume_checkpoint is not None)
 
     rng = torch.Generator().manual_seed(trainer_config.seed)
-    for epoch in range(trainer_config.total_epochs):
-        idx = torch.randperm(len(examples), generator=rng)[
-            : trainer_config.rollout_batch_size
-        ].tolist()
+    advance_prompt_rng(
+        rng,
+        num_examples=len(examples),
+        rollout_batch_size=trainer_config.rollout_batch_size,
+        completed_epochs=start_epoch,
+    )
+    for epoch in range(start_epoch, trainer_config.total_epochs):
+        idx = sample_prompt_indices(
+            rng,
+            num_examples=len(examples),
+            rollout_batch_size=trainer_config.rollout_batch_size,
+        )
         example_batch = [examples[i] for i in idx]
+        reward_fn.reset_components()
         metrics = await trainer.step(example_batch)
 
         if epoch % trainer_config.log_freq == 0:
@@ -199,15 +244,174 @@ async def train_sd3_5_grpo(cfg: DictConfig) -> None:
 
         if trainer_config.save_freq > 0 and (epoch + 1) % trainer_config.save_freq == 0:
             ckpt_path = output_dir / f"checkpoint-{epoch + 1}"
-            ckpt_path.mkdir(parents=True, exist_ok=True)
-            torch.save(trainer.state_dict(), ckpt_path / "trainer_state.pt")
-            if hasattr(transformer, "save_pretrained"):
-                transformer.save_pretrained(ckpt_path / "lora_weights")
+            save_online_checkpoint(
+                ckpt_path,
+                trainer=trainer,
+                family="sd3_5",
+                completed_epoch=epoch + 1,
+                next_epoch=epoch + 1,
+                lora_module=transformer,
+                uses_lora=bool(cfg.model.use_lora),
+            )
             logger.info("Saved checkpoint to %s", ckpt_path)
 
     final_path = output_dir / "checkpoint-final"
-    final_path.mkdir(parents=True, exist_ok=True)
-    torch.save(trainer.state_dict(), final_path / "trainer_state.pt")
-    if hasattr(transformer, "save_pretrained"):
-        transformer.save_pretrained(final_path / "lora_weights")
+    save_online_checkpoint(
+        final_path,
+        trainer=trainer,
+        family="sd3_5",
+        completed_epoch=trainer_config.total_epochs,
+        next_epoch=trainer_config.total_epochs,
+        lora_module=transformer,
+        uses_lora=bool(cfg.model.use_lora),
+    )
     logger.info("Training complete. Final checkpoint: %s", final_path)
+
+
+def _offload_driver_frozen_modules(policy: object) -> None:
+    """Move frozen driver-only modules off CUDA before Ray workers load.
+
+    The driver replay path needs the trainable transformer and scheduler only:
+    rollout workers own prompt encoding and VAE decoding during generation, while
+    trainer replay consumes prompt embeddings and latents already packed in the
+    ``RolloutBatch``. Keeping frozen encoders/VAE on the driver GPU duplicates
+    the rollout worker footprint and makes single-GPU Ray smoke runs OOM.
+    """
+
+    import torch
+
+    pipeline = getattr(policy, "pipeline", None)
+    if pipeline is None:
+        return
+
+    for name in ("text_encoder", "text_encoder_2", "text_encoder_3", "vae"):
+        module = getattr(pipeline, name, None)
+        if module is not None:
+            module.to("cpu")
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def _resolve_sd3_resume_checkpoint(
+    cfg: DictConfig,
+    trainer_config: Any,
+) -> ResumeCheckpoint | None:
+    resume_from = str(trainer_config.resume_from or "").strip()
+    if not resume_from:
+        return None
+    checkpoint = resolve_resume_checkpoint(
+        resume_from,
+        strict=bool(trainer_config.resume_strict),
+        uses_lora=bool(cfg.model.use_lora),
+    )
+    _validate_resume_family(checkpoint, "sd3_5", strict=bool(trainer_config.resume_strict))
+    _apply_resume_lora_path(
+        cfg,
+        checkpoint,
+        strict=bool(trainer_config.resume_strict),
+    )
+    return checkpoint
+
+
+def _validate_resume_family(
+    checkpoint: ResumeCheckpoint,
+    family: str,
+    *,
+    strict: bool,
+) -> None:
+    checkpoint_family = checkpoint.meta.get("family")
+    if checkpoint_family in (None, ""):
+        return
+    if str(checkpoint_family) != family:
+        message = (
+            f"resume checkpoint family mismatch: checkpoint={checkpoint_family!r}, "
+            f"current={family!r}"
+        )
+        if strict:
+            raise ValueError(message)
+        logger.warning(message)
+
+
+def _apply_resume_lora_path(
+    cfg: DictConfig,
+    checkpoint: ResumeCheckpoint,
+    *,
+    strict: bool,
+) -> None:
+    if not bool(cfg.model.use_lora):
+        return
+    if checkpoint.lora_weights_path is None:
+        if strict:
+            raise FileNotFoundError(
+                f"resume checkpoint missing lora_weights: {checkpoint.checkpoint_dir}",
+            )
+        return
+
+    resume_lora_path = checkpoint.lora_weights_path.resolve()
+    configured = str(cfg.model.lora.path or "").strip()
+    if configured:
+        configured_path = Path(configured).expanduser().resolve()
+        if configured_path != resume_lora_path:
+            message = (
+                "trainer.resume_from and model.lora.path point at different adapters: "
+                f"resume={resume_lora_path}, model.lora.path={configured_path}"
+            )
+            if strict:
+                raise ValueError(message)
+            logger.warning("%s; using resume adapter", message)
+    cfg.model.lora.path = str(resume_lora_path)
+
+
+def _resume_policy_version(checkpoint: ResumeCheckpoint | None) -> int | None:
+    if checkpoint is None:
+        return None
+    value = checkpoint.trainer_state.get("global_step", checkpoint.next_epoch)
+    return int(value)
+
+
+def _save_resolved_config(cfg: DictConfig, output_dir: Path, *, resumed: bool) -> None:
+    resolved_path = output_dir / "resolved_config.yaml"
+    if not resumed or not resolved_path.exists():
+        OmegaConf.save(cfg, resolved_path)
+        return
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    OmegaConf.save(cfg, output_dir / f"resume_config_{stamp}.yaml")
+
+
+def _prepare_metrics_csv(csv_path: Path, header: str, *, resume: bool) -> None:
+    if resume and csv_path.exists():
+        return
+    if resume:
+        logger.warning("Resume requested but metrics.csv does not exist; creating %s", csv_path)
+    csv_path.write_text(header)
+
+
+def advance_prompt_rng(
+    rng: Any,
+    *,
+    num_examples: int,
+    rollout_batch_size: int,
+    completed_epochs: int,
+) -> None:
+    for _ in range(completed_epochs):
+        sample_prompt_indices(
+            rng,
+            num_examples=num_examples,
+            rollout_batch_size=rollout_batch_size,
+        )
+
+
+def sample_prompt_indices(
+    rng: Any,
+    *,
+    num_examples: int,
+    rollout_batch_size: int,
+) -> list[int]:
+    import torch
+
+    if num_examples < 1:
+        raise ValueError("prompt manifest must contain at least one example")
+    if rollout_batch_size < 1:
+        raise ValueError("rollout_batch_size must be >= 1")
+    return torch.randperm(num_examples, generator=rng)[:rollout_batch_size].tolist()

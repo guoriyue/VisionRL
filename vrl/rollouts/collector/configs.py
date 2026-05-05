@@ -13,11 +13,12 @@ class SD3_5CollectorConfig:
     guidance_scale: float = 4.5
     height: int = 512
     width: int = 512
-    max_sequence_length: int = 256
+    max_sequence_length: int = 128
     noise_level: float = 0.7
     cfg: bool = True
     sample_batch_size: int = 8
     kl_reward: float = 0.0
+    sde_type: str = "sde"
     sde_window_size: int = 0
     sde_window_range: tuple[int, int] = (0, 10)
     same_latent: bool = False
@@ -42,6 +43,7 @@ class Wan_2_1CollectorConfig:
     cfg: bool = True
     sample_batch_size: int = 1
     kl_reward: float = 0.0
+    sde_type: str = "sde"
     sde_window_size: int = 0
     sde_window_range: tuple[int, int] = (0, 10)
     same_latent: bool = False
@@ -67,6 +69,7 @@ class CosmosPredict2CollectorConfig:
     cfg: bool = True
     sample_batch_size: int = 8
     kl_reward: float = 0.0
+    sde_type: str = "sde"
     sde_window_size: int = 0
     sde_window_range: tuple[int, int] = (0, 10)
     same_latent: bool = False

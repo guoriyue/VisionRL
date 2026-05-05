@@ -94,6 +94,7 @@ def test_diffusion_request_shape_is_registry_declared() -> None:
     for family in ("sd3_5", "wan_2_1", "cosmos"):
         collector = FAMILY_REGISTRY[family].collector
         assert "noise_level" in collector.sampling_fields
+        assert "sde_type" in collector.sampling_fields
         assert "return_kl" in collector.sampling_fields
         assert collector.return_artifacts == DIFFUSION_RETURN_ARTIFACTS
 

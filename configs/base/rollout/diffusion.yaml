@@ -9,6 +9,7 @@ rollout:
 
   # Stochastic SDE sampling window (0 = SDE all steps; >0 = SDE only inside window).
   sde:
+    type: sde
     window_size: 0
     window_range: [0, 10]
 

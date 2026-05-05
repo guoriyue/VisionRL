@@ -20,6 +20,9 @@ reward:
 data:
   manifest: datasets/ocr/train.txt
 
+sampling:
+  max_sequence_length: 128
+
 trainer:
   entrypoint: vrl.scripts.sd3_5.train:train_sd3_5_grpo
   output_dir: outputs/sd3_5_ocr_grpo

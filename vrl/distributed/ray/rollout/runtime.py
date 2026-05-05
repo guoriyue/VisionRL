@@ -46,6 +46,16 @@ class RayDistributedRuntime(RolloutBackend):
         if not self._owned_workers and self._placement_group is None:
             return None
         ray = require_ray()
+        release_refs: list[Any] = []
+        for worker in self._owned_workers:
+            actor = worker.actor
+            if actor is None:
+                continue
+            with contextlib.suppress(Exception):
+                release_refs.append(actor.release_policy.remote())
+        if release_refs:
+            with contextlib.suppress(Exception):
+                ray.get(release_refs, timeout=60)
         for worker in self._owned_workers:
             actor = worker.actor
             if actor is None:

@@ -98,6 +98,7 @@ class DiffusionPipelineExecutorBase(
         )
         sde = SDEDiffusionSpec(
             noise_level=float(sampling.get("noise_level", 1.0)),
+            sde_type=_parse_sde_type(sampling.get("sde_type", self.sde_type)),
             sde_window_size=int(sampling.get("sde_window_size", 0)),
             sde_window_range=_parse_sde_window_range(
                 sampling.get("sde_window_range", (0, num_steps)),
@@ -167,7 +168,7 @@ class DiffusionPipelineExecutorBase(
             sde_window=sde_window,
             return_kl=spec.sde.return_kl,
             noise_level=spec.sde.noise_level,
-            sde_type=self.sde_type,
+            sde_type=spec.sde.sde_type,
         )
 
     def forward(
@@ -307,6 +308,13 @@ def _parse_sde_window_range(value: Any) -> tuple[int, int]:
             "sampling.sde_window_range must contain two integer values",
         ) from exc
     return lo, hi
+
+
+def _parse_sde_type(value: Any) -> str:
+    sde_type = str(value)
+    if sde_type not in {"sde", "cps"}:
+        raise ValueError("sampling.sde_type must be 'sde' or 'cps'")
+    return sde_type
 
 
 __all__ = ["DiffusionPipelineExecutorBase"]

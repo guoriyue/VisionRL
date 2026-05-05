@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 
 from vrl.algorithms import GRPO
+from vrl.algorithms.grpo import GRPOConfig
+from vrl.rollouts.evaluators.types import SignalBatch
 
 # ---------------------------------------------------------------------------
 # Regression: single-sample GRPO advantage must NOT be NaN
@@ -46,3 +48,51 @@ class TestGRPOSingleSampleNaN:
         # Mean=4, should be negative for 1,3 and positive for 5,7
         assert advantages[0] < 0
         assert advantages[3] > 0
+
+
+class TestGRPOFlowMatchingKL:
+    def test_flow_kl_ignores_dt_by_default_to_match_flow_grpo(self) -> None:
+        import torch
+
+        grpo = GRPO(GRPOConfig(init_kl_coef=1.0))
+        signals = SignalBatch(
+            log_prob=torch.zeros(2),
+            ref_log_prob=torch.zeros(2),
+            prev_sample_mean=torch.zeros(2, 1, 1, 1),
+            ref_prev_sample_mean=torch.ones(2, 1, 1, 1),
+            std_dev_t=torch.ones(2, 1, 1, 1),
+            dt=torch.full((2, 1, 1, 1), 0.1),
+            dist_family="flow_matching",
+        )
+
+        loss, metrics = grpo.compute_signal_loss(
+            signals,
+            advantages=torch.zeros(2),
+            old_log_probs=torch.zeros(2),
+        )
+
+        assert loss.item() == pytest.approx(0.5)
+        assert metrics.kl_penalty == pytest.approx(0.5)
+
+    def test_flow_kl_can_use_dt_when_explicitly_configured(self) -> None:
+        import torch
+
+        grpo = GRPO(GRPOConfig(init_kl_coef=1.0, flow_kl_use_dt=True))
+        signals = SignalBatch(
+            log_prob=torch.zeros(2),
+            ref_log_prob=torch.zeros(2),
+            prev_sample_mean=torch.zeros(2, 1, 1, 1),
+            ref_prev_sample_mean=torch.ones(2, 1, 1, 1),
+            std_dev_t=torch.ones(2, 1, 1, 1),
+            dt=torch.full((2, 1, 1, 1), 0.1),
+            dist_family="flow_matching",
+        )
+
+        loss, metrics = grpo.compute_signal_loss(
+            signals,
+            advantages=torch.zeros(2),
+            old_log_probs=torch.zeros(2),
+        )
+
+        assert loss.item() == pytest.approx(50.0)
+        assert metrics.kl_penalty == pytest.approx(50.0)

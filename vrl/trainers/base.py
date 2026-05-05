@@ -19,5 +19,5 @@ class Trainer(ABC):
         """Return a serialisable snapshot of trainer state."""
 
     @abstractmethod
-    def load_state_dict(self, state: dict) -> None:
+    def load_state_dict(self, state: dict, *, strict: bool = True) -> None:
         """Restore trainer state from a snapshot."""

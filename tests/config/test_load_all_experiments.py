@@ -17,6 +17,7 @@ from vrl.algorithms.grpo_token import TokenGRPOConfig
 from vrl.config.loader import (
     _REWARD_REQUIRED_KWARGS,
     build_algorithm_config,
+    build_configs,
     build_reward_config,
     load_config,
     optional_none,
@@ -120,6 +121,26 @@ def test_unified_train_entrypoint_requires_yaml_entrypoint() -> None:
         resolve_train_target(cfg)
 
 
+def test_trainer_resume_fields_are_loaded_from_base_yaml() -> None:
+    cfg = load_config("experiment/sd3_5_ocr_grpo")
+    built = build_configs(cfg)
+
+    assert cfg.trainer.resume_from == ""
+    assert cfg.trainer.resume_strict is True
+    assert built["trainer"].resume_from == ""
+    assert built["trainer"].resume_strict is True
+
+
+def test_trainer_resume_from_cli_override_reaches_typed_config() -> None:
+    cfg = load_config(
+        "experiment/sd3_5_ocr_grpo",
+        overrides=["trainer.resume_from=/tmp/checkpoint-10"],
+    )
+    built = build_configs(cfg)
+
+    assert built["trainer"].resume_from == "/tmp/checkpoint-10"
+
+
 def test_unified_train_entrypoint_rejects_empty_yaml_entrypoint() -> None:
     from vrl.scripts.train import resolve_train_target
 
@@ -151,6 +172,12 @@ def test_kind_only_works_without_adv_estimator() -> None:
     cfg = OmegaConf.create({"algorithm": {"kind": "grpo"}})
     out = build_algorithm_config(cfg)
     assert type(out) is GRPOConfig
+
+
+def test_sd3_ocr_matches_flow_grpo_prompt_length() -> None:
+    cfg = load_config("experiment/sd3_5_ocr_grpo")
+
+    assert cfg.sampling.max_sequence_length == 128
 
 
 def test_adv_estimator_only_fails_fast() -> None:

@@ -43,9 +43,10 @@ def _register_builtins() -> None:
 class MultiReward(RewardFunction):
     """Weighted combination of named reward functions.
 
-    Tracks per-component raw scores on the most recent call so the training
-    loop can log them — essential for spotting reward hacking early (e.g.
-    aesthetic collapses while OCR climbs).
+    Tracks per-component raw scores since the last reset so the training loop
+    can log epoch-wide component means instead of only the final reward call.
+    This is essential for spotting reward hacking early (e.g. aesthetic
+    collapses while OCR climbs).
 
     Usage::
 
@@ -63,6 +64,10 @@ class MultiReward(RewardFunction):
     ) -> None:
         self.rewards = rewards
         self.last_components: dict[str, list[float]] = {}
+
+    def reset_components(self) -> None:
+        """Clear component score history before a new trainer step."""
+        self.last_components = {}
 
     @classmethod
     def from_dict(
@@ -92,7 +97,7 @@ class MultiReward(RewardFunction):
             s = await fn.score(rollout)
             components[name] = [s]
             total += weight * s
-        self.last_components = components
+        self._append_components(components)
         return total
 
     async def score_batch(self, rollouts: list[Rollout]) -> list[float]:
@@ -103,5 +108,9 @@ class MultiReward(RewardFunction):
             components[name] = list(sub_scores)
             for i, s in enumerate(sub_scores):
                 totals[i] += weight * s
-        self.last_components = components
+        self._append_components(components)
         return totals
+
+    def _append_components(self, components: dict[str, list[float]]) -> None:
+        for name, values in components.items():
+            self.last_components.setdefault(name, []).extend(float(v) for v in values)

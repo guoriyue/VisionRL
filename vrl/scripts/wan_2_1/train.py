@@ -84,6 +84,7 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
         cfg=cfg.sampling.cfg,
         sample_batch_size=int(require(cfg, "rollout.sample_batch_size")),
         kl_reward=cfg.algorithm.kl_reward,
+        sde_type=str(require(cfg, "rollout.sde.type")),
         sde_window_size=cfg.rollout.sde.window_size,
         sde_window_range=tuple(cfg.rollout.sde.window_range),
         same_latent=cfg.rollout.same_latent,
@@ -112,7 +113,7 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
     evaluator = FlowMatchingEvaluator(
         bundle.scheduler,
         noise_level=noise_level,
-        sde_type="sde",
+        sde_type=collector_config.sde_type,
     )
     algorithm = GRPO(grpo_config)
 
@@ -170,6 +171,7 @@ async def train_wan_2_1_grpo(cfg: DictConfig) -> None:
         ].tolist()
         example_batch = [examples[i] for i in idx]
 
+        reward_fn.reset_components()
         metrics = await trainer.step(example_batch)
 
         if epoch % trainer_config.log_freq == 0:

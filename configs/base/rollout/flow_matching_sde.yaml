@@ -6,3 +6,5 @@ defaults:
 rollout:
   noise_level: 0.7              # flow-grpo Eq.9 SDE noise level
   sample_batch_size: 8          # micro-rollout batch when n > sample_batch_size
+  sde:
+    type: sde                   # source of truth for rollout + replay log-prob distribution
